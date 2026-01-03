@@ -1,0 +1,85 @@
+[package]
+name = "rag-chat"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# Web framework - Leptos
+leptos = { version = "0.7", features = ["csr"] }
+leptos_meta = { version = "0.7" }
+leptos_router = { version = "0.7" }
+
+# Backend
+axum = { version = "0.8", features = ["macros", "multipart"] }
+tokio = { version = "1.42", features = ["full"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["cors", "fs"] }
+
+# Database
+sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "chrono", "uuid", "json"] }
+deadpool-postgres = "0.14"
+
+# Embeddings - local ONNX models
+# fastembed = "4"
+
+# Document processing
+lopdf = "0.35"
+pulldown-cmark = "0.13"
+comrak = "0.30"  # Markdown parser
+image = "0.25"
+text-splitter = "0.10"
+
+# LLM API clients
+reqwest = { version = "0.12", features = ["json", "stream"] }
+async-openai = "0.27"
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Utilities
+uuid = { version = "1.11", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+anyhow = "1.0"
+thiserror = "2.0"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+dotenvy = "0.15"
+notify = "7"  # File watcher for indexer
+futures = "0.3"
+async-stream = "0.3"
+walkdir = "2"
+html2text = "0.12"
+
+# Config
+config = "0.14"
+clap = { version = "4", features = ["derive"] }
+
+[dev-dependencies]
+tokio = { version = "1.42", features = ["full"] }
+sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "uuid"] }
+
+[features]
+default = ["ssr"]
+ssr = []
+hydrate = ["leptos/hydrate"]
+
+[lib]
+name = "rag_chat"
+path = "src/lib.rs"
+
+[[bin]]
+name = "rag-chat"
+path = "src/main.rs"
+
+[profile.release]
+opt-level = 3
+lto = true
+
+# Development profile for faster builds
+[profile.dev]
+opt-level = 0
+debug = 0
+split-debuginfo = "unpacked"
+incremental = true
+

@@ -1,0 +1,15 @@
+/.claude
+/target
+/data
+/documents/*.pdf
+
+# Coverage reports
+/target/llvm-cov/
+lcov.info
+*.profraw
+*.profdata
+
+.env
+slim_ner_output.txt
+**/*.DS_Store
+
