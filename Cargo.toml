@@ -1,60 +1,82 @@
+[workspace]
+members = ["."]
+
+# Leptos configuration for cargo-leptos
+[[workspace.metadata.leptos]]
+name = "rag-chat"
+output-name = "rag-chat"
+bin-package = "rag-chat"
+lib-package = "rag-chat"
+site-root = "target/site"
+site-pkg-dir = "pkg"
+assets-dir = "static"
+bin-features = ["ssr"]
+lib-features = ["hydrate"]
+
 [package]
 name = "rag-chat"
 version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-# Web framework - Leptos
-leptos = { version = "0.7", features = ["csr"] }
-leptos_meta = { version = "0.7" }
-leptos_router = { version = "0.7" }
+# Web framework - Leptos 0.8
+leptos = { version = "0.8" }
+leptos_meta = { version = "0.8" }
+leptos_router = { version = "0.8" }
+leptos_axum = { version = "0.8", optional = true }
+
+# WASM-specific dependencies (client-side only)
+wasm-bindgen = { version = "0.2", optional = true }
+wasm-bindgen-futures = { version = "0.4", optional = true }
+console_error_panic_hook = { version = "0.1", optional = true }
+web-sys = { version = "0.3", features = ["Window", "Document", "MouseEvent", "HtmlInputElement", "Request", "RequestInit", "Response", "Headers"], optional = true }
+gloo-net = { version = "0.6", optional = true }
 
 # Backend
-axum = { version = "0.8", features = ["macros", "multipart"] }
-tokio = { version = "1.42", features = ["full"] }
-tower = "0.5"
-tower-http = { version = "0.6", features = ["cors", "fs"] }
+axum = { version = "0.8", features = ["macros", "multipart"], optional = true }
+tokio = { version = "1.42", features = ["full"], optional = true }
+tower = { version = "0.5", optional = true }
+tower-http = { version = "0.6", features = ["cors", "fs"], optional = true }
 
 # Database
-sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "chrono", "uuid", "json"] }
-deadpool-postgres = "0.14"
-
-# Embeddings - local ONNX models
-# fastembed = "4"
+sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "chrono", "uuid", "json"], optional = true }
+deadpool-postgres = { version = "0.14", optional = true }
 
 # Document processing
-lopdf = "0.35"
-pulldown-cmark = "0.13"
-comrak = "0.30"  # Markdown parser
-image = "0.25"
-text-splitter = "0.29"
+lopdf = { version = "0.35", optional = true }
+pulldown-cmark = { version = "0.13", optional = true }
+comrak = { version = "0.30", optional = true }
+image = { version = "0.25", optional = true }
+text-splitter = { version = "0.29", optional = true }
 unicode-segmentation = "1.12"
 
-# LLM API clients
-reqwest = { version = "0.12", features = ["json", "stream"] }
-async-openai = "0.27"
+# LLM API clients - reqwest needs different backends for SSR vs WASM
+reqwest = { version = "0.12", default-features = false, features = ["json"] }
+async-openai = { version = "0.27", optional = true }
 
 # Serialization
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 
 # Utilities
-uuid = { version = "1.11", features = ["v4", "serde"] }
+uuid = { version = "1.11", features = ["v4", "serde", "js"] }
 chrono = { version = "0.4", features = ["serde"] }
 anyhow = "1.0"
 thiserror = "2.0"
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-dotenvy = "0.15"
-notify = "7"  # File watcher for indexer
+tracing = { version = "0.1", optional = true }
+tracing-subscriber = { version = "0.3", features = ["env-filter"], optional = true }
+dotenvy = { version = "0.15", optional = true }
+notify = { version = "7", optional = true }
 futures = "0.3"
-async-stream = "0.3"
-walkdir = "2"
-html2text = "0.12"
+async-stream = { version = "0.3", optional = true }
+walkdir = { version = "2", optional = true }
+html2text = { version = "0.12", optional = true }
 
 # Config
-config = "0.14"
-clap = { version = "4", features = ["derive"] }
+config = { version = "0.14", optional = true }
+clap = { version = "4", features = ["derive"], optional = true }
+wasm-streams = { version = "0.4.2", optional = true }
+js-sys = { version = "0.3.83", optional = true }
 
 [dev-dependencies]
 tokio = { version = "1.42", features = ["full"] }
@@ -62,12 +84,50 @@ sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "uuid"] }
 
 [features]
 default = ["ssr"]
-ssr = []
-hydrate = ["leptos/hydrate"]
+ssr = [
+    "leptos/ssr",
+    "leptos_meta/ssr",
+    "leptos_router/ssr",
+    "leptos_axum",
+    "tokio",
+    "axum",
+    "tower",
+    "tower-http",
+    "sqlx",
+    "deadpool-postgres",
+    "async-openai",
+    "lopdf",
+    "pulldown-cmark",
+    "comrak",
+    "image",
+    "text-splitter",
+    "tracing",
+    "tracing-subscriber",
+    "dotenvy",
+    "notify",
+    "async-stream",
+    "walkdir",
+    "html2text",
+    "config",
+    "clap",
+    "reqwest/default-tls",
+    "reqwest/stream",
+]
+hydrate = [
+    "leptos/hydrate",
+    "wasm-bindgen",
+    "wasm-bindgen-futures",
+    "console_error_panic_hook",
+    "web-sys",
+    "gloo-net",
+    "wasm-streams",
+    "js-sys",
+]
 
 [lib]
 name = "rag_chat"
 path = "src/lib.rs"
+crate-type = ["cdylib", "rlib"]
 
 [[bin]]
 name = "rag-chat"
@@ -77,10 +137,8 @@ path = "src/main.rs"
 opt-level = 3
 lto = true
 
-# Development profile for faster builds
 [profile.dev]
 opt-level = 0
 debug = 0
 split-debuginfo = "unpacked"
 incremental = true
-

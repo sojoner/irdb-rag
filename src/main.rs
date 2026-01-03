@@ -3,24 +3,17 @@
 //! A Rust-based RAG system using ParadeDB (BM25 + pgvector) for hybrid search,
 //! Leptos for the UI, and FastEmbed for local embeddings.
 
-mod db;
-mod indexer;
-mod enricher;
-mod api;
-mod llm;
-mod logging;
-mod types;
-mod web_app;
-
 use anyhow::Result;
-use axum::{
-    routing::{get, post},
-    Router,
-};
 use clap::{Parser, Subcommand};
-use std::net::SocketAddr;
-use tower_http::cors::CorsLayer;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+use leptos::prelude::get_configuration;
+
+use rag_chat::api::{self, state::AppState};
+use rag_chat::infra::{db, embedder::Embedder};
+use rag_chat::services::indexing;
+use rag_chat::logging;
+
+// SSR features not currently used - serving static files instead
 
 #[derive(Parser)]
 #[command(name = "rag-chat")]
@@ -75,21 +68,21 @@ async fn main() -> Result<()> {
         }
         Some(Commands::Index { path, url }) => {
             let pool = db::create_pool().await?;
-            let embedder = indexer::Embedder::new()?;
+            let embedder = Embedder::new()?;
             embedder.init().await?;
             
             if let Some(path) = path {
-                indexer::index_path(&pool, &embedder, &path).await?;
+                indexing::index_path(&pool, &embedder, &path).await?;
             }
             if let Some(url) = url {
-                indexer::index_url(&pool, &embedder, &url).await?;
+                indexing::index_url(&pool, &embedder, &url).await?;
             }
         }
         Some(Commands::Watch { folders }) => {
             let pool = db::create_pool().await?;
-            let embedder = indexer::Embedder::new()?;
+            let embedder = Embedder::new()?;
             embedder.init().await?;
-            indexer::watch_folders(&pool, &embedder, folders).await?;
+            indexing::watch_folders(&pool, &embedder, folders).await?;
         }
         None => {
             // Default: serve on port 3000
@@ -103,34 +96,23 @@ async fn main() -> Result<()> {
 async fn serve(port: u16, log_buffer: std::sync::Arc<std::sync::Mutex<Vec<String>>>) -> Result<()> {
     tracing::info!("Starting RAG Chat server on port {}", port);
 
+    // Load Leptos configuration
+    let conf = get_configuration(Some("Cargo.toml"))
+        .map_err(|e| anyhow::anyhow!("Failed to load configuration: {}", e))?;
+    let leptos_options = conf.leptos_options;
+    let addr = leptos_options.site_addr;
+
     let pool = db::create_pool().await?;
-    let embedder = indexer::Embedder::new()?;
+    let embedder = Embedder::new()?;
     embedder.init().await?;
-    
-    let state = api::AppState::new(pool, embedder, log_buffer);
 
-    let app = Router::new()
-        // API routes
-        .route("/api/search", post(api::search))
-        .route("/api/chat", post(api::chat))
-        .route("/api/documents", get(api::list_documents))
-        .route("/api/documents/{id}", get(api::get_document))
-        .route("/api/documents/{id}/assets", get(api::get_document_assets))
-        .route("/api/documents/{id}/markdown", get(api::export_markdown))
-        .route("/api/categories", get(api::list_categories))
-        .route("/api/index", post(api::index_document))
-        .route("/api/health", get(api::health_check))
-        .route("/api/status", get(api::get_status))
-        .route("/api/config/model", post(api::update_model))
-        .route("/api/logs", get(api::get_logs))
-        // Static files and UI
-        .fallback(api::serve_ui)
-        .layer(CorsLayer::permissive())
-        .with_state(state);
+    let state = AppState::new(pool, embedder, log_buffer, leptos_options.clone());
 
-    let addr = SocketAddr::from(([0, 0, 0, 0], port));
+    // Create the Axum router with API routes and Leptos integration
+    let app = api::routes::create_router(state);
+
     tracing::info!("Listening on http://{}", addr);
-    
+
     let listener = tokio::net::TcpListener::bind(addr).await?;
     axum::serve(listener, app).await?;
 

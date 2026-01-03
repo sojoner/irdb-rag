@@ -1,8 +1,11 @@
 /.claude
 /target
 /data
+/plans
 /documents/*.pdf
-
+/node_modules
+/.playwright-mcp/
+/screenshots/
 # Coverage reports
 /target/llvm-cov/
 lcov.info

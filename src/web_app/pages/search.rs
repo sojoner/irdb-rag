@@ -1,206 +1,206 @@
 use leptos::*;
 use leptos::prelude::*;
-use leptos::task::spawn_local;
 use uuid::Uuid;
 use crate::web_app::components::{
-    search_bar::SearchBar,
-    filters::Filters,
+    unified_search::UnifiedSearch,
     results_list::ResultsList,
-    chat_panel::{ChatPanel, Message},
+    search::SearchDocuments,
+    chat_panel::ChatPanel,
+    document_preview::DocumentPreview,
+    faceted_filters::{FacetedFilters, get_categories},
 };
-use crate::types::*;
 
 #[component]
 pub fn SearchPage() -> impl IntoView {
-    // State
+    // ============ STATE ============
     let (search_query, set_search_query) = signal(String::new());
-    let (results, set_results) = signal(Vec::<SearchResult>::new());
-    let (loading, set_loading) = signal(false);
-    let (categories, set_categories) = signal(Vec::<Category>::new());
-    let (selected_category, set_selected_category) = signal(None::<Uuid>);
 
+    // Search settings
     let (bm25_weight, set_bm25_weight) = signal(0.5);
     let (vector_weight, set_vector_weight) = signal(0.5);
-
     let (selected_context, set_selected_context) = signal(Vec::<Uuid>::new());
-    let (auto_context_enabled, set_auto_context_enabled) = signal(true);
-    let (context_count, set_context_count) = signal(0);
+    let (ai_mode_enabled, set_ai_mode_enabled) = signal(false); // Disabled for Phase 1
+    let (selected_document_id, set_selected_document_id) = signal(None::<Uuid>);
 
-    let (messages, set_messages) = signal(Vec::<Message>::new());
-    let (chat_loading, set_chat_loading) = signal(false);
-    let (conversation_id, set_conversation_id) = signal(None::<Uuid>);
-
-    // Derived state for context count
-    Effect::new(move |_| {
-        let count = if auto_context_enabled.get() && selected_context.get().is_empty() {
-            results.get().len().min(5)
-        } else {
-            selected_context.get().len()
-        };
-        set_context_count.set(count);
+    // Filter state - Load categories on mount
+    let categories_resource = Resource::new_blocking(|| (), |_| async { get_categories().await });
+    let categories = Signal::derive(move || {
+        categories_resource.get()
+            .and_then(|res: Result<_, _>| res.ok())
+            .unwrap_or_default()
     });
 
-    // Load categories on mount
-    Effect::new(move |_| {
-        spawn_local(async move {
-            if let Ok(res) = reqwest::get("/api/categories").await {
-                if let Ok(cats) = res.json::<Vec<Category>>().await {
-                    set_categories.set(cats);
-                }
+    let (selected_category, set_selected_category) = signal(None::<Uuid>);
+    let (selected_keywords, set_selected_keywords) = signal(Vec::<String>::new());
+    let (selected_concepts, set_selected_concepts) = signal(Vec::<String>::new());
+    let (selected_locations, set_selected_locations) = signal(Vec::<String>::new());
+    let (selected_persons, set_selected_persons) = signal(Vec::<String>::new());
+    let (selected_organizations, set_selected_organizations) = signal(Vec::<String>::new());
+    let (selected_authors, set_selected_authors) = signal(Vec::<String>::new());
+
+    // Server Action for Search
+    let search_action = ServerAction::<SearchDocuments>::new();
+    
+    // Derived signals from action
+    let search_results = move || {
+        let val = search_action.value().get();
+        leptos::logging::log!("SearchPage: search_action value changed: {:?}", val);
+        match val {
+            Some(Ok(res)) => {
+                leptos::logging::log!("SearchPage: received {} results", res.len());
+                res
+            },
+            Some(Err(e)) => {
+                leptos::logging::error!("SearchPage: Search failed: {:?}", e);
+                vec![]
             }
-        });
+            None => vec![],
+        }
+    };
+    
+    let is_loading = search_action.pending();
+
+    // Dummy signals for read-only props
+    let (_, set_dummy_results) = signal(Vec::new());
+    let (_, set_dummy_loading) = signal(false);
+
+    // ============ SEARCH FUNCTION ============
+    Effect::new(move |_| {
+        leptos::logging::log!("SearchPage mounted/hydrated");
     });
 
-    let search = move || {
+    let execute_search = move |_| {
         let query = search_query.get();
+        leptos::logging::log!("SearchPage: executing search for '{}'", query);
         if query.trim().is_empty() {
-            set_results.set(vec![]);
             return;
         }
 
-        set_loading.set(true);
-        spawn_local(async move {
-            let req = SearchRequest {
-                query,
-                limit: 50,
-                bm25_weight: bm25_weight.get(),
-                vector_weight: vector_weight.get(),
-                category_id: selected_category.get(),
-                date_from: None,
-                date_to: None,
-                locations: None,
-                keywords: None,
-            };
+        // Collect filter values
+        let keywords = selected_keywords.get();
+        let concepts = selected_concepts.get();
+        let locations = selected_locations.get();
+        let persons = selected_persons.get();
+        let organizations = selected_organizations.get();
+        let authors = selected_authors.get();
 
-            let client = reqwest::Client::new();
-            if let Ok(res) = client.post("/api/search").json(&req).send().await {
-                if let Ok(data) = res.json::<Vec<SearchResult>>().await {
-                    set_results.set(data);
-                    
-                    // If auto-context is enabled, we clear manual selection so it defaults to top N
-                    if auto_context_enabled.get() {
-                        set_selected_context.set(vec![]); 
-                    }
-                }
-            }
-            set_loading.set(false);
+        search_action.dispatch(SearchDocuments {
+            query,
+            limit: 20,
+            bm25_weight: bm25_weight.get(),
+            vector_weight: vector_weight.get(),
+            category_id: selected_category.get(),
+            keywords: if keywords.is_empty() { None } else { Some(keywords) },
+            concepts: if concepts.is_empty() { None } else { Some(concepts) },
+            locations: if locations.is_empty() { None } else { Some(locations) },
+            persons: if persons.is_empty() { None } else { Some(persons) },
+            organizations: if organizations.is_empty() { None } else { Some(organizations) },
+            authors: if authors.is_empty() { None } else { Some(authors) },
         });
     };
 
-    let send_chat = move |(msg, with_search): (String, bool)| {
-        let user_msg = Message {
-            id: chrono::Utc::now().timestamp_millis(),
-            role: "user".to_string(),
-            content: msg.clone(),
-            sources: None,
-        };
-        
-        set_messages.update(|m| m.push(user_msg));
-        set_chat_loading.set(true);
-
-        if with_search {
-            set_search_query.set(msg.clone());
-            search();
-        }
-
-        spawn_local(async move {
-            // Determine context IDs
-            let context_ids = if auto_context_enabled.get() && selected_context.get().is_empty() {
-                results.get().iter().take(5).map(|r| r.id).collect()
-            } else {
-                selected_context.get()
-            };
-
-            let req = ChatRequest {
-                message: msg,
-                conversation_id: conversation_id.get(),
-                context_chunks: if context_ids.is_empty() { 5 } else { context_ids.len() as i32 * 2 },
-                document_ids: if context_ids.is_empty() { None } else { Some(context_ids) },
-            };
-
-            let client = reqwest::Client::new();
-            if let Ok(res) = client.post("/api/chat").json(&req).send().await {
-                if let Ok(data) = res.json::<ChatResponse>().await {
-                    set_conversation_id.set(Some(data.conversation_id));
-                    let bot_msg = Message {
-                        id: chrono::Utc::now().timestamp_millis() + 1,
-                        role: "assistant".to_string(),
-                        content: data.message,
-                        sources: Some(data.sources),
-                    };
-                    set_messages.update(|m| m.push(bot_msg));
-                } else {
-                     let error_msg = Message {
-                        id: chrono::Utc::now().timestamp_millis() + 1,
-                        role: "assistant".to_string(),
-                        content: "Sorry, I encountered an error.".to_string(),
-                        sources: None,
-                    };
-                    set_messages.update(|m| m.push(error_msg));
-                }
-            }
-            set_chat_loading.set(false);
-        });
-    };
-
-    let clear_chat = move || {
-        set_messages.set(vec![]);
-        set_conversation_id.set(None);
+    // ============ RENDER ============
+    let search_error = move || {
+        search_action.value().get().and_then(|res| res.err())
     };
 
     view! {
-        <div class="flex h-full">
-            // Left Column
-            <aside class="w-[45%] bg-gray-50 border-r border-gray-200 flex flex-col shadow-lg z-10 h-screen">
-                // Header
-                <div class="px-6 py-4 bg-white border-b border-gray-200 flex justify-between items-center">
-                    <div>
-                        <h1 class="text-xl font-bold text-gray-900 tracking-tight">"📚 RAG Search"</h1>
-                        <p class="text-xs text-gray-500">"Hybrid Document Search & Discovery"</p>
-                    </div>
-                    <div class="text-xs text-gray-400">
-                        <span>{move || results.get().len()}</span> " results"
-                    </div>
+        <div class="flex flex-col h-screen bg-white">
+            // HEADER: Unified Search
+            <header class="bg-white shadow-sm z-10">
+                <div class="px-6 py-4 border-b border-gray-200 flex justify-between items-center">
+                    <h1 class="text-2xl font-bold text-gray-900">"RAG Search"</h1>
                 </div>
-
-                <SearchBar
+                <UnifiedSearch
                     query=search_query.into()
                     set_query=set_search_query
-                    on_search=search
+                    results=Signal::derive(search_results)
+                    set_results=set_dummy_results
+                    loading=is_loading.into()
+                    set_loading=set_dummy_loading
                     bm25_weight=bm25_weight.into()
                     set_bm25_weight=set_bm25_weight
                     vector_weight=vector_weight.into()
                     set_vector_weight=set_vector_weight
+                    ai_mode_enabled=ai_mode_enabled.into()
+                    set_ai_mode_enabled=set_ai_mode_enabled
+                    on_search=Callback::new(move |_| execute_search(()))
+                    on_ai_search=Callback::new(move |_| execute_search(())) // Treat AI search as normal search for Phase 1
                 />
-                
-                <Filters
-                    categories=categories.into()
-                    selected_category=selected_category.into()
-                    set_selected_category=set_selected_category
-                    on_change=search
-                />
-                
-                <ResultsList
-                    results=results.into()
-                    loading=loading.into()
-                    selected_context=selected_context.into()
-                    set_selected_context=set_selected_context
-                />
-            </aside>
+                <Show when=move || search_error().is_some()>
+                    <div class="bg-red-50 border-l-4 border-red-500 p-4 mx-4 mt-2">
+                        <div class="flex">
+                            <div class="flex-shrink-0">
+                                <svg class="h-5 w-5 text-red-400" viewBox="0 0 20 20" fill="currentColor">
+                                    <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clip-rule="evenodd" />
+                                </svg>
+                            </div>
+                            <div class="ml-3">
+                                <p class="text-sm text-red-700">
+                                    {move || search_error().unwrap().to_string()}
+                                </p>
+                            </div>
+                        </div>
+                    </div>
+                </Show>
+            </header>
 
-            // Right Column
-            <main class="w-[55%] flex flex-col bg-white h-full relative h-screen">
-                <ChatPanel
-                    messages=messages.into()
-                    set_messages=set_messages
-                    loading=chat_loading.into()
-                    on_send=Callback::new(send_chat)
-                    on_clear=Callback::new(move |_| clear_chat())
-                    context_count=context_count.into()
-                    auto_context_enabled=auto_context_enabled.into()
-                    set_auto_context_enabled=set_auto_context_enabled
-                />
-            </main>
+            // MAIN CONTENT: 3 Column Layout (Filters + Results + Chat)
+            <div class="flex-1 overflow-hidden flex gap-4 p-4 bg-gray-50">
+                // Column 1: Filters Sidebar (20%)
+                <div class="w-[20%] flex flex-col bg-white rounded-lg border border-gray-200 overflow-y-auto shadow-sm">
+                    <div class="px-4 py-3 border-b border-gray-200 bg-gray-50">
+                        <h2 class="text-sm font-bold text-gray-700">"Filters"</h2>
+                    </div>
+                    <FacetedFilters
+                        categories=categories
+                        selected_category=selected_category.into()
+                        set_selected_category=set_selected_category
+                        selected_keywords=selected_keywords.into()
+                        set_selected_keywords=set_selected_keywords
+                        selected_concepts=selected_concepts.into()
+                        set_selected_concepts=set_selected_concepts
+                        selected_locations=selected_locations.into()
+                        set_selected_locations=set_selected_locations
+                        selected_persons=selected_persons.into()
+                        set_selected_persons=set_selected_persons
+                        selected_organizations=selected_organizations.into()
+                        set_selected_organizations=set_selected_organizations
+                        selected_authors=selected_authors.into()
+                        set_selected_authors=set_selected_authors
+                        on_change=Callback::new(move |_| execute_search(()))
+                    />
+                </div>
+
+                // Column 2: Search Results (35%)
+                <div class="w-[35%] flex flex-col bg-white rounded-lg border border-gray-200 overflow-hidden shadow-sm">
+                    <div class="px-4 py-3 border-b border-gray-200 bg-gray-50 flex justify-between items-center">
+                        <h2 class="text-sm font-bold text-gray-700">"Discovery & Context"</h2>
+                        <span class="text-xs text-gray-500">{move || format!("{} found", search_results().len())}</span>
+                    </div>
+                    <ResultsList
+                        results=Signal::derive(search_results)
+                        loading=is_loading.into()
+                        selected_context=selected_context.into()
+                        set_selected_context=set_selected_context
+                        on_preview=Callback::new(move |id| set_selected_document_id.set(Some(id)))
+                    />
+                </div>
+
+                // Column 3: Synthesis & Chat (45%)
+                <div class="md:flex w-[45%] flex-col bg-white rounded-lg border border-gray-200 overflow-hidden shadow-sm">
+                    <ChatPanel
+                        results=Signal::derive(search_results)
+                        search_query=search_query.into()
+                        selected_context=selected_context.into()
+                    />
+                </div>
+            </div>
+
+            <DocumentPreview
+                document_id=selected_document_id
+                on_close=Callback::new(move |_| set_selected_document_id.set(None))
+            />
         </div>
     }
 }

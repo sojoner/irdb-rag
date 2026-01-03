@@ -1,8 +1,9 @@
 use axum::extract::State;
 use axum::Json;
-use rag_chat::api::{self, AppState};
-use rag_chat::types::SearchRequest;
-use rag_chat::indexer::Embedder;
+use rag_chat::api::state::AppState;
+use rag_chat::api::handlers;
+use rag_chat::domain::dtos::SearchRequest;
+use rag_chat::infra::embedder::Embedder;
 use sqlx::postgres::PgPoolOptions;
 use std::sync::{Arc, Mutex};
 
@@ -28,7 +29,11 @@ async fn test_search_syntax_edge_cases() {
 
     let embedder = Embedder::new().expect("Failed to create Embedder");
     let log_buffer = Arc::new(Mutex::new(Vec::new()));
-    let state = AppState::new(pool.clone(), embedder, log_buffer);
+    let leptos_options = leptos::prelude::LeptosOptions::builder()
+        .output_name("rag-chat")
+        .site_root("target/site")
+        .build();
+    let state = AppState::new(pool.clone(), embedder, log_buffer, leptos_options);
 
     // 2. Test Cases
     let test_queries = vec![
@@ -53,9 +58,16 @@ async fn test_search_syntax_edge_cases() {
             date_to: None,
             locations: None,
             keywords: None,
+            authors: None,
+            concepts: None,
+            organizations: None,
+            persons: None,
+            products: None,
+            word_count_min: None,
+            word_count_max: None,
         };
 
-        let result = api::search(State(state.clone()), Json(req)).await;
+        let result = handlers::search(State(state.clone()), Json(req)).await;
         
         match result {
             Ok(_) => println!("Query '{}' succeeded", query),

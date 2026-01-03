@@ -222,3 +222,189 @@ async fn test_docling_pipeline() {
 
     println!("\n✓ Docling pipeline validation complete!");
 }
+
+/// Test LLM API integration
+///
+/// Validates that the LLM API is working correctly with the configured model.
+///
+/// Prerequisites:
+/// - LLM_API_URL, LLM_API_KEY, and LLM_MODEL set in tests/test.env
+#[tokio::test]
+async fn test_llm_api_integration() {
+    // Load test config
+    std::env::remove_var("DATABASE_URL");
+    dotenvy::from_filename("tests/test.env").ok();
+
+    let config = rag_chat::domain::models::LLMConfig {
+        provider: std::env::var("LLM_PROVIDER").unwrap_or_else(|_| "openai".to_string()),
+        model: std::env::var("LLM_MODEL").expect("LLM_MODEL not set in tests/test.env"),
+        api_url: std::env::var("LLM_API_URL").expect("LLM_API_URL not set in tests/test.env"),
+        api_key: std::env::var("LLM_API_KEY").expect("LLM_API_KEY not set in tests/test.env"),
+    };
+
+    println!("Testing LLM API with model: {}", config.model);
+
+    // Test call_llm function
+    let system_prompt = "You are a helpful assistant. Answer concisely.";
+    let user_prompt = "What is 2+2?";
+
+    match rag_chat::infra::llm::call_llm(&config, system_prompt, user_prompt).await {
+        Ok(response) => {
+            println!("✓ LLM API call succeeded");
+            println!("  Response length: {} chars", response.len());
+            println!("  Response: {}", &response[..std::cmp::min(200, response.len())]);
+            assert!(!response.is_empty(), "LLM returned empty response");
+        }
+        Err(e) => {
+            panic!("LLM API call failed: {}", e);
+        }
+    }
+}
+
+/// Test LLM streaming API integration
+///
+/// Validates that the streaming LLM API returns a proper stream of responses.
+///
+/// Prerequisites:
+/// - LLM_API_URL, LLM_API_KEY, and LLM_MODEL set in tests/test.env
+#[tokio::test]
+async fn test_llm_streaming_api() {
+    use futures::stream::StreamExt;
+
+    // Load test config
+    std::env::remove_var("DATABASE_URL");
+    dotenvy::from_filename("tests/test.env").ok();
+
+    let config = rag_chat::domain::models::LLMConfig {
+        provider: std::env::var("LLM_PROVIDER").unwrap_or_else(|_| "openai".to_string()),
+        model: std::env::var("LLM_MODEL").expect("LLM_MODEL not set in tests/test.env"),
+        api_url: std::env::var("LLM_API_URL").expect("LLM_API_URL not set in tests/test.env"),
+        api_key: std::env::var("LLM_API_KEY").expect("LLM_API_KEY not set in tests/test.env"),
+    };
+
+    println!("Testing LLM streaming API with model: {}", config.model);
+
+    let system_prompt = "You are a helpful assistant. Answer concisely.";
+    let user_prompt = "Write a short haiku about AI.";
+
+    match rag_chat::infra::llm::stream_llm(&config, system_prompt, user_prompt).await {
+        Ok(mut stream) => {
+            println!("✓ LLM streaming API call initiated");
+
+            let mut total_chunks = 0;
+            let mut full_response = String::new();
+
+            while let Some(result) = stream.next().await {
+                match result {
+                    Ok(chunk) => {
+                        total_chunks += 1;
+                        full_response.push_str(&chunk);
+                        if total_chunks <= 3 {
+                            println!("  Chunk {}: {} bytes", total_chunks, chunk.len());
+                        }
+                    }
+                    Err(e) => {
+                        println!("  Error in stream: {}", e);
+                        break;
+                    }
+                }
+            }
+
+            println!("✓ LLM streaming completed");
+            println!("  Total chunks: {}", total_chunks);
+            println!("  Total response length: {} chars", full_response.len());
+            println!("  Response: {}", &full_response[..std::cmp::min(200, full_response.len())]);
+
+            assert!(total_chunks > 0, "Stream returned no chunks");
+            assert!(!full_response.is_empty(), "Stream returned empty response");
+        }
+        Err(e) => {
+            panic!("LLM streaming API call failed: {}", e);
+        }
+    }
+}
+
+/// Test chat handler with RAG context
+///
+/// Validates that the chat handler can generate responses with context from documents.
+///
+/// Prerequisites:
+/// - PostgreSQL/ParadeDB running
+/// - Documents indexed in database
+/// - LLM API configured
+#[tokio::test]
+async fn test_chat_with_rag_context() {
+    use axum::extract::State;
+    use axum::Json;
+
+    // Load test config
+    std::env::remove_var("DATABASE_URL");
+    dotenvy::from_filename("tests/test.env").ok();
+
+    let db_url = std::env::var("DATABASE_URL")
+        .expect("DATABASE_URL must be set in tests/test.env");
+
+    // Connect to database
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(5)
+        .connect(&db_url)
+        .await
+        .expect("Failed to connect to database");
+
+    // Check if we have any documents to work with
+    let doc_count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM documents")
+        .fetch_one(&pool)
+        .await
+        .expect("Failed to query documents");
+
+    if doc_count.0 == 0 {
+        println!("⚠ Skipping chat test: no documents in database");
+        println!("  Run test_index_local_pdf first to index documents");
+        return;
+    }
+
+    println!("Found {} documents in database", doc_count.0);
+
+    // Initialize embedder and state
+    let embedder = rag_chat::infra::embedder::Embedder::new()
+        .expect("Failed to create Embedder");
+
+    let log_buffer = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let leptos_options = leptos::prelude::LeptosOptions::builder()
+        .output_name("rag-chat")
+        .site_root("target/site")
+        .build();
+
+    let state = rag_chat::api::state::AppState::new(
+        pool.clone(),
+        embedder,
+        log_buffer,
+        leptos_options,
+    );
+
+    // Create a chat request
+    let req = rag_chat::domain::dtos::ChatRequest {
+        message: "What is the main topic of the documents?".to_string(),
+        context_chunks: 3,
+        document_ids: None,
+        conversation_id: None,
+    };
+
+    println!("Sending chat request: '{}'", req.message);
+
+    match rag_chat::api::handlers::chat(State(state), Json(req)).await {
+        Ok(response) => {
+            println!("✓ Chat API call succeeded");
+            println!("  Conversation ID: {}", response.0.conversation_id);
+            println!("  Response length: {} chars", response.0.message.len());
+            println!("  Sources: {}", response.0.sources.len());
+            println!("  Response: {}", &response.0.message[..std::cmp::min(200, response.0.message.len())]);
+
+            assert!(!response.0.message.is_empty(), "Chat returned empty response");
+            assert!(!response.0.sources.is_empty(), "Chat returned no sources");
+        }
+        Err(e) => {
+            panic!("Chat API call failed: {:?}", e);
+        }
+    }
+}

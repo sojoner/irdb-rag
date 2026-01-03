@@ -1,66 +1,14 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
-use crate::llm::LLMConfig;
 
-// ============================================
-// Shared Data Models
-// ============================================
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct SearchResult {
-    pub id: Uuid,
-    pub title: String,
-    pub content: String,
-    pub source_path: Option<String>,
-    pub category_name: Option<String>,
-    pub bm25_score: f64,
-    pub vector_score: f64,
-    pub combined_score: f64,
-}
+// We need to handle LLMConfig. For now, let's assume it will be in domain::models or we import it.
+// Since we haven't moved LLMConfig yet, we might have a temporary issue.
+// But we are defining the target state.
+// Let's assume LLMConfig is moved to domain::models or domain::config.
+// I will put LLMConfig in domain::models for now to avoid circular deps.
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[allow(dead_code)]
-pub struct Document {
-    pub id: Uuid,
-    pub title: String,
-    pub source_path: Option<String>,
-    pub source_type: String,
-    pub content: String,
-    pub summary: Option<String>,
-    pub author: Option<String>,
-    pub category_id: Option<Uuid>,
-    pub keywords: Option<Vec<String>>,
-    pub locations: Option<Vec<String>>,
-    pub created_at: String, // Using String for simplicity in frontend
-    pub word_count: Option<i32>,
-    pub status: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct Category {
-    pub id: Uuid,
-    pub name: String,
-    pub parent_id: Option<Uuid>,
-    pub description: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[allow(dead_code)]
-pub struct DocumentAsset {
-    pub id: Uuid,
-    pub document_id: Uuid,
-    pub asset_type: String,
-    pub page_number: Option<i32>,
-    pub alt_text: Option<String>,
-    pub caption: Option<String>,
-    pub content_base64: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct DbStats {
-    pub document_count: i64,
-    pub chunk_count: i64,
-}
+use crate::domain::models::LLMConfig; 
 
 // ============================================
 // Request/Response Types
@@ -80,6 +28,13 @@ pub struct SearchRequest {
     pub date_to: Option<String>,
     pub locations: Option<Vec<String>>,
     pub keywords: Option<Vec<String>>,
+    pub authors: Option<Vec<String>>,
+    pub concepts: Option<Vec<String>>,
+    pub organizations: Option<Vec<String>>,
+    pub persons: Option<Vec<String>>,
+    pub products: Option<Vec<String>>,
+    pub word_count_min: Option<i32>,
+    pub word_count_max: Option<i32>,
 }
 
 fn default_limit() -> i32 { 10 }
@@ -104,7 +59,7 @@ pub struct ChatResponse {
     pub sources: Vec<SourceReference>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub struct SourceReference {
     pub document_id: Uuid,
     pub title: String,
@@ -130,14 +85,14 @@ fn default_page_limit() -> i32 { 20 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct SystemStatus {
-    pub db_stats: DbStats,
+    pub db_stats: crate::domain::models::DbStats,
     pub llm_config: LLMConfig,
-    pub embedding_config: EmbeddingConfig,
+    pub embedding_config: EmbeddingInfo, // Renamed from EmbeddingConfig to avoid conflict
     pub env_vars: EnvVars,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct EmbeddingConfig {
+pub struct EmbeddingInfo {
     pub model: String,
     pub chunk_size: usize,
     pub chunk_overlap: usize,
@@ -159,4 +114,24 @@ pub struct UpdateModelRequest {
     pub model: String,
     pub api_url: Option<String>,
     pub api_key: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct EntityStats {
+    pub entity_type: String,
+    pub value: String,
+    pub count: i64,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct AggregationStats {
+    pub categories: Vec<(String, i64)>,
+    pub keywords: Vec<(String, i64)>,
+    pub locations: Vec<(String, i64)>,
+    pub persons: Vec<(String, i64)>,
+    pub organizations: Vec<(String, i64)>,
+    pub products: Vec<(String, i64)>,
+    pub concepts: Vec<(String, i64)>,
+    pub authors: Vec<(String, i64)>,
+    pub word_count_ranges: Vec<(String, i64)>,
 }

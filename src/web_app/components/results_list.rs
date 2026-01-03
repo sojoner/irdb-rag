@@ -1,7 +1,7 @@
 use leptos::*;
 use leptos::prelude::*;
 use uuid::Uuid;
-use crate::types::SearchResult;
+use crate::domain::models::SearchResult;
 
 #[component]
 pub fn ResultsList(
@@ -9,6 +9,7 @@ pub fn ResultsList(
     loading: Signal<bool>,
     selected_context: Signal<Vec<Uuid>>,
     set_selected_context: WriteSignal<Vec<Uuid>>,
+    #[prop(optional)] on_preview: Option<Callback<Uuid>>,
 ) -> impl IntoView {
     let toggle_selection = move |id: Uuid| {
         set_selected_context.update(|ids: &mut Vec<Uuid>| {
@@ -18,6 +19,12 @@ pub fn ResultsList(
                 ids.push(id);
             }
         });
+    };
+
+    let handle_preview_click = move |id: Uuid| {
+        if let Some(callback) = on_preview {
+            callback.run(id);
+        }
     };
 
     view! {
@@ -53,11 +60,10 @@ pub fn ResultsList(
                         let category_name_clone = category_name.clone();
                         
                         view! {
-                            <div class="group bg-white rounded-lg border border-gray-200 shadow-sm hover:shadow-md transition-all cursor-pointer overflow-hidden"
+                            <div class="group bg-white rounded-lg border border-gray-200 shadow-sm hover:shadow-md transition-all overflow-hidden"
                                  class:ring-2=is_selected
                                  class:ring-blue-500=is_selected
-                                 class:border-transparent=is_selected
-                                 on:click=move |_| toggle_selection(id)>
+                                 class:border-transparent=is_selected>
                                 <div class="p-3">
                                     <div class="flex items-start gap-3">
                                         <div class="pt-0.5" on:click:stop_propagation=|_: web_sys::MouseEvent| {}>
@@ -66,22 +72,26 @@ pub fn ResultsList(
                                                    on:change=move |_| toggle_selection(id)
                                                    class="rounded text-blue-600 focus:ring-blue-500 cursor-pointer" />
                                         </div>
-                                        
+
                                         <div class="flex-1 min-w-0">
                                             <div class="flex justify-between items-start gap-2">
-                                                <h3 class="text-sm font-semibold text-blue-700 group-hover:text-blue-800 leading-tight truncate">
-                                                    {res.title}
-                                                </h3>
-                                                <span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-green-100 text-green-800">
+                                                <button
+                                                    class="text-sm font-semibold text-blue-700 group-hover:text-blue-800 leading-tight truncate hover:underline text-left"
+                                                    on:click=move |_| handle_preview_click(id)
+                                                >
+                                                    {res.title.clone()}
+                                                </button>
+                                                <span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-green-100 text-green-800 flex-shrink-0">
                                                     {format!("{:.0}%", res.combined_score * 100.0)}
                                                 </span>
                                             </div>
-                                            
-                                            <p class="text-xs text-gray-600 mt-1 line-clamp-2">
+
+                                            <p class="text-xs text-gray-600 mt-1 line-clamp-2 cursor-pointer hover:text-gray-700"
+                                               on:click=move |_| handle_preview_click(id)>
                                                 {res.content.chars().take(150).collect::<String>()}
                                                 {if res.content.len() > 150 { "..." } else { "" }}
                                             </p>
-                                            
+
                                             <div class="flex items-center gap-2 mt-2 text-[10px] text-gray-400">
                                                 <Show when=move || category_name.is_some()>
                                                     <span class="flex items-center gap-1">
@@ -92,6 +102,15 @@ pub fn ResultsList(
                                                     </span>
                                                     <span>"•"</span>
                                                 </Show>
+                                                <button
+                                                    class="ml-auto text-gray-400 hover:text-gray-600 transition-colors"
+                                                    on:click=move |_| handle_preview_click(id)
+                                                    title="View full details"
+                                                >
+                                                    <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+                                                    </svg>
+                                                </button>
                                             </div>
                                         </div>
                                     </div>

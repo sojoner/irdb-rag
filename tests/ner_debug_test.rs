@@ -1,4 +1,4 @@
-use rag_chat::enricher::Enricher;
+use rag_chat::services::enrichment::Enricher;
 
 #[tokio::test]
 async fn test_ner_extraction_debug() {

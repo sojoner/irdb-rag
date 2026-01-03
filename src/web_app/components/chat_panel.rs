@@ -1,201 +1,271 @@
 use leptos::*;
 use leptos::prelude::*;
-use leptos::html;
-use crate::types::SourceReference;
-
-#[derive(Clone, Debug)]
-pub struct Message {
-    pub id: i64,
-    pub role: String,
-    pub content: String,
-    pub sources: Option<Vec<SourceReference>>,
-}
+use uuid::Uuid;
+use crate::domain::models::SearchResult;
 
 #[component]
 pub fn ChatPanel(
-    messages: Signal<Vec<Message>>,
-    #[allow(unused_variables)]
-    set_messages: WriteSignal<Vec<Message>>,
-    loading: Signal<bool>,
-    on_send: Callback<(String, bool)>, // (message, with_search)
-    on_clear: Callback<()>,
-    context_count: Signal<usize>,
-    auto_context_enabled: Signal<bool>,
-    set_auto_context_enabled: WriteSignal<bool>,
+    results: Signal<Vec<SearchResult>>,
+    search_query: Signal<String>,
+    #[prop(optional)] selected_context: Option<Signal<Vec<Uuid>>>,
+    #[prop(optional)] ai_mode_enabled: Option<Signal<bool>>,
 ) -> impl IntoView {
-    let (input, set_input) = signal(String::new());
-    let chat_container_ref: NodeRef<html::Div> = NodeRef::new();
+    // Suppress unused warning for SSR
+    #[cfg(not(target_arch = "wasm32"))]
+    let _ = &selected_context;
 
-    // Auto-scroll to bottom when messages change
+    let (response_text, set_response_text) = signal(String::new());
+    let (is_streaming, set_is_streaming) = signal(false);
+    let (error_message, set_error_message) = signal(String::new());
+
+    // Trigger chat manually
+    let trigger_synthesis = move |_: web_sys::MouseEvent| {
+        let query = search_query.get();
+        let current_results = results.get();
+
+        if query.trim().is_empty() || current_results.is_empty() {
+            return;
+        }
+
+        set_is_streaming.set(true);
+        set_response_text.set(String::from("Generating synthesis..."));
+        set_error_message.set(String::new());
+
+        // Create a simple fetch request using standard browser APIs
+        #[cfg(target_arch = "wasm32")]
+        {
+            let query_clone = query.clone();
+
+            // Extract document IDs from results or selection
+            let document_ids: Vec<Uuid> = if let Some(selected) = selected_context {
+                let ids = selected.get();
+                if !ids.is_empty() {
+                    ids
+                } else {
+                    current_results.iter().take(5).map(|r| r.id).collect()
+                }
+            } else {
+                current_results.iter().take(5).map(|r| r.id).collect()
+            };
+
+            let chat_message = format!("Please provide a markdown summary of these search results for the query '{}'. Be concise and well-structured.", query_clone);
+
+            // Build the request body
+            let request_body = serde_json::json!({
+                "message": chat_message,
+                "document_ids": document_ids,
+                "context_chunks": 5,
+            });
+
+            leptos::task::spawn_local(async move {
+                let result = fetch_stream("/api/chat/stream", &request_body.to_string(), move |chunk| {
+                    set_response_text.update(|text| text.push_str(&chunk));
+                }).await;
+                
+                match result {
+                    Ok(_) => {
+                        set_is_streaming.set(false);
+                    }
+                    Err(e) => {
+                        set_error_message.set(e);
+                        set_is_streaming.set(false);
+                    }
+                }
+            });
+        }
+    };
+
+    // Auto-trigger synthesis if AI mode is enabled and results change
     Effect::new(move |_| {
-        messages.get(); // dependency
-        if let Some(div) = chat_container_ref.get() {
-            div.set_scroll_top(div.scroll_height());
+        if let Some(ai_enabled) = ai_mode_enabled {
+            if ai_enabled.get() {
+                let current_results = results.get();
+                let query = search_query.get();
+
+                if !query.is_empty() && !current_results.is_empty() && !is_streaming.get() && response_text.get().is_empty() {
+                    // Manually trigger synthesis without needing MouseEvent
+                    #[cfg(target_arch = "wasm32")]
+                    {
+                        set_is_streaming.set(true);
+                        set_response_text.set(String::from("Generating synthesis..."));
+                        set_error_message.set(String::new());
+
+                        let document_ids: Vec<Uuid> = if let Some(selected) = selected_context {
+                            let ids = selected.get();
+                            if !ids.is_empty() {
+                                ids
+                            } else {
+                                current_results.iter().take(5).map(|r| r.id).collect()
+                            }
+                        } else {
+                            current_results.iter().take(5).map(|r| r.id).collect()
+                        };
+
+                        let chat_message = format!("Please provide a markdown summary of these search results for the query '{}'. Be concise and well-structured.", query.clone());
+
+                        let request_body = serde_json::json!({
+                            "message": chat_message,
+                            "document_ids": document_ids,
+                            "context_chunks": 5,
+                        });
+
+                        leptos::task::spawn_local(async move {
+                            let result = fetch_stream("/api/chat/stream", &request_body.to_string(), move |chunk| {
+                                set_response_text.update(|text| text.push_str(&chunk));
+                            }).await;
+
+                            match result {
+                                Ok(_) => {
+                                    set_is_streaming.set(false);
+                                }
+                                Err(e) => {
+                                    set_error_message.set(e);
+                                    set_is_streaming.set(false);
+                                }
+                            }
+                        });
+                    }
+                }
+            }
         }
     });
 
     view! {
-        // Header
-        <header class="px-6 py-4 border-b border-gray-200 bg-white flex justify-between items-center shadow-sm z-10">
-            <div class="flex items-center gap-3">
-                <div class="p-2 bg-purple-100 rounded-lg text-purple-600">
-                    <svg class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z" />
-                    </svg>
-                </div>
-                <div>
-                    <h2 class="text-lg font-bold text-gray-900">"RAG Assistant"</h2>
-                    <div class="flex items-center gap-2 text-xs">
-                        <span class="flex items-center gap-1"
-                              class=("text-green-600", move || context_count.get() > 0)
-                              class=("text-gray-400", move || context_count.get() == 0)>
-                            <span class="w-1.5 h-1.5 rounded-full"
-                                  class=("bg-green-500", move || context_count.get() > 0)
-                                  class=("bg-gray-300", move || context_count.get() == 0)></span>
-                            <span>{move || context_count.get()} " docs in context"</span>
-                        </span>
-                        <span class="text-gray-300">"|"</span>
-                        <label class="flex items-center gap-1 cursor-pointer hover:text-purple-600 transition-colors">
-                            <input type="checkbox"
-                                   prop:checked=auto_context_enabled
-                                   on:change=move |ev| set_auto_context_enabled.set(event_target_checked(&ev))
-                                   class="rounded text-purple-600 focus:ring-purple-500 w-3 h-3" />
-                            <span>"Auto-select top 5"</span>
-                        </label>
-                    </div>
+        <div class="flex flex-col h-full overflow-hidden bg-white">
+            <div class="px-4 py-3 border-b border-gray-200 bg-gray-50 flex justify-between items-center">
+                <h2 class="text-sm font-bold text-gray-700">"Synthesis & Chat"</h2>
+                <div class="flex items-center gap-2">
+                    <Show
+                        when=move || is_streaming.get()
+                        fallback=move || {
+                            view! {
+                                <button
+                                    on:click=trigger_synthesis
+                                    class="px-2 py-1 text-xs bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                                    disabled=move || results.get().is_empty()
+                                >
+                                    "Generate Synthesis"
+                                </button>
+                            }
+                        }
+                    >
+                        <span class="text-xs text-blue-500 animate-pulse">"Generating..."</span>
+                    </Show>
                 </div>
             </div>
-            <button on:click=move |_| on_clear.run(())
-                    class="text-xs text-gray-500 hover:text-red-600 px-3 py-1.5 rounded hover:bg-red-50 transition-colors">
-                "Clear Chat"
-            </button>
-        </header>
 
-        // Chat Area
-        <div class="flex-1 overflow-y-auto p-6 space-y-6 bg-white" node_ref=chat_container_ref>
-            <Show when=move || messages.get().is_empty()>
-                <div class="h-full flex flex-col items-center justify-center text-center opacity-60">
-                    <div class="w-16 h-16 bg-purple-50 rounded-2xl flex items-center justify-center mb-4 text-purple-500">
-                        <svg class="h-8 w-8" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" />
-                        </svg>
-                    </div>
-                    <h3 class="text-lg font-medium text-gray-900">"Ready to help"</h3>
-                    <p class="text-sm text-gray-500 max-w-xs mt-1">"Select documents from the left or just ask a question to get started."</p>
-                </div>
-            </Show>
-
-            <For
-                each=move || messages.get()
-                key=|msg| msg.id
-                children=move |msg| {
-                    let is_user = msg.role == "user";
-                    let (sources_sig, _) = signal(msg.sources.clone());
-                    
-                    view! {
-                        <div class=if is_user { "flex justify-end" } else { "flex justify-start" }>
-                            <div class="max-w-[85%]">
-                                <div class=if is_user {
-                                    "bg-purple-600 text-white rounded-2xl rounded-tr-sm px-5 py-3.5 shadow-sm"
-                                } else {
-                                    "bg-gray-100 text-gray-800 rounded-2xl rounded-tl-sm px-5 py-3.5"
-                                }>
-                                    <p class="text-sm leading-relaxed whitespace-pre-wrap">{msg.content}</p>
-                                </div>
-                                
-                                <Show when=move || sources_sig.get().is_some()>
-                                    <div class="mt-2 ml-2">
-                                        <p class="text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-1">"Sources"</p>
-                                        <div class="flex flex-wrap gap-2">
-                                            <For
-                                                each=move || sources_sig.get().unwrap()
-                                                key=|src| src.document_id
-                                                children=move |src| {
-                                                    view! {
-                                                        <div class="flex items-center gap-1 text-[11px] text-blue-600 bg-blue-50 px-2 py-1 rounded border border-blue-100 hover:bg-blue-100 cursor-pointer transition-colors">
-                                                            <svg class="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 011.414.586l5.414 5.414a1 1 0 01.586 1.414V19a2 2 0 01-2 2z" />
-                                                            </svg>
-                                                            <span class="truncate max-w-[150px]">{src.title}</span>
-                                                        </div>
-                                                    }
-                                                }
-                                            />
-                                        </div>
+            // Content area
+            <div class="flex-1 overflow-y-auto p-4 space-y-4">
+                <Show
+                    when=move || !error_message.get().is_empty()
+                    fallback=move || {
+                        view! {
+                            <Show
+                                when=move || {
+                                    let text = response_text.get();
+                                    let streaming = is_streaming.get();
+                                    text.is_empty() && !streaming
+                                }
+                                fallback=move || view! {
+                                    <div class="prose prose-sm max-w-none text-gray-700 whitespace-pre-wrap leading-relaxed">
+                                        {move || response_text.get()}
                                     </div>
-                                </Show>
-                            </div>
-                        </div>
+                                }
+                            >
+                                <div class="flex items-center justify-center h-full text-gray-400">
+                                    <p class="text-center text-sm">"Run a search to generate synthesis..."</p>
+                                </div>
+                            </Show>
+                        }
                     }
-                }
-            />
-
-            <Show when=move || loading.get()>
-                <div class="flex justify-start">
-                    <div class="bg-gray-100 rounded-2xl rounded-tl-sm px-5 py-3.5 flex items-center gap-2">
-                        <div class="flex space-x-1">
-                            <div class="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style="animation-delay: 0ms"></div>
-                            <div class="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style="animation-delay: 150ms"></div>
-                            <div class="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style="animation-delay: 300ms"></div>
-                        </div>
+                >
+                    <div class="bg-red-50 border border-red-200 rounded-md p-3">
+                        <p class="text-sm text-red-700">{move || error_message.get()}</p>
                     </div>
-                </div>
-            </Show>
+                </Show>
+            </div>
         </div>
+    }
+}
 
-        // Input Area
-        <div class="p-4 bg-white border-t border-gray-200">
-            <div class="relative max-w-4xl mx-auto">
-                <textarea
-                    prop:value=input
-                    on:input=move |ev| set_input.set(event_target_value(&ev))
-                    on:keydown=move |ev: web_sys::KeyboardEvent| {
-                        if ev.key() == "Enter" && !ev.shift_key() {
-                            ev.prevent_default();
-                            if !input.get().trim().is_empty() {
-                                on_send.run((input.get(), false));
-                                set_input.set(String::new());
+#[cfg(target_arch = "wasm32")]
+async fn fetch_stream(url: &str, body: &str, on_chunk: impl Fn(String) + 'static) -> Result<(), String> {
+    use futures::StreamExt;
+    use wasm_streams::ReadableStream;
+    use wasm_bindgen::JsCast;
+    use wasm_bindgen_futures::JsFuture;
+    use wasm_bindgen::JsValue;
+
+    let window = web_sys::window().ok_or("No window")?;
+
+    // Create request options
+    let init = web_sys::RequestInit::new();
+    init.set_method("POST");
+    init.set_body(&JsValue::from_str(body));
+
+    let request = web_sys::Request::new_with_str_and_init(url, &init)
+        .map_err(|_| "Failed to create request".to_string())?;
+
+    request.headers().set("Content-Type", "application/json")
+        .map_err(|_| "Failed to set header".to_string())?;
+
+    // Fetch and convert Promise to Future
+    let promise = window.fetch_with_request(&request);
+    let resp_promise: JsFuture = promise.into();
+    let resp = resp_promise
+        .await
+        .map_err(|_| "Fetch failed".to_string())?;
+
+    let resp = web_sys::Response::from(resp);
+
+    if !resp.ok() {
+        return Err(format!("HTTP {}", resp.status()));
+    }
+
+    let body = resp.body()
+        .ok_or("No response body")?;
+    let stream = ReadableStream::from_raw(body.unchecked_into()).into_stream();
+    let mut stream = stream.map(|chunk| {
+        let chunk = chunk.map_err(|_| "Stream error")?;
+        let chunk = chunk.unchecked_into::<js_sys::Uint8Array>();
+        let vec = chunk.to_vec();
+        String::from_utf8(vec).map_err(|_| "Invalid UTF-8")
+    });
+
+    let mut buffer = String::new();
+
+    while let Some(result) = stream.next().await {
+        match result {
+            Ok(text) => {
+                buffer.push_str(&text);
+                // Process buffer for SSE lines
+                while let Some(pos) = buffer.find('\n') {
+                    let line = buffer[..pos].to_string();
+                    buffer.drain(..=pos); // Remove line and newline
+
+                    if let Some(data) = line.strip_prefix("data: ") {
+                        if let Ok(json) = serde_json::from_str::<serde_json::Value>(data) {
+                            if let Some("chunk") = json.get("type").and_then(|t| t.as_str()) {
+                                if let Some(content) = json.get("content").and_then(|c| c.as_str()) {
+                                    on_chunk(content.to_string());
+                                }
+                            } else if let Some("error") = json.get("type").and_then(|t| t.as_str()) {
+                                if let Some(msg) = json.get("message").and_then(|m| m.as_str()) {
+                                    return Err(msg.to_string());
+                                }
                             }
                         }
                     }
-                    placeholder="Ask a question about the selected documents..."
-                    rows="1"
-                    class="w-full pl-4 pr-24 py-3 bg-gray-50 border border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-purple-500 focus:border-purple-500 resize-none shadow-sm"
-                    style="min-height: 48px; max-height: 120px;"
-                ></textarea>
-                
-                <div class="absolute right-2 bottom-2 flex gap-1">
-                    <button on:click=move |_| {
-                                if !input.get().trim().is_empty() {
-                                    on_send.run((input.get(), true));
-                                    set_input.set(String::new());
-                                }
-                            }
-                            disabled=move || input.get().trim().is_empty() || loading.get()
-                            class="p-2 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-                            title="Search & Ask (Updates results)">
-                        <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-                        </svg>
-                    </button>
-                    <button on:click=move |_| {
-                                if !input.get().trim().is_empty() {
-                                    on_send.run((input.get(), false));
-                                    set_input.set(String::new());
-                                }
-                            }
-                            disabled=move || input.get().trim().is_empty() || loading.get()
-                            class="p-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-                            title="Ask (Keep current results)">
-                        <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />
-                        </svg>
-                    </button>
-                </div>
-            </div>
-            <p class="text-center text-[10px] text-gray-400 mt-2">
-                "AI can make mistakes. Verify important information."
-            </p>
-        </div>
+                }
+            }
+            Err(e) => return Err(e.to_string()),
+        }
     }
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[allow(dead_code)]
+async fn fetch_stream(_url: &str, _body: &str, _on_chunk: impl Fn(String) + 'static) -> Result<(), String> {
+    Err("Client-side only".to_string())
 }

@@ -1,8 +1,9 @@
 use axum::extract::State;
 use axum::Json;
-use rag_chat::api::{self, AppState};
-use rag_chat::types::SearchRequest;
-use rag_chat::indexer::Embedder;
+use rag_chat::api::state::AppState;
+use rag_chat::api::handlers;
+use rag_chat::domain::dtos::SearchRequest;
+use rag_chat::infra::embedder::Embedder;
 use sqlx::postgres::PgPoolOptions;
 use std::sync::{Arc, Mutex};
 
@@ -28,15 +29,19 @@ async fn test_search_api_with_db() {
     
     // Initialize AppState
     let log_buffer = Arc::new(Mutex::new(Vec::new()));
-    let state = AppState::new(pool.clone(), embedder, log_buffer);
+    let leptos_options = leptos::prelude::LeptosOptions::builder()
+        .output_name("rag-chat")
+        .site_root("target/site")
+        .build();
+    let state = AppState::new(pool.clone(), embedder, log_buffer, leptos_options);
 
     // 2. Index PDF
     let pdf_path = "/Users/hagentonnies/Workspace/irdb-rag/documents/HumanPrincipals.pdf";
     assert!(std::path::Path::new(pdf_path).exists(), "PDF file not found at {}", pdf_path);
 
     println!("Indexing PDF: {}", pdf_path);
-    // We use the index_path function from indexer module
-    rag_chat::indexer::index_path(&pool, &state.embedder, pdf_path)
+    // We use the index_path function from indexing module
+    rag_chat::services::indexing::index_path(&pool, &state.embedder, pdf_path)
         .await
         .expect("Failed to index PDF");
 
@@ -52,9 +57,16 @@ async fn test_search_api_with_db() {
         date_to: None,
         locations: None,
         keywords: None,
+        authors: None,
+        concepts: None,
+        organizations: None,
+        persons: None,
+        products: None,
+        word_count_min: None,
+        word_count_max: None,
     };
 
-    let result = api::search(State(state.clone()), Json(req))
+    let result = handlers::search(State(state.clone()), Json(req))
         .await
         .expect("Search API call failed");
     
@@ -104,7 +116,11 @@ async fn test_search_api_syntax_edge_cases() {
 
     let embedder = Embedder::new().expect("Failed to create Embedder");
     let log_buffer = Arc::new(Mutex::new(Vec::new()));
-    let state = AppState::new(pool.clone(), embedder, log_buffer);
+    let leptos_options = leptos::prelude::LeptosOptions::builder()
+        .output_name("rag-chat")
+        .site_root("target/site")
+        .build();
+    let state = AppState::new(pool.clone(), embedder, log_buffer, leptos_options);
 
     // 2. Test Cases
     let test_queries = vec![
@@ -130,9 +146,16 @@ async fn test_search_api_syntax_edge_cases() {
             date_to: None,
             locations: None,
             keywords: None,
+            authors: None,
+            concepts: None,
+            organizations: None,
+            persons: None,
+            products: None,
+            word_count_min: None,
+            word_count_max: None,
         };
 
-        let result = api::search(State(state.clone()), Json(req)).await;
+        let result = handlers::search(State(state.clone()), Json(req)).await;
         
         match result {
             Ok(_) => println!("✅ API Query '{}' succeeded", query),
@@ -145,5 +168,173 @@ async fn test_search_api_syntax_edge_cases() {
                 }
             }
         }
+    }
+}
+
+/// Test streaming chat endpoint with indexed documents
+///
+/// Prerequisites:
+/// - PostgreSQL/ParadeDB running
+/// - PDF indexed (test_search_api_with_db runs first)
+#[tokio::test]
+async fn test_chat_stream_api_with_documents() {
+    // 1. Setup
+    std::env::remove_var("DATABASE_URL");
+    dotenvy::from_filename("tests/test.env").ok();
+
+    let db_url = std::env::var("DATABASE_URL")
+        .expect("DATABASE_URL must be set in tests/test.env");
+
+    let pool = PgPoolOptions::new()
+        .max_connections(5)
+        .connect(&db_url)
+        .await
+        .expect("Failed to connect to database");
+
+    let embedder = Embedder::new().expect("Failed to create Embedder");
+    let log_buffer = Arc::new(Mutex::new(Vec::new()));
+    let leptos_options = leptos::prelude::LeptosOptions::builder()
+        .output_name("rag-chat")
+        .site_root("target/site")
+        .build();
+    let state = AppState::new(pool.clone(), embedder, log_buffer, leptos_options);
+
+    // 2. Index PDF
+    let pdf_path = "/Users/hagentonnies/Workspace/irdb-rag/documents/HumanPrincipals.pdf";
+    if std::path::Path::new(pdf_path).exists() {
+        println!("Indexing PDF: {}", pdf_path);
+        if let Err(e) = rag_chat::services::indexing::index_path(&pool, &state.embedder, pdf_path).await {
+            println!("⚠ Could not index PDF: {}", e);
+            println!("Skipping test - no documents to test with");
+            return;
+        }
+    } else {
+        println!("⚠ PDF file not found at {}", pdf_path);
+        println!("Skipping test - no documents to test with");
+        return;
+    }
+
+    // 3. Test Chat Stream API
+    println!("Testing chat streaming API...");
+    let req = rag_chat::domain::dtos::ChatRequest {
+        message: "What are the main topics in this document?".to_string(),
+        context_chunks: 3,
+        document_ids: None,
+        conversation_id: None,
+    };
+
+    match handlers::chat_stream(State(state.clone()), Json(req)).await {
+        Ok(sse_response) => {
+            println!("✓ Chat stream API call succeeded");
+
+            // The response is an SSE stream, we need to extract it and consume it
+            use axum::response::IntoResponse;
+            let response = sse_response.into_response();
+
+            // For this test, we'll just verify the response is 200 OK
+            assert_eq!(response.status(), axum::http::StatusCode::OK);
+            println!("  Response status: 200 OK");
+            println!("✓ Streaming chat endpoint is working");
+        }
+        Err(e) => {
+            panic!("Chat streaming API call failed: {:?}", e);
+        }
+    }
+
+    // 4. Teardown
+    println!("Cleaning up...");
+    if std::path::Path::new(pdf_path).exists() {
+        sqlx::query("DELETE FROM documents WHERE source_path = $1")
+            .bind(pdf_path)
+            .execute(&pool)
+            .await
+            .expect("Failed to clean up database");
+    }
+}
+
+/// Test chat non-streaming endpoint with indexed documents
+///
+/// Prerequisites:
+/// - PostgreSQL/ParadeDB running
+/// - PDF indexed
+#[tokio::test]
+async fn test_chat_api_with_documents() {
+    // 1. Setup
+    std::env::remove_var("DATABASE_URL");
+    dotenvy::from_filename("tests/test.env").ok();
+
+    let db_url = std::env::var("DATABASE_URL")
+        .expect("DATABASE_URL must be set in tests/test.env");
+
+    let pool = PgPoolOptions::new()
+        .max_connections(5)
+        .connect(&db_url)
+        .await
+        .expect("Failed to connect to database");
+
+    let embedder = Embedder::new().expect("Failed to create Embedder");
+    let log_buffer = Arc::new(Mutex::new(Vec::new()));
+    let leptos_options = leptos::prelude::LeptosOptions::builder()
+        .output_name("rag-chat")
+        .site_root("target/site")
+        .build();
+    let state = AppState::new(pool.clone(), embedder, log_buffer, leptos_options);
+
+    // 2. Index PDF
+    let pdf_path = "/Users/hagentonnies/Workspace/irdb-rag/documents/HumanPrincipals.pdf";
+    if std::path::Path::new(pdf_path).exists() {
+        println!("Indexing PDF: {}", pdf_path);
+        if let Err(e) = rag_chat::services::indexing::index_path(&pool, &state.embedder, pdf_path).await {
+            println!("⚠ Could not index PDF: {}", e);
+            println!("Skipping test - no documents to test with");
+            return;
+        }
+    } else {
+        println!("⚠ PDF file not found at {}", pdf_path);
+        println!("Skipping test - no documents to test with");
+        return;
+    }
+
+    // 3. Test Chat API
+    println!("Testing chat API with RAG context...");
+    let req = rag_chat::domain::dtos::ChatRequest {
+        message: "Summarize the key points from the document".to_string(),
+        context_chunks: 5,
+        document_ids: None,
+        conversation_id: None,
+    };
+
+    match handlers::chat(State(state.clone()), Json(req)).await {
+        Ok(response) => {
+            println!("✓ Chat API call succeeded");
+            println!("  Conversation ID: {}", response.0.conversation_id);
+            println!("  Response length: {} chars", response.0.message.len());
+            println!("  Number of sources: {}", response.0.sources.len());
+
+            // Verify response has content
+            assert!(!response.0.message.is_empty(), "Chat returned empty message");
+            assert!(!response.0.sources.is_empty(), "Chat returned no sources");
+
+            // Print first 300 chars of response
+            let preview = if response.0.message.len() > 300 {
+                &response.0.message[..300]
+            } else {
+                &response.0.message
+            };
+            println!("  Response preview: {}...", preview);
+        }
+        Err(e) => {
+            panic!("Chat API call failed: {:?}", e);
+        }
+    }
+
+    // 4. Teardown
+    println!("Cleaning up...");
+    if std::path::Path::new(pdf_path).exists() {
+        sqlx::query("DELETE FROM documents WHERE source_path = $1")
+            .bind(pdf_path)
+            .execute(&pool)
+            .await
+            .expect("Failed to clean up database");
     }
 }

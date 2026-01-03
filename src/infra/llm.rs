@@ -3,86 +3,9 @@
 //! Handles communication with OpenAI-compatible LLM APIs and embeddings APIs.
 
 use anyhow::Result;
+use futures::stream::BoxStream;
 
-use serde::{Deserialize, Serialize};
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct LLMConfig {
-    pub provider: String,
-    pub api_url: String,
-    pub api_key: String,
-    pub model: String,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[allow(dead_code)]
-pub struct EmbeddingConfig {
-    pub provider: String,
-    pub api_url: String,
-    pub api_key: String,
-    pub model: String,
-    pub dimensions: u32,
-}
-
-impl LLMConfig {
-    pub fn from_env() -> Self {
-        Self {
-            provider: std::env::var("LLM_PROVIDER").unwrap_or_else(|_| "openai".to_string()),
-            api_url: std::env::var("LLM_API_URL").unwrap_or_else(|_| "https://api.openai.com/v1".to_string()),
-            api_key: std::env::var("LLM_API_KEY").unwrap_or_default(),
-            model: std::env::var("LLM_MODEL").unwrap_or_else(|_| "gpt-4".to_string()),
-        }
-    }
-
-    /// Create config for metadata extraction (uses faster, non-reasoning model)
-    pub fn for_metadata() -> Self {
-        Self {
-            provider: std::env::var("METADATA_LLM_PROVIDER")
-                .unwrap_or_else(|_| std::env::var("LLM_PROVIDER").unwrap_or_else(|_| "openai".to_string())),
-            api_url: std::env::var("METADATA_LLM_API_URL")
-                .unwrap_or_else(|_| std::env::var("LLM_API_URL").unwrap_or_else(|_| "https://api.openai.com/v1".to_string())),
-            api_key: std::env::var("METADATA_LLM_API_KEY")
-                .unwrap_or_else(|_| std::env::var("LLM_API_KEY").unwrap_or_default()),
-            model: std::env::var("METADATA_LLM_MODEL")
-                .unwrap_or_else(|_| "ibm/granite-4-h-tiny".to_string()),
-        }
-    }
-
-    /// Create config for NER (Named Entity Recognition)
-    pub fn for_ner() -> Self {
-        Self {
-            provider: std::env::var("NER_LLM_PROVIDER")
-                .unwrap_or_else(|_| std::env::var("METADATA_LLM_PROVIDER")
-                    .unwrap_or_else(|_| std::env::var("LLM_PROVIDER").unwrap_or_else(|_| "openai".to_string()))),
-            api_url: std::env::var("NER_LLM_API_URL")
-                .unwrap_or_else(|_| std::env::var("METADATA_LLM_API_URL")
-                    .unwrap_or_else(|_| std::env::var("LLM_API_URL").unwrap_or_else(|_| "https://api.openai.com/v1".to_string()))),
-            api_key: std::env::var("NER_LLM_API_KEY")
-                .unwrap_or_else(|_| std::env::var("METADATA_LLM_API_KEY")
-                    .unwrap_or_else(|_| std::env::var("LLM_API_KEY").unwrap_or_default())),
-            model: std::env::var("NER_LLM_MODEL")
-                .unwrap_or_else(|_| "google/gemini-3-flash-preview".to_string()),
-        }
-    }
-}
-
-impl EmbeddingConfig {
-    #[allow(dead_code)]
-    pub fn from_env() -> Self {
-        let dimensions = std::env::var("EMBEDDING_DIMENSIONS")
-            .ok()
-            .and_then(|s| s.parse::<u32>().ok())
-            .expect("EMBEDDING_DIMENSIONS environment variable must be set");
-
-        Self {
-            provider: std::env::var("EMBEDDING_PROVIDER").unwrap_or_else(|_| "openai".to_string()),
-            api_url: std::env::var("EMBEDDING_API_URL").unwrap_or_else(|_| "https://api.openai.com/v1".to_string()),
-            api_key: std::env::var("EMBEDDING_API_KEY").unwrap_or_default(),
-            model: std::env::var("EMBEDDING_MODEL").unwrap_or_else(|_| "text-embedding-3-small".to_string()),
-            dimensions,
-        }
-    }
-}
+use crate::domain::models::{LLMConfig, InfraEmbeddingConfig};
 
 /// Call the LLM API with system and user prompts
 pub async fn call_llm(config: &LLMConfig, system: &str, user: &str) -> Result<String> {
@@ -146,16 +69,110 @@ pub async fn call_llm_with_options(
     Ok(content)
 }
 
+/// Stream LLM response using SSE
+pub async fn stream_llm(
+    config: &LLMConfig,
+    system: &str,
+    user: &str,
+) -> Result<BoxStream<'static, Result<String>>> {
+    use std::time::Duration;
+    use futures::stream::StreamExt;
+
+    let timeout = std::env::var("LLM_TIMEOUT_SECONDS")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(300);
+
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(timeout))
+        .connect_timeout(Duration::from_secs(30))
+        .build()?;
+
+    let body = serde_json::json!({
+        "model": config.model,
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user}
+        ],
+        "max_tokens": 2048,
+        "temperature": 0.7,
+        "stream": true
+    });
+
+    let url = format!("{}/chat/completions", config.api_url);
+
+    let response = client
+        .post(&url)
+        .header("Authorization", format!("Bearer {}", config.api_key))
+        .header("Content-Type", "application/json")
+        .json(&body)
+        .send()
+        .await?;
+
+    if !response.status().is_success() {
+        let error = response.text().await?;
+        anyhow::bail!("LLM API error: {}", error);
+    }
+
+    // Use async_stream to simplify streaming with proper line buffering
+    let stream = async_stream::stream! {
+        let mut buffer = Vec::new();
+        let mut bytes_stream = response.bytes_stream();
+
+        while let Some(result) = bytes_stream.next().await {
+            match result {
+                Ok(bytes) => {
+                    buffer.extend_from_slice(&bytes);
+
+                    // Split on \n boundaries to get complete lines
+                    while let Some(pos) = buffer.iter().position(|&b| b == b'\n') {
+                        let line = String::from_utf8_lossy(&buffer[..pos]).to_string();
+                        buffer.drain(..=pos);
+
+                        // Process SSE data lines
+                        if let Some(data) = line.strip_prefix("data: ") {
+                            if data == "[DONE]" {
+                                continue;
+                            }
+
+                            // Parse the JSON chunk from OpenAI API
+                            if let Ok(json) = serde_json::from_str::<serde_json::Value>(data) {
+                                if let Some(choices) = json.get("choices").and_then(|c| c.as_array()) {
+                                    if let Some(choice) = choices.first() {
+                                        if let Some(delta) = choice.get("delta") {
+                                            if let Some(content) = delta.get("content").and_then(|c| c.as_str()) {
+                                                if !content.is_empty() {
+                                                    yield Ok(content.to_string());
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    yield Err(e.into());
+                    break;
+                }
+            }
+        }
+    }.boxed();
+
+    Ok(stream)
+}
+
 /// Generate embeddings for a text string
 #[allow(dead_code)]
-pub async fn get_embedding(config: &EmbeddingConfig, text: &str) -> Result<Vec<f32>> {
+pub async fn get_embedding(config: &InfraEmbeddingConfig, text: &str) -> Result<Vec<f32>> {
     let embeddings = get_embeddings_batch(config, &[text]).await?;
     Ok(embeddings.into_iter().next().unwrap_or_default())
 }
 
 /// Generate embeddings for multiple text strings (batch operation)
 #[allow(dead_code)]
-pub async fn get_embeddings_batch(config: &EmbeddingConfig, texts: &[&str]) -> Result<Vec<Vec<f32>>> {
+pub async fn get_embeddings_batch(config: &InfraEmbeddingConfig, texts: &[&str]) -> Result<Vec<Vec<f32>>> {
     use std::time::Duration;
 
     let timeout = std::env::var("EMBEDDING_TIMEOUT_SECONDS")

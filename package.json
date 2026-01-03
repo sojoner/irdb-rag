@@ -1,0 +1,13 @@
+{
+  "name": "irdb-rag",
+  "version": "0.1.0",
+  "scripts": {
+    "build:css": "npx tailwindcss -i ./src/web_app/style/tailwind.css -o ./static/tailwind.css --minify",
+    "watch:css": "npx tailwindcss -i ./src/web_app/style/tailwind.css -o ./static/tailwind.css --watch"
+  },
+  "devDependencies": {
+    "tailwindcss": "^3.4.0",
+    "postcss": "^8.4.0",
+    "autoprefixer": "^10.4.0"
+  }
+}

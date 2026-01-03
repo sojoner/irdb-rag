@@ -1,5 +1,7 @@
 use anyhow::Result;
-use rag_chat::db::Document;
+use rag_chat::domain::models::Document;
+use rag_chat::infra::db::SearchFilters;
+use rag_chat::infra::db::{create_pool, hybrid_search};
 use sqlx::{PgPool, Row};
 use uuid::Uuid;
 
@@ -9,7 +11,7 @@ async fn setup_db() -> Result<PgPool> {
     dotenvy::from_filename("tests/test.env").ok();
     
     // Use the shared pool creation logic which handles config properly
-    rag_chat::db::create_pool().await
+    create_pool().await
 }
 
 #[tokio::test]
@@ -31,8 +33,8 @@ async fn test_store_and_retrieve_document() -> Result<()> {
     // Using sqlx::query instead of macro to avoid compile-time DB requirement
     sqlx::query(
         r#"
-        INSERT INTO documents (id, title, content, summary, keywords, entities, source_path, source_type, indexed_at)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, 'pdf', $8)
+        INSERT INTO documents (id, title, content, summary, keywords, entities, source_path, source_type, indexed_at, metadata)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, 'pdf', $8, $9)
         "#
     )
     .bind(doc_id)
@@ -43,6 +45,7 @@ async fn test_store_and_retrieve_document() -> Result<()> {
     .bind(&entities)
     .bind(filepath)
     .bind(indexed_at)
+    .bind(serde_json::json!({}))
     .execute(&pool)
     .await?;
 
@@ -161,18 +164,25 @@ async fn test_hybrid_search_syntax() -> Result<()> {
     ];
 
     let dummy_embedding = vec![0.0; 1024]; // Assuming 1024 dim
-    let filters = rag_chat::db::SearchFilters {
+    let filters = SearchFilters {
         category_id: None,
         date_from: None,
         date_to: None,
         locations: None,
         keywords: None,
         source_types: None,
+        authors: None,
+        concepts: None,
+        organizations: None,
+        persons: None,
+        products: None,
+        word_count_min: None,
+        word_count_max: None,
     };
 
     for query in test_queries {
         println!("Testing query: '{}'", query);
-        let result = rag_chat::db::hybrid_search(
+        let result = hybrid_search(
             &pool,
             query,
             &dummy_embedding,

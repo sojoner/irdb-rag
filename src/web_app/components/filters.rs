@@ -1,7 +1,7 @@
 use leptos::*;
 use leptos::prelude::*;
 use uuid::Uuid;
-use crate::types::Category;
+use crate::domain::models::Category;
 
 #[component]
 pub fn Filters(

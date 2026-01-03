@@ -131,10 +131,24 @@ Adjust weights in the UI sidebar:
 - Higher Vector weight → More semantic similarity
 
 ### Filters
+
 - **Category**: Filter by taxonomy (Technology, AI, etc.)
 - **Date Range**: Filter by document date
 - **Location**: Filter by mentioned locations
 - **Keywords**: Filter by extracted keywords
+
+### Document Preview
+
+Click on any search result to open a rich preview modal showing:
+
+- Full document metadata (type, word count, creation date, source)
+- Document summary
+- All extracted keywords (as blue tags)
+- Mentioned locations (as green tags)
+- Full document content (scrollable)
+- Author information
+
+The preview modal takes up 60% of the screen on the right side with a clean, organized layout.
 
 ## 💬 Chat with Documents
 

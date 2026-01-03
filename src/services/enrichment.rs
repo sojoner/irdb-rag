@@ -8,7 +8,8 @@ use serde_json::{json, Value};
 use std::path::Path;
 use uuid::Uuid;
 
-use crate::llm::LLMConfig;
+use crate::domain::models::LLMConfig;
+use crate::infra::llm::{call_llm_with_options};
 
 /// Structured metadata response from LLM
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -405,8 +406,6 @@ impl Enricher {
 
     /// Generate a concise summary of the content
     async fn generate_summary(&self, content: &str, title: &str) -> Result<String> {
-        use crate::llm::call_llm_with_options;
-
         let system = "You are a document summarization assistant. Create concise, informative summaries.";
         let user = format!(
             "Summarize this document in 2-3 sentences. Focus on the main topic and key points.\n\nTitle: {}\n\nContent:\n{}",
@@ -422,8 +421,6 @@ impl Enricher {
 
     /// Extract keywords from content
     async fn extract_keywords(&self, summary: &str, content: &str) -> Result<Vec<String>> {
-        use crate::llm::call_llm_with_options;
-
         let system = "You are a keyword extraction assistant. Extract the most important keywords and topics.";
         let user = format!(
             "Extract 5-8 important keywords or key phrases from this content. Return ONLY a comma-separated list.\n\nSummary: {}\n\nContent preview:\n{}",
@@ -580,8 +577,6 @@ impl Enricher {
         _content: &str,
         metadata: &DocumentMetadata,
     ) -> Result<Option<CategoryClassification>> {
-        use crate::llm::call_llm_with_options;
-
         let summary = metadata.summary.as_deref().unwrap_or("");
         let concepts = metadata
             .entities
@@ -648,8 +643,6 @@ Respond ONLY with a JSON object in this exact format (no markdown, no explanatio
 
     /// Extract named entities using JSON-based prompting with optimized batching
     async fn extract_entities(&self, content: &str) -> Result<Value> {
-        use crate::llm::call_llm_with_options;
-
         let mut all_entities = json!({
             "persons": vec![] as Vec<String>,
             "organizations": vec![] as Vec<String>,

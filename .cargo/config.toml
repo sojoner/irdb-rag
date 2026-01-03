@@ -1,0 +1,6 @@
+[build]
+# Configure getrandom for WASM support
+rustflags = ["--cfg", "getrandom_wasm_js"]
+
+[target.wasm32-unknown-unknown]
+runner = "wasm-bindgen"

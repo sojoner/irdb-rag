@@ -5,9 +5,10 @@
 
 use anyhow::Result;
 use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
-use sqlx::{postgres::PgPoolOptions, PgPool, FromRow};
+use sqlx::{postgres::PgPoolOptions, PgPool};
 use uuid::Uuid;
+
+use crate::domain::models::{Document, DocumentChunk, DocumentAsset, Category, SearchResult};
 
 /// Get embedding dimensions from environment (required)
 /// This must match the embedding model's output dimension
@@ -65,68 +66,10 @@ pub async fn create_pool() -> Result<PgPool> {
 }
 
 // ============================================
-// Data Models
+// Hybrid Search
 // ============================================
 
-#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
-pub struct Document {
-    pub id: Uuid,
-    pub title: String,
-    pub source_path: Option<String>,
-    pub source_type: String,
-    pub content: String,
-    pub summary: Option<String>,
-    pub author: Option<String>,
-    pub category_id: Option<Uuid>,
-    pub keywords: Option<Vec<String>>,
-    pub locations: Option<Vec<String>>,
-    pub created_at: DateTime<Utc>,
-    pub word_count: Option<i32>,
-    pub status: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
-pub struct DocumentChunk {
-    pub id: Uuid,
-    pub document_id: Uuid,
-    pub chunk_index: i32,
-    pub content: String,
-    pub page_number: Option<i32>,
-    pub section_title: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
-pub struct DocumentAsset {
-    pub id: Uuid,
-    pub document_id: Uuid,
-    pub asset_type: String,
-    pub page_number: Option<i32>,
-    pub alt_text: Option<String>,
-    pub caption: Option<String>,
-    pub content_base64: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
-pub struct Category {
-    pub id: Uuid,
-    pub name: String,
-    pub parent_id: Option<Uuid>,
-    pub description: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
-pub struct SearchResult {
-    pub id: Uuid,
-    pub title: String,
-    pub content: String,
-    pub source_path: Option<String>,
-    pub category_name: Option<String>,
-    pub bm25_score: f64,
-    pub vector_score: f64,
-    pub combined_score: f64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct SearchFilters {
     pub category_id: Option<Uuid>,
     pub date_from: Option<DateTime<Utc>>,
@@ -134,11 +77,14 @@ pub struct SearchFilters {
     pub locations: Option<Vec<String>>,
     pub keywords: Option<Vec<String>>,
     pub source_types: Option<Vec<String>>,
+    pub authors: Option<Vec<String>>,
+    pub concepts: Option<Vec<String>>,
+    pub organizations: Option<Vec<String>>,
+    pub persons: Option<Vec<String>>,
+    pub products: Option<Vec<String>>,
+    pub word_count_min: Option<i32>,
+    pub word_count_max: Option<i32>,
 }
-
-// ============================================
-// Hybrid Search
-// ============================================
 
 /// Perform hybrid search combining BM25 and vector similarity
 pub async fn hybrid_search(
@@ -198,10 +144,10 @@ pub async fn hybrid_search(
         dims
     );
 
-    let results = sqlx::query_as::<_, SearchResult>(&sql)
+    let mut results = sqlx::query_as::<_, SearchResult>(&sql)
         .bind(sanitized_query)
         .bind(&embedding_str)
-        .bind(limit)
+        .bind(limit * 3) // Get more results for post-filtering
         .bind(bm25_weight)
         .bind(vector_weight)
         .bind(filters.category_id)
@@ -212,7 +158,141 @@ pub async fn hybrid_search(
         .fetch_all(pool)
         .await?;
 
+    // Apply entity and word count filters by fetching full documents and filtering in-memory
+    if filters.authors.is_some()
+        || filters.concepts.is_some()
+        || filters.organizations.is_some()
+        || filters.persons.is_some()
+        || filters.products.is_some()
+        || filters.word_count_min.is_some()
+        || filters.word_count_max.is_some() {
+
+        // Get full documents for filtering
+        let result_ids: Vec<Uuid> = results.iter().map(|r| r.id).collect();
+        let docs = get_documents_by_ids(pool, &result_ids).await?;
+
+        results.retain(|r| {
+            if let Some(doc) = docs.iter().find(|d| d.id == r.id) {
+                // Check author filter
+                if let Some(ref authors) = filters.authors {
+                    if let Some(ref author) = doc.author {
+                        if !authors.iter().any(|a| a == author) {
+                            return false;
+                        }
+                    } else {
+                        return false;
+                    }
+                }
+
+                // Check word count filter
+                if let Some(min) = filters.word_count_min {
+                    if let Some(wc) = doc.word_count {
+                        if wc < min {
+                            return false;
+                        }
+                    } else {
+                        return false;
+                    }
+                }
+                if let Some(max) = filters.word_count_max {
+                    if let Some(wc) = doc.word_count {
+                        if wc > max {
+                            return false;
+                        }
+                    } else {
+                        return false;
+                    }
+                }
+
+                // Check entity filters (concepts, organizations, persons, products)
+                if let Some(ref entities_obj) = doc.entities {
+                    if let Some(ref concepts) = filters.concepts {
+                        if let Some(entity_concepts) = entities_obj.get("concepts").and_then(|v| v.as_array()) {
+                            let entity_strs: Vec<String> = entity_concepts.iter()
+                                .filter_map(|v| v.as_str())
+                                .map(|s| s.to_string())
+                                .collect();
+                            if !concepts.iter().any(|c| entity_strs.contains(c)) {
+                                return false;
+                            }
+                        } else {
+                            return false;
+                        }
+                    }
+
+                    if let Some(ref orgs) = filters.organizations {
+                        if let Some(entity_orgs) = entities_obj.get("organizations").and_then(|v| v.as_array()) {
+                            let entity_strs: Vec<String> = entity_orgs.iter()
+                                .filter_map(|v| v.as_str())
+                                .map(|s| s.to_string())
+                                .collect();
+                            if !orgs.iter().any(|o| entity_strs.contains(o)) {
+                                return false;
+                            }
+                        } else {
+                            return false;
+                        }
+                    }
+
+                    if let Some(ref persons) = filters.persons {
+                        if let Some(entity_persons) = entities_obj.get("persons").and_then(|v| v.as_array()) {
+                            let entity_strs: Vec<String> = entity_persons.iter()
+                                .filter_map(|v| v.as_str())
+                                .map(|s| s.to_string())
+                                .collect();
+                            if !persons.iter().any(|p| entity_strs.contains(p)) {
+                                return false;
+                            }
+                        } else {
+                            return false;
+                        }
+                    }
+
+                    if let Some(ref products) = filters.products {
+                        if let Some(entity_products) = entities_obj.get("products").and_then(|v| v.as_array()) {
+                            let entity_strs: Vec<String> = entity_products.iter()
+                                .filter_map(|v| v.as_str())
+                                .map(|s| s.to_string())
+                                .collect();
+                            if !products.iter().any(|pr| entity_strs.contains(pr)) {
+                                return false;
+                            }
+                        } else {
+                            return false;
+                        }
+                    }
+                }
+
+                true
+            } else {
+                true // Keep results that we couldn't fetch full documents for
+            }
+        });
+    }
+
+    // Truncate to requested limit
+    results.truncate(limit as usize);
+
     Ok(results)
+}
+
+/// Get documents by list of IDs
+async fn get_documents_by_ids(pool: &PgPool, ids: &[Uuid]) -> Result<Vec<Document>> {
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let docs = sqlx::query_as::<_, Document>(
+        r#"
+        SELECT d.* FROM documents d
+        WHERE d.id = ANY($1)
+        "#
+    )
+    .bind(ids)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(docs)
 }
 
 /// Simple BM25-only search
@@ -473,16 +553,10 @@ pub async fn get_relevant_chunks(
     Ok(chunks)
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
-pub struct DbStats {
-    pub document_count: i64,
-    pub chunk_count: i64,
-}
-
-pub async fn get_db_stats(pool: &PgPool) -> Result<DbStats> {
-    let stats = sqlx::query_as::<_, DbStats>(
+pub async fn get_db_stats(pool: &PgPool) -> Result<crate::domain::models::DbStats> {
+    let stats = sqlx::query_as::<_, crate::domain::models::DbStats>(
         r#"
-        SELECT 
+        SELECT
             (SELECT COUNT(*) FROM documents) as document_count,
             (SELECT COUNT(*) FROM document_chunks) as chunk_count
         "#
@@ -491,4 +565,163 @@ pub async fn get_db_stats(pool: &PgPool) -> Result<DbStats> {
     .await?;
 
     Ok(stats)
+}
+
+pub async fn get_aggregation_stats(pool: &PgPool) -> Result<crate::domain::dtos::AggregationStats> {
+    // Get categories with counts
+    let categories_rows = sqlx::query_as::<_, (String, i64)>(
+        r#"
+        SELECT c.name, COUNT(d.id) as count
+        FROM categories c
+        LEFT JOIN documents d ON c.id = d.category_id
+        GROUP BY c.id, c.name
+        ORDER BY count DESC
+        LIMIT 10
+        "#
+    )
+    .fetch_all(pool)
+    .await?;
+
+    // Get keywords with counts
+    let keywords_rows = sqlx::query_as::<_, (String, i64)>(
+        r#"
+        SELECT keyword, COUNT(*) as count
+        FROM (
+            SELECT UNNEST(keywords) as keyword
+            FROM documents
+            WHERE keywords IS NOT NULL
+        ) t
+        GROUP BY keyword
+        ORDER BY count DESC
+        LIMIT 10
+        "#
+    )
+    .fetch_all(pool)
+    .await?;
+
+    // Get locations with counts
+    let locations_rows = sqlx::query_as::<_, (String, i64)>(
+        r#"
+        SELECT location, COUNT(*) as count
+        FROM (
+            SELECT UNNEST(locations) as location
+            FROM documents
+            WHERE locations IS NOT NULL
+        ) t
+        GROUP BY location
+        ORDER BY count DESC
+        LIMIT 10
+        "#
+    )
+    .fetch_all(pool)
+    .await?;
+
+    // Get entity counts from JSONB entities field
+    let entities_rows = sqlx::query_as::<_, (String, String, i64)>(
+        r#"
+        SELECT
+            entity_type,
+            entity_value,
+            COUNT(*) as count
+        FROM (
+            SELECT
+                'persons' as entity_type,
+                jsonb_array_elements(entities->'persons')::text as entity_value
+            FROM documents
+            WHERE entities->'persons' IS NOT NULL
+            UNION ALL
+            SELECT
+                'organizations' as entity_type,
+                jsonb_array_elements(entities->'organizations')::text as entity_value
+            FROM documents
+            WHERE entities->'organizations' IS NOT NULL
+            UNION ALL
+            SELECT
+                'products' as entity_type,
+                jsonb_array_elements(entities->'products')::text as entity_value
+            FROM documents
+            WHERE entities->'products' IS NOT NULL
+            UNION ALL
+            SELECT
+                'concepts' as entity_type,
+                jsonb_array_elements(entities->'concepts')::text as entity_value
+            FROM documents
+            WHERE entities->'concepts' IS NOT NULL
+        ) t
+        GROUP BY entity_type, entity_value
+        ORDER BY entity_type, count DESC
+        "#
+    )
+    .fetch_all(pool)
+    .await?;
+
+    // Organize entities by type
+    let mut persons = Vec::new();
+    let mut organizations = Vec::new();
+    let mut products = Vec::new();
+    let mut concepts = Vec::new();
+
+    for (entity_type, entity_value, count) in entities_rows {
+        let cleaned_value = entity_value.trim_matches('"').to_string();
+        match entity_type.as_str() {
+            "persons" => persons.push((cleaned_value, count)),
+            "organizations" => organizations.push((cleaned_value, count)),
+            "products" => products.push((cleaned_value, count)),
+            "concepts" => concepts.push((cleaned_value, count)),
+            _ => {}
+        }
+    }
+
+    // Limit to top 10 per entity type
+    persons.truncate(10);
+    organizations.truncate(10);
+    products.truncate(10);
+    concepts.truncate(10);
+
+    // Get authors with counts
+    let authors_rows = sqlx::query_as::<_, (String, i64)>(
+        r#"
+        SELECT author, COUNT(*) as count
+        FROM documents
+        WHERE author IS NOT NULL AND author != ''
+        GROUP BY author
+        ORDER BY count DESC
+        LIMIT 20
+        "#
+    )
+    .fetch_all(pool)
+    .await?;
+
+    // Get word count ranges
+    let word_count_rows = sqlx::query_as::<_, (String, i64)>(
+        r#"
+        SELECT
+            CASE
+                WHEN word_count < 500 THEN 'Very Short (< 500 words)'
+                WHEN word_count < 2000 THEN 'Short (500-2K words)'
+                WHEN word_count < 5000 THEN 'Medium (2K-5K words)'
+                WHEN word_count < 10000 THEN 'Long (5K-10K words)'
+                ELSE 'Very Long (> 10K words)'
+            END as range,
+            COUNT(*) as count
+        FROM documents
+        WHERE word_count IS NOT NULL
+        GROUP BY range
+        ORDER BY COUNT(*) DESC
+        "#
+    )
+    .fetch_all(pool)
+    .await?;
+
+    Ok(crate::domain::dtos::AggregationStats {
+        categories: categories_rows,
+        keywords: keywords_rows,
+        locations: locations_rows,
+        persons,
+        organizations,
+        products,
+        concepts,
+        authors: authors_rows,
+        word_count_ranges: word_count_rows,
+    })
 }

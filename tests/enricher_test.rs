@@ -1,4 +1,4 @@
-use rag_chat::enricher::{enrich_chunk, Enricher};
+use rag_chat::services::enrichment::{enrich_chunk, Enricher};
 
 #[test]
 fn test_enrich_chunk() {
@@ -64,7 +64,7 @@ async fn test_enrich_file_integration() {
     }
     assert!(result.is_ok(), "Enrichment should succeed: {:?}", result.as_ref().err());
 
-    let (content, metadata) = result.unwrap();
+    let (content, metadata): (String, rag_chat::services::enrichment::DocumentMetadata) = result.unwrap();
 
     // Verify content was extracted
     assert!(!content.is_empty(), "Content should not be empty");
