@@ -27,7 +27,8 @@ lopdf = "0.35"
 pulldown-cmark = "0.13"
 comrak = "0.30"  # Markdown parser
 image = "0.25"
-text-splitter = "0.10"
+text-splitter = "0.29"
+unicode-segmentation = "1.12"
 
 # LLM API clients
 reqwest = { version = "0.12", features = ["json", "stream"] }

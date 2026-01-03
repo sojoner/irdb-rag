@@ -57,14 +57,18 @@ RUST_LOG=info cargo run
 
 ## 📄 Index Documents
 
-### Index a PDF
+### Index a single file
 ```bash
-cargo run -- index --path ./docs/my-presentation.pdf
+cargo run -- index --path ./documents/my-presentation.pdf
 ```
 
-### Index a Markdown file
+### Index an entire directory (with progress tracking)
 ```bash
-cargo run -- index --path ./docs/notes.md
+# Basic indexing with progress
+cargo run -- index --path ./documents
+
+# With debug logging to see enriched metadata
+RUST_LOG=debug cargo run -- index --path ./documents
 ```
 
 ### Index a URL
@@ -72,10 +76,50 @@ cargo run -- index --path ./docs/notes.md
 cargo run -- index --url https://example.com/whitepaper.pdf
 ```
 
-### Watch folders for changes
+### Watch folders for real-time indexing
 ```bash
-cargo run -- watch --folders ./docs,./presentations
+cargo run -- watch --folders ./documents
 ```
+
+### Progress Output
+
+The indexer shows detailed progress:
+```
+📚 Found 50 documents to index (1250.45 MB total)
+
+┌─ Document 1/50: guide.pdf (0.45 MB)
+  ├─ Stage 1/5: Extracting & enriching content...
+  │   ✓ Duration: 2.34s
+  │   📄 Title: Platform Engineering Guide
+  │   📝 Summary: A comprehensive guide to building platform...
+  │   🔑 Keywords: ["platform", "engineering", "kubernetes"]
+  │   👥 Entities: { "persons": [...], "organizations": [...] }
+  ├─ Stage 2/5: Chunking content...
+  │   ✓ Duration: 0.12s | Created 15 chunks
+  ├─ Stage 3/5: Enriching chunks...
+  │   ✓ Duration: 0.08s
+  ├─ Stage 4/5: Generating embeddings...
+  │   ✓ Duration: 3.45s | Embedded 16 items
+  └─ Stage 5/5: Storing in database...
+      ✓ Duration: 0.34s | Stored document #1
+  ⏱️  Total time: 6.33s
+
+└─ ✓ Completed
+
+... (more documents)
+
+🎉 Indexing complete: 50 documents processed (1250.45 MB total)
+```
+
+**Features:**
+- ✅ **Document Progress**: `Document X/Y` shows overall progress
+- ✅ **5-Stage Pipeline**: Extract → Chunk → Enrich → Embed → Store
+- ✅ **Timing Data**: Duration for each stage and total time
+- ✅ **Bin Packing**: Smaller files processed first for quicker visible progress
+- ✅ **Debug Traces**: `RUST_LOG=debug` shows:
+  - Extracted title, summary, keywords
+  - All named entities (persons, organizations, products, locations, concepts)
+  - Formatted JSON of enriched metadata
 
 ## 🔍 Search Features
 

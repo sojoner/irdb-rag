@@ -9,13 +9,12 @@ use axum::{
     response::{Html, IntoResponse, Response},
     Json,
 };
-use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 use std::sync::{Arc, Mutex};
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
-use crate::{db, indexer::Embedder, llm::{self, LLMConfig}};
+use crate::{db, indexer::Embedder, llm::{self, LLMConfig}, types::*};
 
 // ============================================
 // App State
@@ -39,72 +38,6 @@ impl AppState {
         }
     }
 }
-
-// ============================================
-// Request/Response Types
-// ============================================
-
-#[derive(Debug, Deserialize)]
-pub struct SearchRequest {
-    pub query: String,
-    #[serde(default = "default_limit")]
-    pub limit: i32,
-    #[serde(default = "default_bm25_weight")]
-    pub bm25_weight: f64,
-    #[serde(default = "default_vector_weight")]
-    pub vector_weight: f64,
-    pub category_id: Option<Uuid>,
-    pub date_from: Option<String>,
-    pub date_to: Option<String>,
-    pub locations: Option<Vec<String>>,
-    pub keywords: Option<Vec<String>>,
-}
-
-fn default_limit() -> i32 { 10 }
-fn default_bm25_weight() -> f64 { 0.5 }
-fn default_vector_weight() -> f64 { 0.5 }
-
-#[derive(Debug, Deserialize)]
-pub struct ChatRequest {
-    pub message: String,
-    pub conversation_id: Option<Uuid>,
-    #[serde(default = "default_context_chunks")]
-    pub context_chunks: i32,
-    pub document_ids: Option<Vec<Uuid>>,
-}
-
-fn default_context_chunks() -> i32 { 5 }
-
-#[derive(Debug, Serialize)]
-pub struct ChatResponse {
-    pub message: String,
-    pub conversation_id: Uuid,
-    pub sources: Vec<SourceReference>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct SourceReference {
-    pub document_id: Uuid,
-    pub title: String,
-    pub chunk: String,
-    pub relevance: f64,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct IndexRequest {
-    pub path: Option<String>,
-    pub url: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct ListQuery {
-    #[serde(default = "default_page_limit")]
-    pub limit: i32,
-    #[serde(default)]
-    pub offset: i32,
-}
-
-fn default_page_limit() -> i32 { 20 }
 
 // ============================================
 // API Handlers
@@ -297,43 +230,6 @@ pub async fn index_document(
     Ok(Json(serde_json::json!({ "status": "indexed" })))
 }
 
-// ============================================
-// System Status & Config
-// ============================================
-
-#[derive(Debug, Serialize)]
-pub struct SystemStatus {
-    pub db_stats: db::DbStats,
-    pub llm_config: LLMConfig,
-    pub embedding_config: EmbeddingConfig,
-    pub env_vars: EnvVars,
-}
-
-#[derive(Debug, Serialize)]
-pub struct EmbeddingConfig {
-    pub model: String,
-    pub chunk_size: usize,
-    pub chunk_overlap: usize,
-}
-
-#[derive(Debug, Serialize)]
-pub struct EnvVars {
-    pub database_url: String,
-    pub llm_provider: String,
-    pub llm_model: String,
-    pub llm_api_url: String,
-    pub embedding_api_url: String,
-    pub docling_url: String,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct UpdateModelRequest {
-    pub provider: String,
-    pub model: String,
-    pub api_url: Option<String>,
-    pub api_key: Option<String>,
-}
-
 /// Get system status and configuration
 pub async fn get_status(
     State(state): State<AppState>,
@@ -345,7 +241,10 @@ pub async fn get_status(
     let config = state.llm_config.read().await.clone();
 
     Ok(Json(SystemStatus {
-        db_stats,
+        db_stats: crate::types::DbStats {
+            document_count: db_stats.document_count,
+            chunk_count: db_stats.chunk_count,
+        },
         llm_config: config.clone(),
         embedding_config: EmbeddingConfig {
             model: state.embedder.get_model_name().to_string(),

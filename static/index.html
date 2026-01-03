@@ -362,19 +362,30 @@
             <div class="p-4 bg-white border-t border-gray-200">
                 <div class="relative max-w-4xl mx-auto">
                     <textarea x-model="chatInput"
-                              @keydown.enter.prevent="if (!$event.shiftKey) sendChat()"
+                              @keydown.enter.prevent="if (!$event.shiftKey) sendChat(false)"
                               placeholder="Ask a question about the selected documents..."
                               rows="1"
-                              class="w-full pl-4 pr-12 py-3 bg-gray-50 border border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-purple-500 focus:border-purple-500 resize-none shadow-sm"
+                              class="w-full pl-4 pr-24 py-3 bg-gray-50 border border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-purple-500 focus:border-purple-500 resize-none shadow-sm"
                               style="min-height: 48px; max-height: 120px;"></textarea>
                     
-                    <button @click="sendChat()"
-                            :disabled="!chatInput.trim() || chatLoading"
-                            class="absolute right-2 bottom-2 p-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors">
-                        <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />
-                        </svg>
-                    </button>
+                    <div class="absolute right-2 bottom-2 flex gap-1">
+                        <button @click="sendChat(true)"
+                                :disabled="!chatInput.trim() || chatLoading"
+                                class="p-2 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                                title="Search & Ask (Updates results)">
+                            <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                            </svg>
+                        </button>
+                        <button @click="sendChat(false)"
+                                :disabled="!chatInput.trim() || chatLoading"
+                                class="p-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                                title="Ask (Keep current results)">
+                            <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />
+                            </svg>
+                        </button>
+                    </div>
                 </div>
                 <p class="text-center text-[10px] text-gray-400 mt-2">
                     AI can make mistakes. Verify important information.
@@ -639,10 +650,17 @@
                     return this.results.filter(r => this.selectedForContext.includes(r.id));
                 },
 
-                async sendChat() {
+                async sendChat(withSearch = false) {
                     if (!this.chatInput.trim()) return;
 
                     const userMessage = this.chatInput.trim();
+
+                    // Sync Search Logic
+                    if (withSearch) {
+                        this.searchQuery = userMessage;
+                        await this.search();
+                    }
+
                     this.messages.push({
                         id: Date.now(),
                         role: 'user',

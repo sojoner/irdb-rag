@@ -1,11 +1,11 @@
 use anyhow::Result;
-use text_splitter::TextSplitter;
+use text_splitter::{ChunkConfig, TextSplitter};
 
 fn chunk_text(text: &str, target_tokens: usize) -> Vec<String> {
-    let splitter = TextSplitter::default().with_trim_chunks(true);
-    splitter
-        .chunks(text, target_tokens)
-        .map(|s| s.to_string())
+    let splitter = TextSplitter::new(ChunkConfig::new(target_tokens).with_trim(true));
+
+    splitter.chunks(text)
+        .map(|s: &str| s.to_string())
         .collect()
 }
 

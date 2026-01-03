@@ -5,11 +5,16 @@ CREATE EXTENSION pg_search;
 
 SET search_path TO public, paradedb;
 
--- Drop existing function to avoid return type conflict
+-- Drop existing tables and functions to recreate with correct schema
 DROP FUNCTION IF EXISTS hybrid_search(text,vector,integer,double precision,double precision,uuid,timestamp with time zone,timestamp with time zone,text[],text[]);
+DROP TABLE IF EXISTS document_chunks CASCADE;
+DROP TABLE IF EXISTS document_assets CASCADE;
+DROP TABLE IF EXISTS documents CASCADE;
 
 -- Documents table
-CREATE TABLE IF NOT EXISTS documents (
+-- Note: EMBEDDING_DIMENSIONS should match the embedding model's output dimension
+-- Default: 4096 for Qwen3-Embedding-8B (supports MRL for custom dimensions 32-4096)
+CREATE TABLE documents (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     title TEXT NOT NULL,
     content TEXT NOT NULL,
@@ -27,11 +32,11 @@ CREATE TABLE IF NOT EXISTS documents (
     status TEXT DEFAULT 'pending',
     entities JSONB,
     metadata JSONB,
-    embedding VECTOR(1024)
+    embedding VECTOR(${EMBEDDING_DIMENSIONS})
 );
 
 -- Document chunks
-CREATE TABLE IF NOT EXISTS document_chunks (
+CREATE TABLE document_chunks (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     document_id UUID REFERENCES documents(id) ON DELETE CASCADE,
     chunk_index INTEGER NOT NULL,
@@ -39,12 +44,12 @@ CREATE TABLE IF NOT EXISTS document_chunks (
     page_number INTEGER,
     section_title TEXT,
     token_count INTEGER,
-    embedding VECTOR(1024),
+    embedding VECTOR(${EMBEDDING_DIMENSIONS}),
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
 -- Document assets
-CREATE TABLE IF NOT EXISTS document_assets (
+CREATE TABLE document_assets (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     document_id UUID REFERENCES documents(id) ON DELETE CASCADE,
     asset_type TEXT NOT NULL,
@@ -57,7 +62,7 @@ CREATE TABLE IF NOT EXISTS document_assets (
 );
 
 -- Categories
-CREATE TABLE IF NOT EXISTS categories (
+CREATE TABLE categories (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     name TEXT NOT NULL UNIQUE,
     description TEXT,
@@ -65,7 +70,7 @@ CREATE TABLE IF NOT EXISTS categories (
 );
 
 -- Conversations (for chat history)
-CREATE TABLE IF NOT EXISTS conversations (
+CREATE TABLE conversations (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     title TEXT,
     created_at TIMESTAMPTZ DEFAULT NOW(),
@@ -73,7 +78,7 @@ CREATE TABLE IF NOT EXISTS conversations (
 );
 
 -- Messages
-CREATE TABLE IF NOT EXISTS messages (
+CREATE TABLE messages (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     conversation_id UUID REFERENCES conversations(id) ON DELETE CASCADE,
     role TEXT NOT NULL,
@@ -96,7 +101,7 @@ CREATE INDEX ON document_chunks USING hnsw (embedding vector_cosine_ops);
 -- Hybrid Search Function
 CREATE OR REPLACE FUNCTION hybrid_search(
   query_text TEXT,
-  query_embedding VECTOR(1024),
+  query_embedding VECTOR(${EMBEDDING_DIMENSIONS}),
   match_count INT,
   bm25_weight FLOAT,
   vector_weight FLOAT,

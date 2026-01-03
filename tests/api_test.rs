@@ -1,6 +1,7 @@
 use axum::extract::State;
 use axum::Json;
-use rag_chat::api::{self, AppState, SearchRequest};
+use rag_chat::api::{self, AppState};
+use rag_chat::types::SearchRequest;
 use rag_chat::indexer::Embedder;
 use sqlx::postgres::PgPoolOptions;
 use std::sync::{Arc, Mutex};

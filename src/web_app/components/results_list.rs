@@ -1,0 +1,106 @@
+use leptos::*;
+use leptos::prelude::*;
+use uuid::Uuid;
+use crate::types::SearchResult;
+
+#[component]
+pub fn ResultsList(
+    results: Signal<Vec<SearchResult>>,
+    loading: Signal<bool>,
+    selected_context: Signal<Vec<Uuid>>,
+    set_selected_context: WriteSignal<Vec<Uuid>>,
+) -> impl IntoView {
+    let toggle_selection = move |id: Uuid| {
+        set_selected_context.update(|ids: &mut Vec<Uuid>| {
+            if let Some(pos) = ids.iter().position(|x| *x == id) {
+                ids.remove(pos);
+            } else {
+                ids.push(id);
+            }
+        });
+    };
+
+    view! {
+        <div class="flex-1 overflow-y-auto bg-gray-100 p-4">
+            <Show when=move || loading.get()>
+                <div class="flex flex-col items-center justify-center h-32 text-gray-500">
+                    <svg class="animate-spin h-6 w-6 mb-2" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                    </svg>
+                    <span class="text-xs">"Searching..."</span>
+                </div>
+            </Show>
+
+            <Show when=move || !loading.get() && results.get().is_empty()>
+                <div class="flex flex-col items-center justify-center h-64 text-gray-400">
+                    <svg class="h-12 w-12 mb-2 opacity-20" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                    </svg>
+                    <p class="text-sm">"No results found"</p>
+                </div>
+            </Show>
+
+            <div class="space-y-3">
+                <For
+                    each=move || results.get()
+                    key=|res| res.id
+                    children=move |res| {
+                        let id = res.id;
+                        let is_selected = move || selected_context.get().contains(&id);
+                        let category_name = res.category_name.clone();
+                        
+                        let category_name_clone = category_name.clone();
+                        
+                        view! {
+                            <div class="group bg-white rounded-lg border border-gray-200 shadow-sm hover:shadow-md transition-all cursor-pointer overflow-hidden"
+                                 class:ring-2=is_selected
+                                 class:ring-blue-500=is_selected
+                                 class:border-transparent=is_selected
+                                 on:click=move |_| toggle_selection(id)>
+                                <div class="p-3">
+                                    <div class="flex items-start gap-3">
+                                        <div class="pt-0.5" on:click:stop_propagation=|_: web_sys::MouseEvent| {}>
+                                            <input type="checkbox"
+                                                   prop:checked=is_selected
+                                                   on:change=move |_| toggle_selection(id)
+                                                   class="rounded text-blue-600 focus:ring-blue-500 cursor-pointer" />
+                                        </div>
+                                        
+                                        <div class="flex-1 min-w-0">
+                                            <div class="flex justify-between items-start gap-2">
+                                                <h3 class="text-sm font-semibold text-blue-700 group-hover:text-blue-800 leading-tight truncate">
+                                                    {res.title}
+                                                </h3>
+                                                <span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-green-100 text-green-800">
+                                                    {format!("{:.0}%", res.combined_score * 100.0)}
+                                                </span>
+                                            </div>
+                                            
+                                            <p class="text-xs text-gray-600 mt-1 line-clamp-2">
+                                                {res.content.chars().take(150).collect::<String>()}
+                                                {if res.content.len() > 150 { "..." } else { "" }}
+                                            </p>
+                                            
+                                            <div class="flex items-center gap-2 mt-2 text-[10px] text-gray-400">
+                                                <Show when=move || category_name.is_some()>
+                                                    <span class="flex items-center gap-1">
+                                                        <svg class="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
+                                                        </svg>
+                                                        {category_name_clone.clone().unwrap()}
+                                                    </span>
+                                                    <span>"•"</span>
+                                                </Show>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        }
+                    }
+                />
+            </div>
+        </div>
+    }
+}

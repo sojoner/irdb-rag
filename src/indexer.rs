@@ -7,11 +7,11 @@ use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
 use sqlx::PgPool;
 use std::path::Path;
 use std::sync::mpsc::channel;
+use std::sync::Arc;
 use std::time::Duration;
-use text_splitter::TextSplitter;
-use serde_json::json;
+use serde_json::{json, Value};
 
-use crate::{db, llm::{self, LLMConfig}};
+use crate::{db, enricher::{self, Enricher}};
 
 pub const CHUNK_SIZE: usize = 512;
 
@@ -19,10 +19,12 @@ pub const CHUNK_SIZE: usize = 512;
 // Embedder
 // ============================================
 
-/// Local embedding model wrapper using LM Studio (OpenAI compatible)
+/// Local embedding model wrapper using OpenAI-compatible APIs (LM Studio, OpenRouter, etc.)
+#[derive(Clone)]
 pub struct Embedder {
-    client: reqwest::Client,
+    client: Arc<reqwest::Client>,
     api_url: String,
+    api_key: Option<String>,
     model_name: String,
 }
 
@@ -30,8 +32,9 @@ impl Embedder {
     pub fn new() -> Result<Self> {
         let api_url = std::env::var("EMBEDDING_API_URL")
             .unwrap_or_else(|_| "http://localhost:1234/v1".to_string());
+        let api_key = std::env::var("EMBEDDING_API_KEY").ok();
         let model_name = std::env::var("EMBEDDING_MODEL")
-            .unwrap_or_else(|_| "Qwen/Qwen3-Embedding-0.6B-GGUF".to_string());
+            .unwrap_or_else(|_| "qwen/qwen3-embedding-8b".to_string());
 
         // Configure timeout for embedding requests
         let timeout = std::env::var("EMBEDDING_TIMEOUT_SECONDS")
@@ -49,8 +52,9 @@ impl Embedder {
             api_url, model_name, timeout);
 
         Ok(Self {
-            client,
+            client: Arc::new(client),
             api_url,
+            api_key,
             model_name,
         })
     }
@@ -65,8 +69,14 @@ impl Embedder {
 
     /// Initialize and verify the embedding model
     pub async fn init(&self) -> Result<()> {
+        // Skip model verification for OpenRouter (embedding models aren't in /models endpoint)
+        if self.api_url.contains("openrouter.ai") {
+            tracing::info!("Skipping model verification for OpenRouter - embedding models not in /models endpoint");
+            return Ok(());
+        }
+
         let url = format!("{}/models", self.api_url);
-        
+
         let response = self.client.get(&url)
             .send()
             .await;
@@ -94,11 +104,16 @@ impl Embedder {
                 .filter_map(|m| m["id"].as_str().map(String::from))
                 .collect();
 
-            if !model_ids.contains(&self.model_name) {
-                tracing::error!("Model '{}' not found in available models: {:?}", self.model_name, model_ids);
-                anyhow::bail!("Model '{}' not found. Available models: {:?}", self.model_name, model_ids);
+            // Only verify if we got a non-empty model list
+            if !model_ids.is_empty() {
+                if !model_ids.contains(&self.model_name) {
+                    tracing::error!("Model '{}' not found in available models: {:?}", self.model_name, model_ids);
+                    anyhow::bail!("Model '{}' not found. Available models: {:?}", self.model_name, model_ids);
+                } else {
+                    tracing::info!("Verified model '{}' is available", self.model_name);
+                }
             } else {
-                tracing::info!("Verified model '{}' is available", self.model_name);
+                tracing::warn!("Model list is empty, skipping model verification for '{}'", self.model_name);
             }
         }
 
@@ -110,7 +125,14 @@ impl Embedder {
         let url = format!("{}/embeddings", self.api_url);
 
         // First attempt
-        let response = self.client.post(&url)
+        let mut request = self.client.post(&url);
+
+        // Add authorization header if API key is provided
+        if let Some(api_key) = &self.api_key {
+            request = request.header("Authorization", format!("Bearer {}", api_key));
+        }
+
+        let response = request
             .json(&json!({
                 "input": text,
                 "model": self.model_name
@@ -128,7 +150,14 @@ impl Embedder {
                 tokio::time::sleep(std::time::Duration::from_secs(5)).await;
 
                 // Retry
-                let retry_response = self.client.post(&url)
+                let mut retry_request = self.client.post(&url);
+
+                // Add authorization header if API key is provided
+                if let Some(api_key) = &self.api_key {
+                    retry_request = retry_request.header("Authorization", format!("Bearer {}", api_key));
+                }
+
+                let retry_response = retry_request
                     .json(&json!({
                         "input": text,
                         "model": self.model_name
@@ -166,12 +195,18 @@ impl Embedder {
         Ok(embedding)
     }
 
-    /// Generate embeddings for multiple texts
-    #[allow(dead_code)]
+    /// Generate embeddings for multiple texts in a single API call
     pub async fn embed_batch(&self, texts: Vec<&str>) -> Result<Vec<Vec<f32>>> {
         let url = format!("{}/embeddings", self.api_url);
-        
-        let response = self.client.post(&url)
+
+        let mut request = self.client.post(&url);
+
+        // Add authorization header if API key is provided
+        if let Some(api_key) = &self.api_key {
+            request = request.header("Authorization", format!("Bearer {}", api_key));
+        }
+
+        let response = request
             .json(&json!({
                 "input": texts,
                 "model": self.model_name
@@ -203,263 +238,17 @@ impl Embedder {
 }
 
 // ============================================
-// Docling Client
-// ============================================
-
-struct DoclingClient {
-    base_url: String,
-    client: reqwest::Client,
-}
-
-impl DoclingClient {
-    fn new() -> Self {
-        let timeout = std::env::var("DOCLING_TIMEOUT_SECONDS")
-            .ok()
-            .and_then(|s| s.parse::<u64>().ok())
-            .unwrap_or(180); // Default 3 minutes for document conversion
-
-        let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(timeout))
-            .connect_timeout(Duration::from_secs(30))
-            .build()
-            .expect("Failed to create Docling HTTP client");
-
-        Self {
-            base_url: std::env::var("DOCLING_URL")
-                .unwrap_or_else(|_| "http://localhost:5001".to_string()),
-            client,
-        }
-    }
-
-    async fn convert_file(&self, path: &Path) -> Result<(String, serde_json::Value)> {
-        let file_name = path.file_name().unwrap().to_string_lossy().to_string();
-        let file_content = tokio::fs::read(path).await?;
-
-        let part = reqwest::multipart::Part::bytes(file_content)
-            .file_name(file_name);
-
-        // Enhanced options for better document processing
-        // Enable OCR, table structure detection, and image extraction
-        let options = json!({
-            "do_ocr": true,
-            "do_table_structure": true,
-            "generate_picture_images": true,
-            "generate_page_images": false,  // Set to true if you want full page images
-            "images_scale": 2.0,  // Higher resolution for better OCR
-            "ocr_engine": "easyocr"  // Can be "easyocr" or "tesseract"
-        });
-
-        let form = reqwest::multipart::Form::new()
-            .part("files", part)
-            .text("options", options.to_string());
-
-        let response = self.client
-            .post(format!("{}/v1/convert/file", self.base_url))
-            .multipart(form)
-            .send()
-            .await?;
-
-        if !response.status().is_success() {
-            let error = response.text().await?;
-            anyhow::bail!("Docling API error: {}", error);
-        }
-
-        let json: serde_json::Value = response.json().await?;
-
-        // Extract metadata from DocLing response
-        let doc_metadata = json["document"]["metadata"].clone();
-
-        // Log metadata if available
-        if let Some(meta) = doc_metadata.as_object() {
-            tracing::debug!("Document metadata: {:?}", meta);
-        }
-
-        // Docling returns markdown in the response
-        let markdown = json["document"]["md_content"]
-            .as_str()
-            .context("No markdown in Docling response")?
-            .to_string();
-
-        Ok((markdown, doc_metadata))
-    }
-
-    async fn convert_url(&self, url: &str) -> Result<String> {
-        let body = serde_json::json!({
-            "sources": [{"kind": "http", "url": url}],
-            "options": {
-                "do_ocr": true,
-                "do_table_structure": true
-            }
-        });
-
-        let response = self.client
-            .post(format!("{}/v1/convert/source", self.base_url))
-            .json(&body)
-            .send()
-            .await?;
-
-        if !response.status().is_success() {
-            let error = response.text().await?;
-            anyhow::bail!("Docling API error: {}", error);
-        }
-
-        let json: serde_json::Value = response.json().await?;
-        // Response structure might be a list of results
-        let markdown = json["results"][0]["markdown"]
-            .as_str()
-            .context("No markdown in Docling response")?
-            .to_string();
-
-        Ok(markdown)
-    }
-}
-
-// ============================================
 // Document Processing
 // ============================================
 
-/// Extract metadata using LLM - enhanced with typed entities
-pub async fn extract_metadata(
-    content: &str,
-    docling_meta: Option<&serde_json::Value>
-) -> Result<(String, Vec<String>, serde_json::Value, Option<String>)> {
-    // Use metadata-specific model (entity extraction)
-    let config = LLMConfig::for_metadata();
-
-    // Take first 4k chars for faster processing
-    let sample = content.chars().take(4000).collect::<String>();
-
-    // SLIM NER Prompt Format
-    // <human>: text \n <classify> params </classify> \n <bot>:
-    // We include summary and questions as "categories" to extract
-    let params = "persons, organizations, locations, products, concepts, topics, questions, dates, summary";
-    let prompt = format!("<human>: {}\n<classify> {} </classify>\n<bot>:", sample, params);
-
-    tracing::debug!("Sending metadata extraction request to model: {}", config.model);
-    tracing::debug!("Prompt:\n{}", prompt);
-
-    // Call LLM with empty system prompt and formatted user prompt
-    let response = llm::call_llm_with_options(&config, "", &prompt, None, Some(0.1)).await?;
-
-    tracing::debug!("Raw LLM Response:\n{}", response);
-
-    let (summary, keywords, entities) = parse_metadata_response(&response);
-
-    // Extract author from DocLing metadata if available
-    let author = docling_meta
-        .and_then(|m| m["author"].as_str())
-        .or_else(|| docling_meta.and_then(|m| m["authors"].as_str()))
-        .map(String::from);
-
-    Ok((summary, keywords, entities, author))
-}
-
-/// Parse the raw LLM response into structured metadata
-pub fn parse_metadata_response(response: &str) -> (String, Vec<String>, serde_json::Value) {
-    // Parse SLIM NER output
-    // Example: {locations: ['Loc1'], organizations: [], person: ['Pers1'], products: []}
-    
-    let extract_list = |key: &str, content: &str| -> Vec<String> {
-        // Try to find "key: [" with flexible spacing
-        if let Some(key_start) = content.find(key) {
-            let after_key = &content[key_start + key.len()..];
-            if let Some(list_start) = after_key.find('[') {
-                let between = &after_key[..list_start];
-                if between.trim() == ":" {
-                    if let Some(list_end) = after_key[list_start..].find(']') {
-                        let list_str = &after_key[list_start + 1..list_start + list_end];
-                        return list_str.split(',')
-                            .map(|s| s.trim().trim_matches('\'').trim_matches('"').to_string())
-                            .filter(|s| !s.is_empty())
-                            .collect();
-                    }
-                }
-            }
-        }
-        Vec::new()
-    };
-
-    let mut persons = extract_list("person", response);
-    if persons.is_empty() { persons = extract_list("persons", response); }
-    if persons.is_empty() { persons = extract_list("people", response); }
-    
-    let mut organizations = extract_list("organization", response);
-    if organizations.is_empty() { organizations = extract_list("organizations", response); }
-
-    let mut locations = extract_list("location", response);
-    if locations.is_empty() { locations = extract_list("locations", response); }
-
-    let mut products = extract_list("product", response);
-    if products.is_empty() { products = extract_list("products", response); }
-    if products.is_empty() { products = extract_list("software", response); }
-
-    let mut concepts = extract_list("concept", response);
-    if concepts.is_empty() { concepts = extract_list("concepts", response); }
-
-    let mut keywords = extract_list("topic", response);
-    if keywords.is_empty() { keywords = extract_list("topics", response); }
-
-    let mut questions = extract_list("question", response);
-    if questions.is_empty() { questions = extract_list("questions", response); }
-
-    let mut dates = extract_list("date", response);
-    if dates.is_empty() { dates = extract_list("dates", response); }
-
-    let summaries = extract_list("summary", response);
-    let mut summary = summaries.first().cloned().unwrap_or_default();
-
-    if summary.is_empty() {
-        summary = "Summary not available from metadata extraction process.".to_string();
-    }
-
-    // Fallback for keywords if empty
-    if keywords.is_empty() {
-         keywords = concepts.clone();
-    }
-
-    // Build structured entities JSON
-    let entities = serde_json::json!({
-        "persons": persons,
-        "organizations": organizations,
-        "locations": locations,
-        "products": products,
-        "concepts": concepts,
-        "questions": questions,
-        "dates": dates,
-        "topics": keywords // Include topics in entities as well for completeness
-    });
-
-    (summary, keywords, entities)
-}
-
-/// Enrich a chunk with metadata context
-#[allow(dead_code)]
-pub fn enrich_chunk(
-    title: &str,
-    summary: &str,
-    keywords: &[String],
-    questions: &[String],
-    chunk: &str,
-) -> String {
-    let keywords_str = keywords.join(", ");
-    let questions_str = questions.iter()
-        .map(|q| format!("- {}", q))
-        .collect::<Vec<_>>()
-        .join("\n");
-
-    format!(
-        "Title: {}\nSummary: {}\nKeywords: {}\nQuestions:\n{}\n---\n{}",
-        title, summary, keywords_str, questions_str, chunk
-    )
-}
-
 /// Split text into chunks using text-splitter
 fn chunk_text(text: &str, target_tokens: usize) -> Vec<String> {
-    let splitter = TextSplitter::default()
-        .with_trim_chunks(true);
-    
-    splitter.chunks(text, target_tokens)
-        .map(|s| s.to_string())
+    use text_splitter::{ChunkConfig, TextSplitter};
+
+    let splitter = TextSplitter::new(ChunkConfig::new(target_tokens).with_trim(true));
+
+    splitter.chunks(text)
+        .map(|s: &str| s.to_string())
         .collect()
 }
 
@@ -471,17 +260,87 @@ fn chunk_text(text: &str, target_tokens: usize) -> Vec<String> {
 /// Index a file or directory
 pub async fn index_path(pool: &PgPool, embedder: &Embedder, path: &str) -> Result<()> {
     let path = Path::new(path);
-    
+
     if path.is_dir() {
-        for entry in walkdir::WalkDir::new(path)
+        // Collect all files first to show progress
+        let mut files: Vec<_> = walkdir::WalkDir::new(path)
             .into_iter()
             .filter_map(|e| e.ok())
             .filter(|e| e.file_type().is_file())
-        {
-            if let Err(e) = index_file(pool, embedder, entry.path()).await {
-                tracing::error!("Failed to index {:?}: {}", entry.path(), e);
+            .collect();
+
+        // Sort by file size (smallest first) for bin packing - quick wins first
+        files.sort_by_key(|entry| {
+            entry.metadata()
+                .ok()
+                .map(|m| m.len())
+                .unwrap_or(u64::MAX)
+        });
+
+        let total = files.len();
+        let total_size: u64 = files.iter()
+            .filter_map(|e| e.metadata().ok().map(|m| m.len()))
+            .sum();
+
+        let total_size_mb = total_size as f64 / (1024.0 * 1024.0);
+        tracing::info!("📚 Found {} documents to index ({:.2} MB total)\n", total, total_size_mb);
+
+        // Process documents in parallel batches of 4
+        let batch_size = 4;
+        let embedder = Arc::new(embedder.clone());
+
+        for (batch_idx, batch) in files.chunks(batch_size).enumerate() {
+            let batch_num = batch_idx + 1;
+            let total_batches = total.div_ceil(batch_size);
+
+            tracing::info!("⚙️  Processing batch {}/{} ({} documents)\n", batch_num, total_batches, batch.len());
+
+            // Create futures for all documents in this batch
+            let futures: Vec<_> = batch
+                .iter()
+                .enumerate()
+                .map(|(idx_in_batch, entry)| {
+                    let doc_num = batch_idx * batch_size + idx_in_batch + 1;
+                    let file_path = entry.path().to_path_buf();
+                    let file_name = file_path.file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("unknown")
+                        .to_string();
+                    let file_size = entry.metadata()
+                        .ok()
+                        .map(|m| m.len())
+                        .unwrap_or(0);
+                    let file_size_mb = file_size as f64 / (1024.0 * 1024.0);
+
+                    tracing::info!("  ├─ Document {}/{}: {} ({:.2} MB)", doc_num, total, file_name, file_size_mb);
+
+                    let pool = pool.clone();
+                    let embedder = embedder.clone();
+
+                    async move {
+                        index_file(&pool, &embedder, &file_path).await
+                    }
+                })
+                .collect();
+
+            // Execute all documents in batch in parallel
+            let results = futures::future::join_all(futures).await;
+
+            // Check results and report
+            for (idx_in_batch, result) in results.iter().enumerate() {
+                let doc_num = batch_idx * batch_size + idx_in_batch + 1;
+                match result {
+                    Ok(_) => {
+                        tracing::info!("  └─ ✓ Document {}/{} completed", doc_num, total);
+                    }
+                    Err(e) => {
+                        tracing::error!("  └─ ✗ Document {}/{} failed: {}", doc_num, total, e);
+                    }
+                }
             }
         }
+
+        tracing::info!("🎉 Indexing complete: {} documents processed ({:.2} MB total)\n", total, total_size_mb);
     } else {
         index_file(pool, embedder, path).await?;
     }
@@ -491,6 +350,8 @@ pub async fn index_path(pool: &PgPool, embedder: &Embedder, path: &str) -> Resul
 
 /// Index a single file
 async fn index_file(pool: &PgPool, embedder: &Embedder, path: &Path) -> Result<()> {
+    use std::time::Instant;
+
     let extension = path.extension()
         .and_then(|e| e.to_str())
         .unwrap_or("")
@@ -501,52 +362,83 @@ async fn index_file(pool: &PgPool, embedder: &Embedder, path: &Path) -> Result<(
         return Ok(());
     }
 
-    tracing::info!("Processing file: {:?}", path);
+    let start_total = Instant::now();
 
-    // 1. Convert to Markdown via Docling
-    let docling = DoclingClient::new();
-    let (content, docling_meta) = match extension.as_str() {
-        "pdf" | "docx" | "pptx" | "html" => docling.convert_file(path).await?,
-        "md" | "markdown" | "txt" => {
-            let content = tokio::fs::read_to_string(path).await?;
-            (content, serde_json::json!(null))
-        },
-        _ => {
-            tracing::warn!("Unsupported file type: {}", extension);
-            return Ok(());
-        }
-    };
+    // Stage 1: Extract & Enrich Content (Docling + Metadata)
+    let start_stage1 = Instant::now();
+    tracing::info!("  ├─ Stage 1/5: Extracting & enriching content...");
 
-    let title = path.file_stem()
-        .map(|s| s.to_string_lossy().to_string())
-        .unwrap_or_else(|| "Untitled".to_string());
+    let enricher = Enricher::new();
+    let (content, metadata) = enricher.enrich_file(path).await?;
 
-    // 2. Extract Metadata via LLM (with DocLing metadata)
-    tracing::info!("Extracting metadata for: {}", title);
-    let docling_meta_ref = if docling_meta.is_null() { None } else { Some(&docling_meta) };
-    let (summary, keywords, entities, author) = extract_metadata(&content, docling_meta_ref).await
-        .unwrap_or_else(|e| {
-            tracing::error!("Metadata extraction failed: {}", e);
-            ("".to_string(), vec![], serde_json::json!({}), None)
-        });
+    let title = metadata.title.clone().unwrap_or_else(|| {
+        path.file_stem()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_else(|| "Untitled".to_string())
+    });
 
-    // 3. Chunking
+    let stage1_duration = start_stage1.elapsed();
+    tracing::info!("  │   ✓ Duration: {:.2}s", stage1_duration.as_secs_f64());
+    tracing::debug!("  │   📄 Title: {}", title);
+    tracing::debug!("  │   📝 Summary: {}", metadata.summary.as_deref().unwrap_or("(none)"));
+    tracing::debug!("  │   🔑 Keywords: {:?}", metadata.keywords);
+    tracing::debug!("  │   👥 Entities: {}", serde_json::to_string_pretty(&metadata.entities).unwrap_or_default());
+
+    // Stage 2: Chunking
+    let start_stage2 = Instant::now();
+    tracing::info!("  ├─ Stage 2/5: Chunking content...");
+
     let raw_chunks = chunk_text(&content, CHUNK_SIZE);
+    let num_chunks = raw_chunks.len();
 
-    // 4. Enrich Chunks with simplified metadata (title + keywords only)
+    let stage2_duration = start_stage2.elapsed();
+    tracing::info!("  │   ✓ Duration: {:.2}s | Created {} chunks", stage2_duration.as_secs_f64(), num_chunks);
+
+    // Stage 3: Enrich Chunks
+    let start_stage3 = Instant::now();
+    tracing::info!("  ├─ Stage 3/5: Enriching chunks...");
+
     let enriched_chunks: Vec<String> = raw_chunks.iter().map(|chunk| {
-        // Simple enrichment: just prepend title and keywords context
-        let keyword_str = keywords.join(", ");
-        format!("Document: {}\nKeywords: {}\n\n{}", title, keyword_str, chunk)
+        let questions: Vec<String> = metadata.entities["questions"]
+            .as_array()
+            .map(|arr: &Vec<Value>| {
+                arr.iter()
+                    .filter_map(|v: &Value| v.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        enricher::enrich_chunk(
+            &title,
+            metadata.summary.as_deref().unwrap_or(""),
+            &metadata.keywords,
+            &questions,
+            chunk
+        )
     }).collect();
 
-    tracing::info!("Indexing: {} ({} chunks)", title, enriched_chunks.len());
+    let stage3_duration = start_stage3.elapsed();
+    tracing::info!("  │   ✓ Duration: {:.2}s", stage3_duration.as_secs_f64());
 
-    // 5. Generate Embeddings & Store
+    // Stage 4: Generate Embeddings
+    let start_stage4 = Instant::now();
+    tracing::info!("  ├─ Stage 4/5: Generating embeddings...");
 
-    // Document embedding (use first enriched chunk)
-    let doc_embedding_text = &enriched_chunks[0];
-    let doc_embedding = embedder.embed(doc_embedding_text).await?;
+    let texts_to_embed: Vec<&str> = std::iter::once(&enriched_chunks[0])
+        .chain(enriched_chunks.iter())
+        .map(|s| s.as_str())
+        .collect();
+
+    let embeddings = embedder.embed_batch(texts_to_embed).await?;
+
+    let stage4_duration = start_stage4.elapsed();
+    tracing::info!("  │   ✓ Duration: {:.2}s | Embedded {} items", stage4_duration.as_secs_f64(), embeddings.len());
+
+    // Stage 5: Store in Database
+    let start_stage5 = Instant::now();
+    tracing::info!("  └─ Stage 5/5: Storing in database...");
+
+    let doc_embedding = &embeddings[0];
 
     // Insert document
     let doc_id = db::insert_document(
@@ -556,28 +448,39 @@ async fn index_file(pool: &PgPool, embedder: &Embedder, path: &Path) -> Result<(
             content: &content,
             source_path: Some(&path.to_string_lossy()),
             source_type: &extension,
-            embedding: &doc_embedding,
-            summary: if summary.is_empty() { None } else { Some(&summary) },
-            keywords: Some(keywords),
-            entities: Some(entities.clone()),
-            author: author.as_deref(),
+            embedding: doc_embedding,
+            summary: metadata.summary.as_deref(),
+            keywords: Some(metadata.keywords.clone()),
+            entities: Some(metadata.entities.clone()),
+            author: metadata.author.as_deref(),
+            category_id: metadata.category_id,
         }
     ).await?;
 
-    // Insert chunks
-    for (idx, (raw_chunk, enriched_chunk)) in raw_chunks.iter().zip(enriched_chunks.iter()).enumerate() {
-        let chunk_embedding = embedder.embed(enriched_chunk).await?;
+    // Log category assignment if available
+    if let Some(ref category) = metadata.category_name {
+        tracing::info!("  │   📁 Category: {} (ID: {:?})", category, metadata.category_id);
+    }
+
+    // Insert chunks with their embeddings
+    for (idx, raw_chunk) in raw_chunks.iter().enumerate() {
+        let chunk_embedding = &embeddings[idx + 1]; // +1 because first embedding is for doc
         db::insert_chunk(
             pool,
             doc_id,
             idx as i32,
-            raw_chunk, // Store raw content for display
-            &chunk_embedding,
+            raw_chunk,
+            chunk_embedding,
             None,
         ).await?;
     }
 
-    tracing::info!("Indexed document: {} ({})", title, doc_id);
+    let stage5_duration = start_stage5.elapsed();
+    let total_duration = start_total.elapsed();
+
+    tracing::info!("      ✓ Duration: {:.2}s | Stored document #{}", stage5_duration.as_secs_f64(), doc_id);
+    tracing::info!("  ⏱️  Total time: {:.2}s\n", total_duration.as_secs_f64());
+
     Ok(())
 }
 
@@ -585,29 +488,50 @@ async fn index_file(pool: &PgPool, embedder: &Embedder, path: &Path) -> Result<(
 pub async fn index_url(pool: &PgPool, embedder: &Embedder, url: &str) -> Result<()> {
     tracing::info!("Processing URL: {}", url);
     
-    let docling = DoclingClient::new();
-    let content = docling.convert_url(url).await?;
+    // 1. Enrich Content (Docling + Metadata)
+    let enricher = Enricher::new();
+    let (content, metadata) = enricher.enrich_url(url).await?;
     
-    let title = url.split('/').next_back()
-        .map(|s| s.to_string())
-        .unwrap_or_else(|| "Web Document".to_string());
-
-    // Extract Metadata (no DocLing metadata for URLs)
-    let (_summary, keywords, entities, author) = extract_metadata(&content, None).await
-        .unwrap_or_else(|_| ("".to_string(), vec![], serde_json::json!({}), None));
+    let title = metadata.title.clone().unwrap_or_else(|| {
+        url.split('/').next_back()
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| "Web Document".to_string())
+    });
 
     // Chunking
     let raw_chunks = chunk_text(&content, CHUNK_SIZE);
 
-    // Enrich Chunks with simplified metadata (title + keywords only)
+    // Enrich Chunks
     let enriched_chunks: Vec<String> = raw_chunks.iter().map(|chunk| {
-        let keyword_str = keywords.join(", ");
-        format!("Document: {}\nKeywords: {}\n\n{}", title, keyword_str, chunk)
+        let questions: Vec<String> = metadata.entities["questions"]
+            .as_array()
+            .map(|arr: &Vec<Value>| {
+                arr.iter()
+                    .filter_map(|v: &Value| v.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        enricher::enrich_chunk(
+            &title,
+            metadata.summary.as_deref().unwrap_or(""),
+            &metadata.keywords,
+            &questions,
+            chunk
+        )
     }).collect();
 
     // Embed & Store
-    let doc_embedding_text = &enriched_chunks[0];
-    let doc_embedding = embedder.embed(doc_embedding_text).await?;
+    // Batch embed all chunks at once (includes document text)
+    let texts_to_embed: Vec<&str> = std::iter::once(&enriched_chunks[0])
+        .chain(enriched_chunks.iter())
+        .map(|s| s.as_str())
+        .collect();
+
+    let embeddings = embedder.embed_batch(texts_to_embed).await?;
+
+    // First embedding is for the document
+    let doc_embedding = &embeddings[0];
 
     let doc_id = db::insert_document(
         pool,
@@ -616,22 +540,23 @@ pub async fn index_url(pool: &PgPool, embedder: &Embedder, url: &str) -> Result<
             content: &content,
             source_path: Some(url),
             source_type: "url",
-            embedding: &doc_embedding,
-            summary: None,
-            keywords: Some(keywords),
-            entities: Some(entities),
-            author: author.as_deref(),
+            embedding: doc_embedding,
+            summary: metadata.summary.as_deref(),
+            keywords: Some(metadata.keywords),
+            entities: Some(metadata.entities),
+            author: metadata.author.as_deref(),
+            category_id: metadata.category_id,
         }
     ).await?;
 
-    for (idx, (raw_chunk, enriched_chunk)) in raw_chunks.iter().zip(enriched_chunks.iter()).enumerate() {
-        let chunk_embedding = embedder.embed(enriched_chunk).await?;
+    for (idx, raw_chunk) in raw_chunks.iter().enumerate() {
+        let chunk_embedding = &embeddings[idx + 1]; // +1 because first embedding is for doc
         db::insert_chunk(
             pool,
             doc_id,
             idx as i32,
             raw_chunk,
-            &chunk_embedding,
+            chunk_embedding,
             None,
         ).await?;
     }
@@ -686,7 +611,7 @@ pub async fn watch_folders(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::enricher::enrich_chunk;
 
     #[test]
     fn test_enrich_chunk() {

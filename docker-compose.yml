@@ -5,6 +5,8 @@ services:
     build:
       context: .
     container_name: rag-db
+    env_file:
+      - .env
     environment:
       POSTGRES_USER: rag_user
       POSTGRES_PASSWORD: rag_password
@@ -31,30 +33,12 @@ services:
         reservations:
           cpus: '2.0'
           memory: 4G
-
-  # PgAdmin for DB management
-  pgadmin:
-    image: dpage/pgadmin4:latest
-    container_name: rag-pgadmin
-    environment:
-      PGADMIN_DEFAULT_EMAIL: admin@rag.com
-      PGADMIN_DEFAULT_PASSWORD: admin
-      PGADMIN_CONFIG_SERVER_MODE: 'False'
-    ports:
-      - "5050:80"
-    depends_on:
-      db:
-        condition: service_healthy
-    volumes:
-      - ./data/pgadmin:/var/lib/pgadmin
-    restart: unless-stopped
-    networks:
-      - rag-network
-
   # Database initialization service
   db-init:
     image: docker.io/sojoner/database:latest
     container_name: rag-db-init
+    env_file:
+      - .env
     depends_on:
       db:
         condition: service_healthy
@@ -65,17 +49,21 @@ services:
     command: >
       bash -c "
         echo 'Running database initialization...';
-        psql -h db -U rag_user -d rag_chat -f /init.sql;
+        sed 's/$${EMBEDDING_DIMENSIONS}/'"$$EMBEDDING_DIMENSIONS"'/g' /init.sql | psql -h db -U $$POSTGRES_USER -d $$POSTGRES_DB;
         echo 'Database initialization complete!';
       "
     environment:
       PGPASSWORD: rag_password
+      POSTGRES_USER: rag_user
+      POSTGRES_DB: rag_chat
     restart: "no"
 
   # Docling - Document Processing with AI Models
   docling:
     image: quay.io/docling-project/docling-serve:latest
     container_name: rag-docling
+    env_file:
+      - .env
     ports:
       - "5001:5001"
     environment:

@@ -1,5 +1,5 @@
 //! Database operations for RAG Chat
-//! 
+//!
 //! Handles PostgreSQL connections and hybrid search queries using
 //! ParadeDB's pg_search (BM25) and pgvector.
 
@@ -8,6 +8,15 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::{postgres::PgPoolOptions, PgPool, FromRow};
 use uuid::Uuid;
+
+/// Get embedding dimensions from environment (required)
+/// This must match the embedding model's output dimension
+fn get_embedding_dimensions() -> u32 {
+    std::env::var("EMBEDDING_DIMENSIONS")
+        .expect("EMBEDDING_DIMENSIONS environment variable must be set")
+        .parse::<u32>()
+        .expect("EMBEDDING_DIMENSIONS must be a valid u32")
+}
 
 /// Create a database connection pool
 pub async fn create_pool() -> Result<PgPool> {
@@ -144,7 +153,7 @@ pub async fn hybrid_search(
     // Sanitize query to handle wildcards and internal ParadeDB query representations
     // that cause parsing errors. "*" seems to be converted to "id:(*)" internally.
     let trimmed = query.trim();
-    
+
     // Check for empty ID queries like "id:()", "id: ()", "id:(*)"
     let is_empty_id = if let Some(stripped) = trimmed.strip_prefix("id:") {
         let rest = stripped.trim();
@@ -169,12 +178,13 @@ pub async fn hybrid_search(
         "[{}]",
         embedding.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(",")
     );
-    
-    let results = sqlx::query_as::<_, SearchResult>(
+
+    let dims = get_embedding_dimensions();
+    let sql = format!(
         r#"
         SELECT * FROM hybrid_search(
             $1::TEXT,
-            $2::vector(1024),
+            $2::vector({}),
             $3::INTEGER,
             $4::FLOAT,
             $5::FLOAT,
@@ -184,20 +194,23 @@ pub async fn hybrid_search(
             $9::TEXT[],
             $10::TEXT[]
         )
-        "#
-    )
-    .bind(sanitized_query)
-    .bind(&embedding_str)
-    .bind(limit)
-    .bind(bm25_weight)
-    .bind(vector_weight)
-    .bind(filters.category_id)
-    .bind(filters.date_from)
-    .bind(filters.date_to)
-    .bind(&filters.locations)
-    .bind(&filters.keywords)
-    .fetch_all(pool)
-    .await?;
+        "#,
+        dims
+    );
+
+    let results = sqlx::query_as::<_, SearchResult>(&sql)
+        .bind(sanitized_query)
+        .bind(&embedding_str)
+        .bind(limit)
+        .bind(bm25_weight)
+        .bind(vector_weight)
+        .bind(filters.category_id)
+        .bind(filters.date_from)
+        .bind(filters.date_to)
+        .bind(&filters.locations)
+        .bind(&filters.keywords)
+        .fetch_all(pool)
+        .await?;
 
     Ok(results)
 }
@@ -259,18 +272,22 @@ pub async fn vector_search(
         embedding.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(",")
     );
 
-    let results = sqlx::query_as::<_, Document>(
+    let dims = get_embedding_dimensions();
+    let sql = format!(
         r#"
         SELECT * FROM documents
         WHERE embedding IS NOT NULL
-        ORDER BY embedding <=> $1::vector(1024)
+        ORDER BY embedding <=> $1::vector({})
         LIMIT $2
-        "#
-    )
-    .bind(&embedding_str)
-    .bind(limit)
-    .fetch_all(pool)
-    .await?;
+        "#,
+        dims
+    );
+
+    let results = sqlx::query_as::<_, Document>(&sql)
+        .bind(&embedding_str)
+        .bind(limit)
+        .fetch_all(pool)
+        .await?;
 
     Ok(results)
 }
@@ -289,6 +306,7 @@ pub struct InsertDocumentParams<'a> {
     pub keywords: Option<Vec<String>>,
     pub entities: Option<serde_json::Value>,
     pub author: Option<&'a str>,
+    pub category_id: Option<Uuid>,
 }
 
 pub async fn insert_document(
@@ -302,28 +320,33 @@ pub async fn insert_document(
 
     let word_count = params.content.split_whitespace().count() as i32;
 
-    let id = sqlx::query_scalar::<_, Uuid>(
+    let dims = get_embedding_dimensions();
+    let sql = format!(
         r#"
         INSERT INTO documents (
             title, content, source_path, source_type, embedding,
-            summary, keywords, entities, author, word_count, status, indexed_at
+            summary, keywords, entities, author, category_id, word_count, status, indexed_at
         )
-        VALUES ($1, $2, $3, $4, $5::vector(1024), $6, $7, $8, $9, $10, 'indexed', NOW())
+        VALUES ($1, $2, $3, $4, $5::vector({}), $6, $7, $8, $9, $10, $11, 'indexed', NOW())
         RETURNING id
-        "#
-    )
-    .bind(params.title)
-    .bind(params.content)
-    .bind(params.source_path)
-    .bind(params.source_type)
-    .bind(&embedding_str)
-    .bind(params.summary)
-    .bind(&params.keywords)
-    .bind(&params.entities)
-    .bind(params.author)
-    .bind(word_count)
-    .fetch_one(pool)
-    .await?;
+        "#,
+        dims
+    );
+
+    let id = sqlx::query_scalar::<_, Uuid>(&sql)
+        .bind(params.title)
+        .bind(params.content)
+        .bind(params.source_path)
+        .bind(params.source_type)
+        .bind(&embedding_str)
+        .bind(params.summary)
+        .bind(&params.keywords)
+        .bind(&params.entities)
+        .bind(params.author)
+        .bind(params.category_id)
+        .bind(word_count)
+        .fetch_one(pool)
+        .await?;
 
     Ok(id)
 }
@@ -344,21 +367,25 @@ pub async fn insert_chunk(
     // Estimate token count (rough approximation: ~4 chars per token)
     let token_count = (content.len() / 4) as i32;
 
-    let id = sqlx::query_scalar::<_, Uuid>(
+    let dims = get_embedding_dimensions();
+    let sql = format!(
         r#"
         INSERT INTO document_chunks (document_id, chunk_index, content, embedding, page_number, token_count)
-        VALUES ($1, $2, $3, $4::vector(1024), $5, $6)
+        VALUES ($1, $2, $3, $4::vector({}), $5, $6)
         RETURNING id
-        "#
-    )
-    .bind(document_id)
-    .bind(chunk_index)
-    .bind(content)
-    .bind(&embedding_str)
-    .bind(page_number)
-    .bind(token_count)
-    .fetch_one(pool)
-    .await?;
+        "#,
+        dims
+    );
+
+    let id = sqlx::query_scalar::<_, Uuid>(&sql)
+        .bind(document_id)
+        .bind(chunk_index)
+        .bind(content)
+        .bind(&embedding_str)
+        .bind(page_number)
+        .bind(token_count)
+        .fetch_one(pool)
+        .await?;
 
     Ok(id)
 }
@@ -423,21 +450,25 @@ pub async fn get_relevant_chunks(
         embedding.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(",")
     );
 
-    let chunks = sqlx::query_as::<_, DocumentChunk>(
+    let dims = get_embedding_dimensions();
+    let sql = format!(
         r#"
         SELECT id, document_id, chunk_index, content, page_number, section_title
         FROM document_chunks
         WHERE embedding IS NOT NULL
         AND ($3::UUID[] IS NULL OR document_id = ANY($3))
-        ORDER BY embedding <=> $1::vector(1024)
+        ORDER BY embedding <=> $1::vector({})
         LIMIT $2
-        "#
-    )
-    .bind(&embedding_str)
-    .bind(limit)
-    .bind(document_ids)
-    .fetch_all(pool)
-    .await?;
+        "#,
+        dims
+    );
+
+    let chunks = sqlx::query_as::<_, DocumentChunk>(&sql)
+        .bind(&embedding_str)
+        .bind(limit)
+        .bind(document_ids)
+        .fetch_all(pool)
+        .await?;
 
     Ok(chunks)
 }

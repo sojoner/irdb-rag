@@ -5,9 +5,12 @@
 
 mod db;
 mod indexer;
+mod enricher;
 mod api;
 mod llm;
 mod logging;
+mod types;
+mod web_app;
 
 use anyhow::Result;
 use axum::{
