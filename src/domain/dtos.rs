@@ -135,3 +135,78 @@ pub struct AggregationStats {
     pub authors: Vec<(String, i64)>,
     pub word_count_ranges: Vec<(String, i64)>,
 }
+
+// ============================================
+// Import DTOs
+// ============================================
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct CreateImportRequest {
+    pub source_type: String, // folder, url, file_upload
+    pub source_path: Option<String>,
+    pub urls: Option<Vec<String>>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ImportProgressResponse {
+    pub id: Uuid,
+    pub status: String,
+    pub progress: crate::domain::models::ImportProgress,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ImportJobResponse {
+    pub id: Uuid,
+    pub status: String,
+    pub source_type: String,
+    pub source_path: Option<String>,
+    pub total_items: i32,
+    pub processed_items: i32,
+    pub failed_items: i32,
+    pub skipped_items: i32,
+    pub created_at: String,
+    pub started_at: Option<String>,
+    pub completed_at: Option<String>,
+    pub error_message: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ImportItemResponse {
+    pub id: Uuid,
+    pub job_id: Uuid,
+    pub source_path: String,
+    pub status: String,
+    pub retry_count: i32,
+    pub error_message: Option<String>,
+    pub error_type: Option<String>,
+    pub document_id: Option<Uuid>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ImportJobsListResponse {
+    pub jobs: Vec<ImportJobResponse>,
+    pub total: i64,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ImportItemsListResponse {
+    pub items: Vec<ImportItemResponse>,
+    pub total: i64,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct ResumeImportRequest {
+    pub retry_failed: bool,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct DeleteImportRequest {
+    #[serde(default)]
+    pub delete_documents: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ImportUploadResponse {
+    pub job_id: Uuid,
+    pub message: String,
+}

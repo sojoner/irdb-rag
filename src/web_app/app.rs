@@ -5,6 +5,7 @@ use leptos_router::{
     StaticSegment,
 };
 use crate::web_app::pages::search::SearchPage;
+use crate::web_app::pages::import::ImportPage;
 
 #[component]
 pub fn App() -> impl IntoView {
@@ -17,6 +18,7 @@ pub fn App() -> impl IntoView {
             <main class="h-screen w-screen overflow-hidden bg-gray-100 text-gray-800">
                 <Routes fallback=|| "Not Found">
                     <Route path=StaticSegment("") view=SearchPage />
+                    <Route path=StaticSegment("import") view=ImportPage />
                 </Routes>
             </main>
         </Router>

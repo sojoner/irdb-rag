@@ -1,8 +1,9 @@
 use sqlx::PgPool;
 use std::sync::{Arc, Mutex};
-use tokio::sync::RwLock;
+use tokio::sync::{RwLock, mpsc};
 use leptos::prelude::LeptosOptions;
 use axum::extract::FromRef;
+use uuid::Uuid;
 
 use crate::domain::models::LLMConfig;
 use crate::infra::embedder::Embedder;
@@ -14,6 +15,7 @@ pub struct AppState {
     pub llm_config: Arc<RwLock<LLMConfig>>,
     pub log_buffer: Arc<Mutex<Vec<String>>>,
     pub leptos_options: LeptosOptions,
+    pub import_job_queue: mpsc::Sender<Uuid>,
 }
 
 impl AppState {
@@ -22,6 +24,7 @@ impl AppState {
         embedder: Embedder,
         log_buffer: Arc<Mutex<Vec<String>>>,
         leptos_options: LeptosOptions,
+        import_job_queue: mpsc::Sender<Uuid>,
     ) -> Self {
         Self {
             pool,
@@ -29,6 +32,7 @@ impl AppState {
             llm_config: Arc::new(RwLock::new(LLMConfig::from_env())),
             log_buffer,
             leptos_options,
+            import_job_queue,
         }
     }
 }

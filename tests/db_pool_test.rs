@@ -80,7 +80,7 @@ async fn test_concurrent_db_queries() {
 
     // Wait for all queries to complete
     for (i, handle) in handles.into_iter().enumerate() {
-        handle.await.expect(&format!("Query {} panicked", i));
+        handle.await.unwrap_or_else(|_| panic!("Query {} panicked", i));
     }
 
     println!("✓ All concurrent queries completed successfully");

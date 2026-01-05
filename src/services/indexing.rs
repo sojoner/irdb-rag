@@ -219,6 +219,19 @@ async fn index_file(pool: &PgPool, embedder: &Embedder, path: &Path) -> Result<(
 
     let doc_embedding = &embeddings[0];
 
+    // Serialize docling metadata to JSON for storage
+    let metadata_json = serde_json::json!({
+        "docling_metadata": metadata.docling_metadata,
+        "page_count": metadata.page_count,
+        "tables": metadata.tables,
+        "images": metadata.images,
+        "creation_date": metadata.creation_date,
+        "modification_date": metadata.modification_date,
+        "document_origin": metadata.document_origin,
+        "document_structure": metadata.document_structure,
+        "extraction_quality": metadata.extraction_quality,
+    });
+
     // Insert document
     let doc_id = db::insert_document(
         pool,
@@ -233,6 +246,7 @@ async fn index_file(pool: &PgPool, embedder: &Embedder, path: &Path) -> Result<(
             entities: Some(metadata.entities.clone()),
             author: metadata.author.as_deref(),
             category_id: metadata.category_id,
+            metadata: Some(metadata_json),
         }
     ).await?;
 
@@ -312,6 +326,11 @@ pub async fn index_url(pool: &PgPool, embedder: &Embedder, url: &str) -> Result<
     // First embedding is for the document
     let doc_embedding = &embeddings[0];
 
+    // For URLs, metadata will be minimal (no docling-specific fields for now)
+    let metadata_json = serde_json::json!({
+        "source_url": url,
+    });
+
     let doc_id = db::insert_document(
         pool,
         db::InsertDocumentParams {
@@ -325,6 +344,7 @@ pub async fn index_url(pool: &PgPool, embedder: &Embedder, url: &str) -> Result<
             entities: Some(metadata.entities),
             author: metadata.author.as_deref(),
             category_id: metadata.category_id,
+            metadata: Some(metadata_json),
         }
     ).await?;
 

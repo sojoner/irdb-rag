@@ -15,20 +15,38 @@ pub struct SearchFilters {
     pub authors: Option<Vec<String>>,
 }
 
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct SearchRequest {
+    pub query: String,
+    pub limit: i32,
+    pub bm25_weight: f64,
+    pub vector_weight: f64,
+    pub category_id: Option<Uuid>,
+    pub keywords: Option<Vec<String>>,
+    pub concepts: Option<Vec<String>>,
+    pub locations: Option<Vec<String>>,
+    pub persons: Option<Vec<String>>,
+    pub organizations: Option<Vec<String>>,
+    pub authors: Option<Vec<String>>,
+}
+
 #[server(SearchDocuments, "/api")]
 pub async fn search_documents(
-    query: String,
-    limit: i32,
-    bm25_weight: f64,
-    vector_weight: f64,
-    category_id: Option<Uuid>,
-    keywords: Option<Vec<String>>,
-    concepts: Option<Vec<String>>,
-    locations: Option<Vec<String>>,
-    persons: Option<Vec<String>>,
-    organizations: Option<Vec<String>>,
-    authors: Option<Vec<String>>,
+    request: SearchRequest,
 ) -> Result<Vec<SearchResult>, ServerFnError> {
+    let SearchRequest {
+        query,
+        limit,
+        bm25_weight,
+        vector_weight,
+        category_id,
+        keywords,
+        concepts,
+        locations,
+        persons,
+        organizations,
+        authors,
+    } = request;
     use crate::infra::db;
     use crate::api::state::AppState;
     use tracing::info;

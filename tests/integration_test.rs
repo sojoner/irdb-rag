@@ -67,7 +67,7 @@ async fn test_index_local_pdf() {
     // Index the PDF file using the CLI
     println!("Indexing PDF at {}", pdf_path);
     let status = std::process::Command::new("cargo")
-        .args(&["run", "--", "index", "--path", pdf_path])
+        .args(["run", "--", "index", "--path", pdf_path])
         .current_dir(std::env::current_dir().expect("Failed to get current directory"))
         .status()
         .expect("Failed to execute cargo run");
@@ -142,7 +142,7 @@ async fn test_docling_pipeline() {
         .build()
         .expect("Failed to build HTTP client");
     let health_response = client
-        .get(&format!("{}/health", docling_url))
+        .get(format!("{}/health", docling_url))
         .send()
         .await
         .expect("Failed to connect to Docling service - is it running?");
@@ -167,7 +167,7 @@ async fn test_docling_pipeline() {
 
     println!("Sending PDF to Docling for processing...");
     let convert_response = client
-        .post(&format!("{}/v1/convert/file", docling_url))
+        .post(format!("{}/v1/convert/file", docling_url))
         .multipart(form)
         .send()
         .await
@@ -375,11 +375,15 @@ async fn test_chat_with_rag_context() {
         .site_root("target/site")
         .build();
 
+    // Create dummy import job queue (tests don't need it)
+    let (import_job_tx, _import_job_rx) = tokio::sync::mpsc::channel(100);
+
     let state = rag_chat::api::state::AppState::new(
         pool.clone(),
         embedder,
         log_buffer,
         leptos_options,
+        import_job_tx,
     );
 
     // Create a chat request

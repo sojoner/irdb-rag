@@ -387,6 +387,7 @@ pub struct InsertDocumentParams<'a> {
     pub entities: Option<serde_json::Value>,
     pub author: Option<&'a str>,
     pub category_id: Option<Uuid>,
+    pub metadata: Option<serde_json::Value>,
 }
 
 pub async fn insert_document(
@@ -405,9 +406,9 @@ pub async fn insert_document(
         r#"
         INSERT INTO documents (
             title, content, source_path, source_type, embedding,
-            summary, keywords, entities, author, category_id, word_count, status, indexed_at
+            summary, keywords, entities, author, category_id, word_count, metadata, status, indexed_at
         )
-        VALUES ($1, $2, $3, $4, $5::vector({}), $6, $7, $8, $9, $10, $11, 'indexed', NOW())
+        VALUES ($1, $2, $3, $4, $5::vector({}), $6, $7, $8, $9, $10, $11, $12, 'indexed', NOW())
         RETURNING id
         "#,
         dims
@@ -425,6 +426,7 @@ pub async fn insert_document(
         .bind(params.author)
         .bind(params.category_id)
         .bind(word_count)
+        .bind(&params.metadata)
         .fetch_one(pool)
         .await?;
 
@@ -724,4 +726,194 @@ pub async fn get_aggregation_stats(pool: &PgPool) -> Result<crate::domain::dtos:
         authors: authors_rows,
         word_count_ranges: word_count_rows,
     })
+}
+
+// ============================================
+// Search/Display Separation
+// ============================================
+
+/// Search for documents using hybrid search, then return full documents
+///
+/// This separates search (chunks) from display (full documents):
+/// 1. Search chunks for relevance using BM25 + vector similarity
+/// 2. Extract unique document IDs from results
+/// 3. Fetch full documents for display
+///
+/// Improves display quality by showing complete document context instead of chunks
+pub async fn search_and_get_documents(
+    pool: &PgPool,
+    query: &str,
+    embedding: &[f32],
+    filters: &SearchFilters,
+    limit: i32,
+    bm25_weight: f64,
+    vector_weight: f64,
+) -> Result<Vec<Document>> {
+    // Step 1: Search chunks to find relevant documents
+    let search_results = hybrid_search(
+        pool,
+        query,
+        embedding,
+        filters,
+        limit * 3, // Fetch more to get unique documents
+        bm25_weight,
+        vector_weight,
+    )
+    .await?;
+
+    // Step 2: Extract unique document IDs, maintaining order by relevance
+    let mut doc_ids = vec![];
+    let mut seen = std::collections::HashSet::new();
+
+    for result in search_results {
+        if seen.insert(result.id) {
+            doc_ids.push(result.id);
+        }
+    }
+
+    // Step 3: Fetch full documents (limit to requested count)
+    let doc_ids_to_fetch: Vec<Uuid> = doc_ids
+        .into_iter()
+        .take(limit as usize)
+        .collect();
+
+    if doc_ids_to_fetch.is_empty() {
+        return Ok(vec![]);
+    }
+
+    // Fetch full documents in order
+    let documents = sqlx::query_as::<_, Document>(
+        r#"
+        SELECT id, title, content, source_path, source_type, summary, author,
+               category_id, keywords, locations, created_at, word_count, status,
+               entities, metadata
+        FROM documents
+        WHERE id = ANY($1)
+        ORDER BY created_at DESC
+        "#
+    )
+    .bind(&doc_ids_to_fetch)
+    .fetch_all(pool)
+    .await?;
+
+    tracing::info!(
+        "Search returned {} documents from {} search results",
+        documents.len(),
+        doc_ids_to_fetch.len()
+    );
+
+    Ok(documents)
+}
+
+// ============================================
+// Import Operations
+// ============================================
+
+use crate::domain::models::{ImportJob, ImportItem};
+
+/// Get import job by ID
+pub async fn get_import_job(pool: &PgPool, job_id: Uuid) -> Result<ImportJob> {
+    let job = sqlx::query_as::<_, ImportJob>(
+        "SELECT * FROM import_jobs WHERE id = $1"
+    )
+    .bind(job_id)
+    .fetch_one(pool)
+    .await?;
+
+    Ok(job)
+}
+
+/// List import jobs with pagination
+pub async fn list_import_jobs(
+    pool: &PgPool,
+    limit: i32,
+    offset: i32,
+) -> Result<(Vec<ImportJob>, i64)> {
+    let total: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM import_jobs")
+        .fetch_one(pool)
+        .await?;
+
+    let jobs = sqlx::query_as::<_, ImportJob>(
+        r#"
+        SELECT * FROM import_jobs
+        ORDER BY created_at DESC
+        LIMIT $1 OFFSET $2
+        "#
+    )
+    .bind(limit)
+    .bind(offset)
+    .fetch_all(pool)
+    .await?;
+
+    Ok((jobs, total.0))
+}
+
+/// Get import items for a job with pagination
+pub async fn get_import_items(
+    pool: &PgPool,
+    job_id: Uuid,
+    limit: i32,
+    offset: i32,
+) -> Result<(Vec<ImportItem>, i64)> {
+    let total: (i64,) = sqlx::query_as(
+        "SELECT COUNT(*) FROM import_items WHERE job_id = $1"
+    )
+    .bind(job_id)
+    .fetch_one(pool)
+    .await?;
+
+    let items = sqlx::query_as::<_, ImportItem>(
+        r#"
+        SELECT * FROM import_items
+        WHERE job_id = $1
+        ORDER BY created_at DESC
+        LIMIT $2 OFFSET $3
+        "#
+    )
+    .bind(job_id)
+    .bind(limit)
+    .bind(offset)
+    .fetch_all(pool)
+    .await?;
+
+    Ok((items, total.0))
+}
+
+/// Get failed or skipped items for a job (for retry)
+pub async fn get_failed_items(
+    pool: &PgPool,
+    job_id: Uuid,
+) -> Result<Vec<ImportItem>> {
+    let items = sqlx::query_as::<_, ImportItem>(
+        r#"
+        SELECT * FROM import_items
+        WHERE job_id = $1 AND status IN ('failed', 'skipped')
+        ORDER BY created_at
+        "#
+    )
+    .bind(job_id)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(items)
+}
+
+/// Get job statistics
+pub async fn get_import_job_stats(pool: &PgPool, job_id: Uuid) -> Result<(i32, i32, i32, i32)> {
+    let stats: (i32, i32, i32, i32) = sqlx::query_as(
+        r#"
+        SELECT
+            COALESCE(SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END), 0),
+            COALESCE(SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END), 0),
+            COALESCE(SUM(CASE WHEN status = 'skipped' THEN 1 ELSE 0 END), 0),
+            COUNT(*)
+        FROM import_items
+        WHERE job_id = $1
+        "#
+    )
+    .bind(job_id)
+    .fetch_one(pool)
+    .await?;
+
+    Ok(stats)
 }

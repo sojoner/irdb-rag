@@ -1,5 +1,5 @@
 use axum::{
-    routing::{get, post},
+    routing::{delete, get, post},
     Router,
 };
 use leptos_axum::{generate_route_list, LeptosRoutes};
@@ -30,6 +30,13 @@ pub fn create_router(state: AppState) -> Router {
         .route("/api/status", get(handlers::get_status))
         .route("/api/config/model", post(handlers::update_model))
         .route("/api/logs", get(handlers::get_logs))
+        // Import routes
+        .route("/api/import", post(handlers::create_import))
+        .route("/api/import", get(handlers::list_imports))
+        .route("/api/import/{id}", get(handlers::get_import_status))
+        .route("/api/import/{id}", delete(handlers::delete_import))
+        .route("/api/import/{id}/items", get(handlers::get_import_items))
+        .route("/api/import/{id}/resume", post(handlers::resume_import))
         // Handle server functions
         .route(
             "/api/{*fn_name}",

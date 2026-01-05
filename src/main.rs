@@ -106,7 +106,19 @@ async fn serve(port: u16, log_buffer: std::sync::Arc<std::sync::Mutex<Vec<String
     let embedder = Embedder::new()?;
     embedder.init().await?;
 
-    let state = AppState::new(pool, embedder, log_buffer, leptos_options.clone());
+    // Spawn import job workers
+    let num_workers = std::env::var("IMPORT_WORKERS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(2);
+    let import_job_queue = rag_chat::services::import::spawn_import_workers(
+        pool.clone(),
+        std::sync::Arc::new(embedder.clone()),
+        num_workers,
+    );
+    tracing::info!("Spawned {} import job workers", num_workers);
+
+    let state = AppState::new(pool, embedder, log_buffer, leptos_options.clone(), import_job_queue);
 
     // Create the Axum router with API routes and Leptos integration
     let app = api::routes::create_router(state);

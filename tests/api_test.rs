@@ -33,7 +33,11 @@ async fn test_search_api_with_db() {
         .output_name("rag-chat")
         .site_root("target/site")
         .build();
-    let state = AppState::new(pool.clone(), embedder, log_buffer, leptos_options);
+
+    // Create dummy import job queue (tests don't need it)
+    let (import_job_tx, _import_job_rx) = tokio::sync::mpsc::channel(100);
+
+    let state = AppState::new(pool.clone(), embedder, log_buffer, leptos_options, import_job_tx);
 
     // 2. Index PDF
     let pdf_path = "/Users/hagentonnies/Workspace/irdb-rag/documents/HumanPrincipals.pdf";
@@ -120,7 +124,10 @@ async fn test_search_api_syntax_edge_cases() {
         .output_name("rag-chat")
         .site_root("target/site")
         .build();
-    let state = AppState::new(pool.clone(), embedder, log_buffer, leptos_options);
+    // Create dummy import job queue (tests don't need it)
+    let (import_job_tx, _import_job_rx) = tokio::sync::mpsc::channel(100);
+
+    let state = AppState::new(pool.clone(), embedder, log_buffer, leptos_options, import_job_tx);
 
     // 2. Test Cases
     let test_queries = vec![
@@ -197,7 +204,10 @@ async fn test_chat_stream_api_with_documents() {
         .output_name("rag-chat")
         .site_root("target/site")
         .build();
-    let state = AppState::new(pool.clone(), embedder, log_buffer, leptos_options);
+    // Create dummy import job queue (tests don't need it)
+    let (import_job_tx, _import_job_rx) = tokio::sync::mpsc::channel(100);
+
+    let state = AppState::new(pool.clone(), embedder, log_buffer, leptos_options, import_job_tx);
 
     // 2. Index PDF
     let pdf_path = "/Users/hagentonnies/Workspace/irdb-rag/documents/HumanPrincipals.pdf";
@@ -278,7 +288,10 @@ async fn test_chat_api_with_documents() {
         .output_name("rag-chat")
         .site_root("target/site")
         .build();
-    let state = AppState::new(pool.clone(), embedder, log_buffer, leptos_options);
+    // Create dummy import job queue (tests don't need it)
+    let (import_job_tx, _import_job_rx) = tokio::sync::mpsc::channel(100);
+
+    let state = AppState::new(pool.clone(), embedder, log_buffer, leptos_options, import_job_tx);
 
     // 2. Index PDF
     let pdf_path = "/Users/hagentonnies/Workspace/irdb-rag/documents/HumanPrincipals.pdf";

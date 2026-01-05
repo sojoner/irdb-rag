@@ -86,6 +86,36 @@ CREATE TABLE messages (
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+-- Import Jobs (for tracking batch import operations)
+CREATE TABLE import_jobs (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    status TEXT NOT NULL DEFAULT 'pending',  -- pending, running, completed, failed, cancelled
+    source_type TEXT NOT NULL,               -- folder, url, file_upload
+    source_path TEXT,
+    total_items INTEGER DEFAULT 0,
+    processed_items INTEGER DEFAULT 0,
+    failed_items INTEGER DEFAULT 0,
+    skipped_items INTEGER DEFAULT 0,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    started_at TIMESTAMPTZ,
+    completed_at TIMESTAMPTZ,
+    error_message TEXT
+);
+
+-- Import Items (individual files/URLs within a job)
+CREATE TABLE import_items (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    job_id UUID REFERENCES import_jobs(id) ON DELETE CASCADE,
+    source_path TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',  -- pending, processing, completed, failed, skipped
+    retry_count INTEGER DEFAULT 0,
+    error_message TEXT,
+    error_type TEXT,                         -- transient, permanent
+    document_id UUID REFERENCES documents(id) ON DELETE SET NULL,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    processed_at TIMESTAMPTZ
+);
+
 -- Indexes
 
 -- BM25 Index on documents
@@ -97,6 +127,11 @@ CREATE INDEX ON documents USING hnsw (embedding vector_cosine_ops);
 
 -- Vector Index on chunks
 CREATE INDEX ON document_chunks USING hnsw (embedding vector_cosine_ops);
+
+-- Import Job Indexes
+CREATE INDEX idx_import_jobs_status ON import_jobs(status);
+CREATE INDEX idx_import_items_job_id ON import_items(job_id);
+CREATE INDEX idx_import_items_status ON import_items(status);
 
 -- Hybrid Search Function
 CREATE OR REPLACE FUNCTION hybrid_search(

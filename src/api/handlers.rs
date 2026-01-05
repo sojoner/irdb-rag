@@ -433,6 +433,303 @@ pub async fn get_aggregation_stats(
 }
 
 // ============================================
+// Import Handlers
+// ============================================
+
+/// Create a new import job
+pub async fn create_import(
+    State(state): State<AppState>,
+    Json(req): Json<CreateImportRequest>,
+) -> Result<Json<ImportJobResponse>, AppError> {
+    tracing::info!("Creating import job: source_type={}", req.source_type);
+
+    let job_id = uuid::Uuid::new_v4();
+    let now = chrono::Utc::now();
+
+    // Create the import job
+    sqlx::query(
+        r#"
+        INSERT INTO import_jobs (id, status, source_type, source_path, created_at)
+        VALUES ($1, $2, $3, $4, $5)
+        "#,
+    )
+    .bind(job_id)
+    .bind("pending")
+    .bind(&req.source_type)
+    .bind(&req.source_path)
+    .bind(now)
+    .execute(&state.pool)
+    .await
+    .map_err(|e| {
+        tracing::error!("Failed to create import job: {}", e);
+        AppError::Internal(e.to_string())
+    })?;
+
+    tracing::info!("Created import job: {}", job_id);
+
+    // Discover and create import items based on source type
+    let mut item_paths: Vec<String> = vec![];
+
+    match req.source_type.as_str() {
+        "file" => {
+            // Single file import
+            if let Some(path) = &req.source_path {
+                if std::path::Path::new(path).exists() {
+                    item_paths.push(path.clone());
+                } else {
+                    tracing::error!("File not found: {}", path);
+                    return Err(AppError::Internal(format!("File not found: {}", path)));
+                }
+            }
+        }
+        "folder" => {
+            // Folder import - discover all indexable files
+            if let Some(folder) = &req.source_path {
+                match crate::services::import::discover_files(folder) {
+                    Ok(files) => {
+                        item_paths = files.into_iter()
+                            .filter_map(|p| p.to_str().map(|s| s.to_string()))
+                            .collect();
+                    }
+                    Err(e) => {
+                        tracing::error!("Failed to discover files in {}: {}", folder, e);
+                        return Err(AppError::Internal(format!("Failed to discover files: {}", e)));
+                    }
+                }
+            }
+        }
+        "url" => {
+            // Single URL import
+            if let Some(url) = &req.source_path {
+                item_paths.push(url.clone());
+            }
+        }
+        "urls" => {
+            // Multiple URLs
+            if let Some(urls) = &req.urls {
+                item_paths.extend_from_slice(urls);
+            }
+        }
+        _ => {
+            return Err(AppError::Internal(format!("Invalid source_type: {}", req.source_type)));
+        }
+    }
+
+    // Create import items
+    for path in &item_paths {
+        let item_id = uuid::Uuid::new_v4();
+        sqlx::query(
+            r#"
+            INSERT INTO import_items (id, job_id, source_path, status, created_at)
+            VALUES ($1, $2, $3, $4, $5)
+            "#,
+        )
+        .bind(item_id)
+        .bind(job_id)
+        .bind(path)
+        .bind("pending")
+        .bind(now)
+        .execute(&state.pool)
+        .await
+        .map_err(|e| {
+            tracing::error!("Failed to create import item for {}: {}", path, e);
+            AppError::Internal(e.to_string())
+        })?;
+    }
+
+    // Update job total_items
+    let total_items = item_paths.len() as i32;
+    sqlx::query(
+        r#"
+        UPDATE import_jobs SET total_items = $1 WHERE id = $2
+        "#,
+    )
+    .bind(total_items)
+    .bind(job_id)
+    .execute(&state.pool)
+    .await
+    .map_err(|e| {
+        tracing::error!("Failed to update job total_items: {}", e);
+        AppError::Internal(e.to_string())
+    })?;
+
+    tracing::info!("Created {} import items for job {}", total_items, job_id);
+
+    // Send job to the worker queue for immediate processing
+    state.import_job_queue.send(job_id).await.map_err(|e| {
+        tracing::error!("Failed to enqueue import job {}: {}", job_id, e);
+        AppError::Internal(format!("Failed to enqueue import job: {}", e))
+    })?;
+    tracing::info!("Enqueued import job {} for processing", job_id);
+
+    Ok(Json(ImportJobResponse {
+        id: job_id,
+        status: "pending".to_string(),
+        source_type: req.source_type,
+        source_path: req.source_path,
+        total_items,
+        processed_items: 0,
+        failed_items: 0,
+        skipped_items: 0,
+        created_at: now.to_rfc3339(),
+        started_at: None,
+        completed_at: None,
+        error_message: None,
+    }))
+}
+
+/// Get import job status and progress
+pub async fn get_import_status(
+    State(state): State<AppState>,
+    Path(job_id): Path<Uuid>,
+) -> Result<Json<ImportProgressResponse>, AppError> {
+    let job = db::get_import_job(&state.pool, job_id)
+        .await
+        .map_err(|_| AppError::NotFound)?;
+
+    let progress = crate::domain::models::ImportProgress::from_job(&job);
+
+    Ok(Json(ImportProgressResponse {
+        id: job.id,
+        status: job.status,
+        progress,
+    }))
+}
+
+/// List import jobs
+pub async fn list_imports(
+    State(state): State<AppState>,
+    Query(q): Query<ListQuery>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let (jobs, total) = db::list_import_jobs(&state.pool, q.limit, q.offset)
+        .await
+        .map_err(|e| AppError::Internal(e.to_string()))?;
+
+    let job_responses: Vec<ImportJobResponse> = jobs
+        .into_iter()
+        .map(|job| ImportJobResponse {
+            id: job.id,
+            status: job.status,
+            source_type: job.source_type,
+            source_path: job.source_path,
+            total_items: job.total_items,
+            processed_items: job.processed_items,
+            failed_items: job.failed_items,
+            skipped_items: job.skipped_items,
+            created_at: job.created_at.to_rfc3339(),
+            started_at: job.started_at.map(|t| t.to_rfc3339()),
+            completed_at: job.completed_at.map(|t| t.to_rfc3339()),
+            error_message: job.error_message,
+        })
+        .collect();
+
+    Ok(Json(serde_json::json!({
+        "jobs": job_responses,
+        "total": total,
+        "limit": q.limit,
+        "offset": q.offset,
+    })))
+}
+
+/// Get items for an import job
+pub async fn get_import_items(
+    State(state): State<AppState>,
+    Path(job_id): Path<Uuid>,
+    Query(q): Query<ListQuery>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let (items, total) = db::get_import_items(&state.pool, job_id, q.limit, q.offset)
+        .await
+        .map_err(|e| AppError::Internal(e.to_string()))?;
+
+    let item_responses: Vec<ImportItemResponse> = items
+        .into_iter()
+        .map(|item| ImportItemResponse {
+            id: item.id,
+            job_id: item.job_id,
+            source_path: item.source_path,
+            status: item.status,
+            retry_count: item.retry_count,
+            error_message: item.error_message,
+            error_type: item.error_type,
+            document_id: item.document_id,
+        })
+        .collect();
+
+    Ok(Json(serde_json::json!({
+        "items": item_responses,
+        "total": total,
+        "limit": q.limit,
+        "offset": q.offset,
+    })))
+}
+
+/// Resume a failed import job (retry failed items)
+pub async fn resume_import(
+    State(state): State<AppState>,
+    Path(job_id): Path<Uuid>,
+    Json(_req): Json<ResumeImportRequest>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    // Get failed items
+    let items = db::get_failed_items(&state.pool, job_id)
+        .await
+        .map_err(|e| AppError::Internal(e.to_string()))?;
+
+    if items.is_empty() {
+        return Ok(Json(serde_json::json!({
+            "status": "no_items_to_retry",
+            "message": "No failed items to retry"
+        })));
+    }
+
+    // Reset failed items to pending for retry
+    for item in items {
+        sqlx::query("UPDATE import_items SET status = 'pending', retry_count = $1 WHERE id = $2")
+            .bind(item.retry_count)
+            .bind(item.id)
+            .execute(&state.pool)
+            .await
+            .map_err(|e| {
+                tracing::error!("Failed to reset item for retry: {}", e);
+                AppError::Internal(e.to_string())
+            })?;
+    }
+
+    tracing::info!("Resumed import job: {}", job_id);
+
+    Ok(Json(serde_json::json!({
+        "status": "resumed",
+        "message": "Import job resumed, failed items reset for retry"
+    })))
+}
+
+/// Delete an import job and optionally its imported documents
+pub async fn delete_import(
+    State(state): State<AppState>,
+    Path(job_id): Path<Uuid>,
+    Json(req): Json<DeleteImportRequest>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    use crate::services::import::{ImportJobRunner, ImportConfig};
+
+    let config = ImportConfig::from_env();
+    let runner = ImportJobRunner::new(config);
+
+    let rows_affected = runner.delete_job(&state.pool, job_id, req.delete_documents)
+        .await
+        .map_err(|e| {
+            tracing::error!("Failed to delete import job: {}", e);
+            AppError::Internal(e.to_string())
+        })?;
+
+    tracing::info!("Deleted import job: {} (rows affected: {})", job_id, rows_affected);
+
+    Ok(Json(serde_json::json!({
+        "status": "deleted",
+        "message": format!("Import job deleted successfully (documents_deleted: {})", req.delete_documents),
+        "rows_affected": rows_affected
+    })))
+}
+
+// ============================================
 // Error Handling
 // ============================================
 
