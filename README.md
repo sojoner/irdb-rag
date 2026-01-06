@@ -1,322 +1,203 @@
 # RAG Chat - Hybrid Search Document Chat System
 
-A Rust-based RAG (Retrieval Augmented Generation) system using:
-- **ParadeDB** - PostgreSQL with pg_search (BM25) + pgvector for hybrid search
-- **Leptos/Axum** - Rust web framework
-- **FastEmbed** - Local ONNX embeddings (no API needed)
-- **OpenAI/Anthropic/OpenRouter** - LLM completion APIs
+A high-performance, full-stack Rust RAG (Retrieval Augmented Generation) system utilizing **Leptos** for a reactive UI and **Axum** for the backend. It leverages **ParadeDB** for advanced hybrid search capabilities, combining BM25 keyword search with semantic vector search.
 
-## 🚀 Quick Start (5 minutes)
+## 🏗 Architecture
 
-### 1. Prerequisites
-```bash
-# Install Rust (if not already)
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+The system follows a modular, layered architecture with a specialized pipeline for document processing:
 
-# Docker for the database
-docker --version  # Ensure Docker is installed
+```mermaid
+graph TD
+    Client[Leptos Web UI] <--> API[Axum API Server]
+    
+    subgraph "Backend Services"
+        API <--> Search[Search Service]
+        API <--> Indexer[Indexing Service]
+        
+        Indexer --> Enricher[Enrichment Pipeline]
+        Enricher -- Extract/Summary/Entities --> LLM[LLM API]
+        Enricher -- Generate Vectors --> Embed[Embedding API]
+    end
+    
+    Search <--> DB[(ParadeDB)]
+    Indexer --> DB
+    
+    subgraph "Database"
+        DB -- pg_search --> BM25[Keyword Index]
+        DB -- pgvector --> Vector[Semantic Index]
+    end
 ```
 
-### 2. Start the Database
-```bash
-# Clone and enter the project
-cd rag-chat
+- **Frontend**: Leptos 0.8 (SSR + Hydration) for a reactive, type-safe web interface.
+- **Backend**: Axum 0.8 providing a robust REST API and server-side rendering capabilities.
+- **Database**: **PostgreSQL** (Custom Image) serving as the "Brain", utilizing:
+  - `pg_search` for BM25 keyword search.
+  - `pgvector` for semantic vector search.
+  - Reciprocal Rank Fusion (RRF) to combine results.
+- **AI Integration**:
+  - **Embeddings**: Connects to any OpenAI-compatible embedding API (e.g., LM Studio, OpenRouter, OpenAI).
+  - **LLM**: Connects to any OpenAI-compatible chat completion API for generating responses.
 
-# Start ParadeDB (includes pgvector + pg_search)
+### Database Schema
+
+The core database structure is defined in [`sql/init.sql`](./sql/init.sql). It includes:
+
+- **`documents`**: Stores document metadata and full content.
+- **`document_chunks`**: Stores text chunks and their vector embeddings.
+- **`import_jobs` / `import_items`**: Tracks batch import operations, progress, and error states.
+- **`hybrid_search`**: A custom PostgreSQL function implementing Reciprocal Rank Fusion (RRF) to combine BM25 and Vector search results.
+
+## ✨ Features & Pipeline
+
+The system employs a sophisticated **5-Stage Indexing Pipeline** to ensure high-quality retrieval:
+
+1.  **Extract & Enrich**:
+    - Extracts text using **Docling** (optional) or standard parsers.
+    - Uses an LLM to generate a **Summary**, extract **Keywords**, and identify **Named Entities** (Persons, Orgs, Locations).
+    - Classifies documents into **Wikipedia Categories**.
+2.  **Chunking**: Smartly splits content into manageable chunks (default 512 tokens).
+3.  **Context Enrichment**: Prepends document metadata (Title, Summary, Keywords, Questions) to *every chunk*. This "Contextual Chunking" significantly improves retrieval accuracy by making chunks self-contained.
+4.  **Embedding**: Generates vector embeddings for all enriched chunks in parallel.
+5.  **Storage**: Saves structured metadata and vectors to ParadeDB for hybrid search.
+
+### Batch Import & Job Management
+
+For large-scale ingestion, the system uses a robust **Job Management System**:
+
+- **Resilience**: Automatic retry with exponential backoff for transient errors (e.g., API timeouts).
+- **Error Handling**: Distinguishes between transient (retryable) and permanent (skippable) errors.
+- **Tracking**: Detailed progress tracking at both Job and Item levels (processed, failed, skipped).
+- **Background Processing**: Asynchronous workers handle imports without blocking the main API.
+
+## 🚀 Quick Start
+
+### 1. Prerequisites
+
+- **Rust**: [Install Rust](https://rustup.rs/)
+- **Docker**: Required for the database.
+- **AI Provider**: Access to an OpenAI-compatible API for embeddings and chat (e.g., running [LM Studio](https://lmstudio.ai/) locally or using OpenRouter/OpenAI).
+
+### 2. Start the Database
+
+```bash
+# Start the database (Custom PostgreSQL with pgvector + pg_search)
 docker compose up -d
 
-# Wait for healthy status
+# Wait for the database to be ready
 docker compose ps
 ```
 
-### 3. Configure
+### 3. Configuration
+
+Copy the example environment file and configure your API endpoints:
+
 ```bash
-# Copy and edit config
 cp .env.example .env
-
-# Edit .env with your LLM API key
-# For OpenAI:
-#   LLM_API_KEY=sk-your-key
-# For Anthropic:
-#   LLM_API_URL=https://api.anthropic.com/v1
-#   LLM_API_KEY=sk-ant-your-key
 ```
 
-### 4. Build & Run
-```bash
-# First run (downloads embedding model, ~100MB)
-cargo run
+Edit `.env` to point to your AI provider. For example, if using LM Studio locally:
 
-# Or run with logging
-RUST_LOG=info cargo run
+```env
+# Database
+DATABASE_URL=postgres://rag_user:rag_password@localhost:15432/rag_chat
+
+# LLM (Chat)
+LLM_API_URL=http://localhost:1234/v1
+LLM_MODEL=qwen2.5-7b-instruct
+
+# Embeddings
+EMBEDDING_API_URL=http://localhost:1234/v1
+EMBEDDING_MODEL=text-embedding-nomic-embed-text-v1.5
+EMBEDDING_DIMENSIONS=768
 ```
 
-### 5. Access
-- **Web UI**: http://localhost:3000
-- **PgAdmin**: http://localhost:5050 (admin@rag.local / admin)
+### 4. Run the Application
 
-## 📄 Index Documents
-
-### Index a single file
 ```bash
-cargo run -- index --path ./documents/my-presentation.pdf
+# Run the server
+cargo run -- serve
 ```
 
-### Index an entire directory (with progress tracking)
+Access the Web UI at **http://localhost:3000**.
+
+## 📖 Usage
+
+### Indexing Documents
+
+The system provides a CLI for indexing documents from various sources.
+
+**Index a local directory:**
 ```bash
-# Basic indexing with progress
 cargo run -- index --path ./documents
-
-# With debug logging to see enriched metadata
-RUST_LOG=debug cargo run -- index --path ./documents
 ```
 
-### Index a URL
+**Index a specific file:**
+```bash
+cargo run -- index --path ./documents/report.pdf
+```
+
+**Index a URL:**
 ```bash
 cargo run -- index --url https://example.com/whitepaper.pdf
 ```
 
-### Watch folders for real-time indexing
+**Watch a folder for changes (Real-time Indexing):**
 ```bash
 cargo run -- watch --folders ./documents
 ```
 
-### Progress Output
+### API Examples
 
-The indexer shows detailed progress:
-```
-📚 Found 50 documents to index (1250.45 MB total)
+You can interact directly with the API using `curl`.
 
-┌─ Document 1/50: guide.pdf (0.45 MB)
-  ├─ Stage 1/5: Extracting & enriching content...
-  │   ✓ Duration: 2.34s
-  │   📄 Title: Platform Engineering Guide
-  │   📝 Summary: A comprehensive guide to building platform...
-  │   🔑 Keywords: ["platform", "engineering", "kubernetes"]
-  │   👥 Entities: { "persons": [...], "organizations": [...] }
-  ├─ Stage 2/5: Chunking content...
-  │   ✓ Duration: 0.12s | Created 15 chunks
-  ├─ Stage 3/5: Enriching chunks...
-  │   ✓ Duration: 0.08s
-  ├─ Stage 4/5: Generating embeddings...
-  │   ✓ Duration: 3.45s | Embedded 16 items
-  └─ Stage 5/5: Storing in database...
-      ✓ Duration: 0.34s | Stored document #1
-  ⏱️  Total time: 6.33s
-
-└─ ✓ Completed
-
-... (more documents)
-
-🎉 Indexing complete: 50 documents processed (1250.45 MB total)
-```
-
-**Features:**
-- ✅ **Document Progress**: `Document X/Y` shows overall progress
-- ✅ **5-Stage Pipeline**: Extract → Chunk → Enrich → Embed → Store
-- ✅ **Timing Data**: Duration for each stage and total time
-- ✅ **Bin Packing**: Smaller files processed first for quicker visible progress
-- ✅ **Debug Traces**: `RUST_LOG=debug` shows:
-  - Extracted title, summary, keywords
-  - All named entities (persons, organizations, products, locations, concepts)
-  - Formatted JSON of enriched metadata
-
-## 🔍 Search Features
-
-### Hybrid Search
-Combines BM25 (keyword) + Vector (semantic) search using Reciprocal Rank Fusion (RRF).
-
-Adjust weights in the UI sidebar:
-- Higher BM25 weight → More exact keyword matches
-- Higher Vector weight → More semantic similarity
-
-### Filters
-
-- **Category**: Filter by taxonomy (Technology, AI, etc.)
-- **Date Range**: Filter by document date
-- **Location**: Filter by mentioned locations
-- **Keywords**: Filter by extracted keywords
-
-### Document Preview
-
-Click on any search result to open a rich preview modal showing:
-
-- Full document metadata (type, word count, creation date, source)
-- Document summary
-- All extracted keywords (as blue tags)
-- Mentioned locations (as green tags)
-- Full document content (scrollable)
-- Author information
-
-The preview modal takes up 60% of the screen on the right side with a clean, organized layout.
-
-## 💬 Chat with Documents
-
-1. Switch to Chat view
-2. Ask questions about your documents
-3. Claude responds using retrieved context
-4. Sources are cited with relevance scores
-
-## 🛠 Architecture
-
-```
-┌─────────────────────────────────────────────────────────┐
-│                     Leptos/Axum UI                      │
-├─────────────────────────────────────────────────────────┤
-│                       REST API                          │
-├──────────────┬──────────────┬──────────────────────────┤
-│   Indexer    │   Search     │       Chat               │
-│  (FastEmbed) │  (Hybrid)    │  (LLM + Context)         │
-├──────────────┴──────────────┴──────────────────────────┤
-│                    ParadeDB                             │
-│         (PostgreSQL + pg_search + pgvector)             │
-└─────────────────────────────────────────────────────────┘
-```
-
-### Database Schema
-
-| Table | Purpose |
-|-------|---------|
-| `documents` | Core document storage with embeddings |
-| `document_chunks` | Granular chunks for retrieval |
-| `document_assets` | Images, formulas, tables |
-| `categories` | Wikipedia-style taxonomy |
-| `conversations` | Chat history |
-| `messages` | Chat messages with context refs |
-
-### Hybrid Search Algorithm
-
-```sql
--- RRF (Reciprocal Rank Fusion)
-combined_score = 
-    bm25_weight * (1 / (60 + bm25_rank)) +
-    vector_weight * (1 / (60 + vector_rank))
-```
-
-## 📊 API Endpoints
-
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/api/search` | POST | Hybrid search with filters |
-| `/api/chat` | POST | Chat with RAG context |
-| `/api/documents` | GET | List documents |
-| `/api/documents/:id` | GET | Get document |
-| `/api/documents/:id/assets` | GET | Get extracted assets |
-| `/api/documents/:id/markdown` | GET | Export as markdown |
-| `/api/categories` | GET | List taxonomy categories |
-| `/api/index` | POST | Index document/URL |
-
-## ⚡ Performance
-
-Expected latencies (Mac M2):
-
-| Operation | Time |
-|-----------|------|
-| Embed 1 chunk | ~5ms |
-| BM25 search (100k docs) | ~10ms |
-| Vector search (100k docs) | ~15ms |
-| Hybrid search (RRF) | ~30ms |
-| Full RAG response | 1-3s |
-
-## 🔧 Configuration
-
-### Embedding Models
-
-Change in `.env`:
+**Hybrid Search:**
 ```bash
-# Fast, good quality (default)
-EMBEDDING_MODEL=all-MiniLM-L6-v2
-
-# Better quality, slower
-EMBEDDING_MODEL=bge-small-en-v1.5
-
-# Quantized, 2x faster
-EMBEDDING_MODEL=all-MiniLM-L6-v2-q
+curl -X POST http://localhost:3000/api/search \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "platform engineering",
+    "limit": 5,
+    "filters": {
+      "keywords": ["kubernetes"]
+    }
+  }'
 ```
 
-### LLM Providers
-
-**OpenAI:**
-```env
-LLM_PROVIDER=openai
-LLM_API_URL=https://api.openai.com/v1
-LLM_MODEL=gpt-4
-```
-
-**Anthropic:**
-```env
-LLM_PROVIDER=anthropic
-LLM_API_URL=https://api.anthropic.com/v1
-LLM_MODEL=claude-3-opus-20240229
-```
-
-**OpenRouter (any model):**
-```env
-LLM_PROVIDER=openrouter
-LLM_API_URL=https://openrouter.ai/api/v1
-LLM_MODEL=anthropic/claude-3-opus
-```
-
-## 🧪 Testing & Coverage
-
-### Run Tests
+**Chat with Context:**
 ```bash
-# All tests
+curl -X POST http://localhost:3000/api/chat \
+  -H "Content-Type: application/json" \
+  -d '{
+    "messages": [
+      { "role": "user", "content": "What are the key pillars of platform engineering?" }
+    ],
+    "conversation_id": null
+  }'
+```
+
+## 🧪 Testing
+
+The project includes a comprehensive test suite covering unit and integration tests.
+
+```bash
+# Run all tests
 cargo test
 
-# Integration tests only
-cargo test --test '*'
-
-# Specific test
-cargo test test_indexing_pipeline_metadata_and_enrichment
+# Run specific test
+cargo test search_syntax_test
 ```
 
-### Code Coverage
+## 🛠 Development
 
-Or run manually:
-```bash
-# HTML report
-cargo llvm-cov --features ssr --html
-open target/llvm-cov/html/index.html
-
-# LCOV (for CI/Codecov)
-cargo llvm-cov --features ssr --lcov --output-path lcov.info
-
-# Both formats
-cargo llvm-cov --features ssr --html --lcov --output-path lcov.info
-```
-
-## 📚 See Also
-
-- [AGENT.md](./AGENT.md) - Technical deep-dive and research
-- [ParadeDB Docs](https://docs.paradedb.com/)
-- [FastEmbed](https://github.com/Anush008/fastembed-rs)
-
-## 🐛 Troubleshooting
-
-**Database connection error:**
-```bash
-docker compose logs db
-# Ensure container is healthy
-docker compose ps
-```
-
-**Embedding model download fails:**
-```bash
-# Models are cached in ~/.cache/huggingface/
-rm -rf ~/.cache/huggingface/fastembed
-cargo run
-```
-
-**Search returns no results:**
-```sql
--- Check index exists
-\d+ documents_search_idx
-
--- Reindex if needed
-CALL paradedb.create_bm25(...);
-```
+- **Database Migrations**: Managed via `sqlx`.
+  ```bash
+  sqlx migrate run
+  ```
+- **Hot Reload**: Use `cargo-leptos` for development with hot reloading.
+  ```bash
+  cargo leptos watch
+  ```
 
 ## License
 
-MIT
+© 2026 build by sojoner with AI   

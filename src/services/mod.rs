@@ -3,4 +3,8 @@ pub mod indexing;
 #[cfg(feature = "ssr")]
 pub mod enrichment;
 #[cfg(feature = "ssr")]
+pub mod enrichment_utils;
+#[cfg(feature = "ssr")]
 pub mod import;
+#[cfg(feature = "ssr")]
+pub mod utils;

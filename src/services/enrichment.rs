@@ -10,6 +10,10 @@ use uuid::Uuid;
 
 use crate::domain::models::LLMConfig;
 use crate::infra::llm::{call_llm_with_options};
+use crate::services::enrichment_utils::{
+    parse_keywords_from_string, clean_json_response, extract_author_from_entities,
+    merge_entities, generate_category_uuid, batch_text,
+};
 
 /// Structured metadata response from LLM
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -274,75 +278,30 @@ impl Enricher {
         docling_response: &Value,
         title_hint: &str,
     ) {
-        // Extract document-level metadata
         if let Some(doc_metadata) = docling_response.get("document")
             .and_then(|d| d.get("metadata"))
         {
             metadata.docling_metadata = Some(doc_metadata.clone());
 
-            // Extract title from Docling metadata if available
-            if metadata.title.is_none() || metadata.title.as_deref() == Some(title_hint) {
-                if let Some(title) = doc_metadata.get("title").and_then(|t| t.as_str()) {
-                    if !title.is_empty() {
-                        metadata.title = Some(title.to_string());
-                    }
-                }
-            }
-
-            // Extract author from Docling metadata
-            if metadata.author.is_none() {
-                if let Some(author) = doc_metadata.get("author").and_then(|a| a.as_str()) {
-                    if !author.is_empty() {
-                        metadata.author = Some(author.to_string());
-                    }
-                }
-            }
-
-            // Extract creation date
-            if let Some(created) = doc_metadata.get("created")
-                .or_else(|| doc_metadata.get("creation_date"))
-                .or_else(|| doc_metadata.get("CreationDate"))
-                .and_then(|d| d.as_str())
-            {
-                metadata.creation_date = Some(created.to_string());
-            }
-
-            // Extract modification date
-            if let Some(modified) = doc_metadata.get("modified")
-                .or_else(|| doc_metadata.get("modification_date"))
-                .or_else(|| doc_metadata.get("ModDate"))
-                .and_then(|d| d.as_str())
-            {
-                metadata.modification_date = Some(modified.to_string());
-            }
+            // Extract and apply metadata fields using pure functions
+            extract_string_field(doc_metadata, &["title"], &mut metadata.title, title_hint);
+            extract_string_field(doc_metadata, &["author"], &mut metadata.author, "");
+            extract_string_field(doc_metadata, &["created", "creation_date", "CreationDate"],
+                               &mut metadata.creation_date, "");
+            extract_string_field(doc_metadata, &["modified", "modification_date", "ModDate"],
+                               &mut metadata.modification_date, "");
         }
 
         // Extract page count
-        if let Some(pages) = docling_response.get("document")
+        metadata.page_count = docling_response.get("document")
             .and_then(|d| d.get("pages"))
             .and_then(|p| p.as_array())
-        {
-            metadata.page_count = Some(pages.len() as i32);
-        }
+            .map(|pages| pages.len() as i32);
 
-        // Extract tables
-        if let Some(tables) = docling_response.get("tables")
-            .and_then(|t| t.as_array())
-        {
-            if !tables.is_empty() {
-                metadata.tables = Some(tables.clone());
-            }
-        }
-
-        // Extract images
-        if let Some(images) = docling_response.get("images")
-            .or_else(|| docling_response.get("document").and_then(|d| d.get("images")))
-            .and_then(|i| i.as_array())
-        {
-            if !images.is_empty() {
-                metadata.images = Some(images.clone());
-            }
-        }
+        // Extract tables and images
+        metadata.tables = extract_array_if_nonempty(docling_response, &["tables"]);
+        metadata.images = extract_array_if_nonempty(docling_response, &["images"])
+            .or_else(|| extract_array_if_nonempty(docling_response, &["document", "images"]));
     }
 
     /// Extract metadata from content using LLM with SLIM NER format
@@ -377,12 +336,8 @@ impl Enricher {
         // 3. Extract entities using SLIM NER (works best on shorter chunks)
         let entities = self.extract_entities(&context).await?;
 
-        // 4. Extract author from entities if present
-        let author = entities["persons"]
-            .as_array()
-            .and_then(|arr| arr.first())
-            .and_then(|v| v.as_str())
-            .map(String::from);
+        // 4. Extract author from entities if present using pure function
+        let author = extract_author_from_entities(&entities);
 
         Ok(DocumentMetadata {
             title: Some(title_hint.to_string()),
@@ -432,13 +387,8 @@ impl Enricher {
             .await
             .context("Failed to extract keywords")?;
 
-        // Parse comma-separated keywords
-        let keywords: Vec<String> = response
-            .split(',')
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty() && s.len() < 50) // Reasonable keyword length
-            .take(8) // Limit to 8 keywords
-            .collect();
+        // Parse comma-separated keywords using pure function
+        let keywords = parse_keywords_from_string(&response);
 
         Ok(keywords)
     }
@@ -449,66 +399,15 @@ impl Enricher {
         metadata: &mut DocumentMetadata,
         docling_response: &Value,
     ) {
-        // Extract document origin information
-        if let Some(origin) = docling_response.get("document").and_then(|d| d.get("metadata")) {
-            metadata.document_origin = Some(DocumentOrigin {
-                mimetype: origin.get("mimetype").and_then(|v| v.as_str()).map(String::from),
-                filename: origin.get("filename").and_then(|v| v.as_str()).map(String::from),
-                binary_hash: origin.get("binary_hash").and_then(|v| v.as_str()).map(String::from),
-                uri: origin.get("uri").and_then(|v| v.as_str()).map(String::from),
-            });
-        }
+        // Extract document origin using pure function
+        metadata.document_origin = extract_document_origin(docling_response);
 
-        // Extract document structure information
-        let mut element_types = Vec::new();
-        let mut table_count = 0;
-        let mut figure_count = 0;
-        let mut has_formulas = false;
-        let mut sections = Vec::new();
-
-        // Count tables
-        if let Some(tables) = docling_response.get("tables").and_then(|v| v.as_array()) {
-            table_count = tables.len() as i32;
-        }
-
-        // Count figures/pictures
-        if let Some(pictures) = docling_response
-            .get("pictures")
-            .or_else(|| docling_response.get("document").and_then(|d| d.get("images")))
-            .and_then(|v| v.as_array())
-        {
-            figure_count = pictures.len() as i32;
-        }
-
-        // Check for formulas in the document content
-        if let Some(doc) = docling_response.get("document") {
-            if let Some(content) = doc.get("md_content").and_then(|v| v.as_str()) {
-                has_formulas = content.contains("$$") || content.contains("\\[");
-            }
-        }
-
-        // Collect element types from the document structure
-        if let Some(doc) = docling_response.get("document") {
-            if let Some(texts) = doc.get("texts").and_then(|v| v.as_array()) {
-                for item in texts {
-                    if let Some(obj_type) = item.get("_object_type").and_then(|v| v.as_str()) {
-                        if !element_types.contains(&obj_type.to_string()) {
-                            element_types.push(obj_type.to_string());
-                        }
-
-                        // Collect section titles
-                        if obj_type == "SectionHeader" {
-                            if let Some(text) = item
-                                .get("content")
-                                .and_then(|v| v.as_str())
-                            {
-                                sections.push(text.to_string());
-                            }
-                        }
-                    }
-                }
-            }
-        }
+        // Extract structure using functional composition
+        let (element_types, sections) = extract_document_structure(docling_response);
+        let table_count = count_array_items(docling_response, &["tables"]) as i32;
+        let figure_count = count_array_items(docling_response, &["pictures"])
+            .max(count_array_items(docling_response, &["document", "images"])) as i32;
+        let has_formulas = has_formulas_in_document(docling_response);
 
         metadata.document_structure = Some(DocumentStructure {
             sections,
@@ -520,16 +419,12 @@ impl Enricher {
             element_types,
         });
 
-        // Calculate extraction quality metrics
-        let has_content = metadata.page_count.unwrap_or(0) > 0;
-        let has_structure = metadata.document_structure.is_some();
-        let has_metadata = metadata.document_origin.is_some();
-
-        metadata.extraction_quality = Some(ExtractionQuality {
-            confidence_score: if has_content && has_structure { 0.9 } else { 0.6 },
-            completeness: if has_content && has_structure && has_metadata { 0.95 } else { 0.7 },
-            layout_preserved: has_structure,
-        });
+        // Calculate extraction quality using pure function
+        metadata.extraction_quality = Some(calculate_extraction_quality(
+            metadata.page_count.unwrap_or(0) > 0,
+            metadata.document_structure.is_some(),
+            metadata.document_origin.is_some(),
+        ));
     }
 
     /// Extract file system metadata (creation and modification times)
@@ -628,14 +523,9 @@ Respond ONLY with a JSON object in this exact format (no markdown, no explanatio
 
     /// Parse category classification response from LLM
     fn parse_category_classification(&self, response: &str) -> Result<CategoryClassification> {
-        let cleaned = response
-            .trim()
-            .trim_start_matches("```json")
-            .trim_start_matches("```")
-            .trim_end_matches("```")
-            .trim();
+        let cleaned = clean_json_response(response);
 
-        let parsed: CategoryClassification = serde_json::from_str(cleaned)
+        let parsed: CategoryClassification = serde_json::from_str(&cleaned)
             .context("Failed to parse category classification JSON")?;
 
         Ok(parsed)
@@ -652,53 +542,9 @@ Respond ONLY with a JSON object in this exact format (no markdown, no explanatio
             "questions": vec![] as Vec<String>
         });
 
-        // Split content into sentences
+        // Split content into sentences and batch using pure function
         let sentences = split_into_sentences(content);
-
-        // Process sentences in optimized batches for efficiency
-        // Group sentences into ~2000 char batches (was 500) to reduce LLM calls
-        let mut batches = Vec::new();
-        let mut batch = String::new();
-        const TARGET_BATCH_SIZE: usize = 2000; // Increased from 500 for better batching
-        const MAX_BATCHES: usize = 3; // Reduced from 15 to 3 batches max
-
-        for sentence in sentences {
-            // Skip very short sentences (likely fragments)
-            if sentence.len() < 10 {
-                continue;
-            }
-
-            // Add to batch
-            if !batch.is_empty() {
-                batch.push(' ');
-            }
-            batch.push_str(&sentence);
-
-            // When batch reaches target size, save it and start new one
-            if batch.len() >= TARGET_BATCH_SIZE {
-                if batches.len() < MAX_BATCHES {
-                    batches.push(batch.clone());
-                    batch.clear();
-                } else {
-                    // If we've hit max batches, append remaining to last batch
-                    if let Some(last) = batches.last_mut() {
-                        last.push(' ');
-                        last.push_str(&batch);
-                    }
-                    batch.clear();
-                }
-            }
-        }
-
-        // Add any remaining content to batches
-        if !batch.is_empty() {
-            if batches.len() < MAX_BATCHES {
-                batches.push(batch);
-            } else if let Some(last) = batches.last_mut() {
-                last.push(' ');
-                last.push_str(&batch);
-            }
-        }
+        let batches = batch_text(sentences, 2000, 3);
 
         // Process all batches in parallel
         let system = "You are an expert named entity extraction system. You must extract ALL entities from the text and return them in valid JSON format.";
@@ -751,54 +597,32 @@ Text: {}"#,
             })
             .collect();
 
-        // Execute all batch extractions in parallel
-        let results = futures::future::join_all(futures).await;
-
-        // Merge all batch results
-        for llm_response in results.into_iter().flatten() {
-            if let Ok(batch_entities) = self.parse_json_entities(&llm_response) {
-                merge_entities(&mut all_entities, &batch_entities);
-            }
-        }
+        // Execute all batch extractions in parallel with functional composition
+        futures::future::join_all(futures)
+            .await
+            .into_iter()
+            .filter_map(|result| result.ok())
+            .for_each(|llm_response| {
+                if let Ok(batch_entities) = self.parse_json_entities(&llm_response) {
+                    merge_entities(&mut all_entities, &batch_entities);
+                }
+            });
 
         Ok(all_entities)
     }
 
     /// Parse JSON response from entity extraction
     fn parse_json_entities(&self, response: &str) -> Result<Value> {
-        // Clean response - remove markdown code blocks if present
-        let cleaned = response
-            .trim()
-            .trim_start_matches("```json")
-            .trim_start_matches("```")
-            .trim_end_matches("```")
-            .trim();
+        // Clean response using pure function
+        let cleaned = clean_json_response(response);
 
         // Try to parse as JSON
-        let parsed: Value = serde_json::from_str(cleaned)
+        let parsed: Value = serde_json::from_str(&cleaned)
             .context("Failed to parse entity extraction JSON")?;
 
-        // Ensure all expected fields exist with empty arrays as defaults
-        let mut entities = json!({
-            "persons": [],
-            "organizations": [],
-            "products": [],
-            "locations": [],
-            "concepts": [],
-            "questions": []
-        });
-
-        if let Some(obj) = parsed.as_object() {
-            if let Some(entities_obj) = entities.as_object_mut() {
-                for (key, value) in obj {
-                    if entities_obj.contains_key(key) {
-                        if let Some(arr) = value.as_array() {
-                            entities_obj.insert(key.clone(), json!(arr));
-                        }
-                    }
-                }
-            }
-        }
+        // Ensure all expected fields exist with empty arrays using pure function
+        use crate::services::enrichment_utils::ensure_entity_fields;
+        let entities = ensure_entity_fields(&parsed);
 
         Ok(entities)
     }
@@ -843,62 +667,274 @@ fn split_into_sentences(text: &str) -> Vec<String> {
         .collect()
 }
 
-/// Merge entities from source into target, deduplicating values
-fn merge_entities(target: &mut Value, source: &Value) {
-    if let (Some(target_obj), Some(source_obj)) = (target.as_object_mut(), source.as_object()) {
-        for (key, source_array) in source_obj {
-            if let Some(source_items) = source_array.as_array() {
-                let target_array = target_obj
-                    .entry(key.clone())
-                    .or_insert_with(|| json!([]));
+// Pure helper functions for metadata extraction (functional programming patterns)
 
-                if let Some(target_items) = target_array.as_array_mut() {
-                    for item in source_items {
-                        if let Some(s) = item.as_str() {
-                            // Only add if not already present (deduplicate)
-                            if !target_items.iter().any(|v| v.as_str() == Some(s)) {
-                                target_items.push(json!(s));
-                            }
-                        }
-                    }
+/// Extract a string field from JSON using a prioritized list of keys
+fn extract_string_field(
+    source: &Value,
+    keys: &[&str],
+    target: &mut Option<String>,
+    hint: &str,
+) {
+    if target.is_none() || target.as_deref() == Some(hint) {
+        for key in keys {
+            if let Some(value) = source.get(key).and_then(|v| v.as_str()) {
+                if !value.is_empty() {
+                    *target = Some(value.to_string());
+                    return;
                 }
             }
         }
     }
 }
 
-/// Generate a deterministic UUID for a category based on its name
-/// This ensures the same category name always produces the same UUID
-fn generate_category_uuid(category_name: &str) -> Uuid {
-    // Use a simple deterministic approach: hash the category name
-    // This ensures the same category name always produces the same UUID
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
+/// Extract a non-empty array from JSON at the given key path
+fn extract_array_if_nonempty(json: &Value, path: &[&str]) -> Option<Vec<Value>> {
+    let mut current = json;
+    for key in path {
+        current = current.get(key)?;
+    }
+    current.as_array().and_then(|arr| {
+        if arr.is_empty() {
+            None
+        } else {
+            Some(arr.clone())
+        }
+    })
+}
 
-    let mut hasher = DefaultHasher::new();
-    category_name.hash(&mut hasher);
-    let hash = hasher.finish();
+/// Extract document origin information from Docling response
+fn extract_document_origin(docling_response: &Value) -> Option<DocumentOrigin> {
+    docling_response
+        .get("document")
+        .and_then(|d| d.get("metadata"))
+        .map(|origin| DocumentOrigin {
+            mimetype: origin.get("mimetype").and_then(|v| v.as_str()).map(String::from),
+            filename: origin.get("filename").and_then(|v| v.as_str()).map(String::from),
+            binary_hash: origin.get("binary_hash").and_then(|v| v.as_str()).map(String::from),
+            uri: origin.get("uri").and_then(|v| v.as_str()).map(String::from),
+        })
+}
 
-    // Create a deterministic UUID from the hash
-    // We'll use the hash as the source for UUID generation
-    let bytes: [u8; 16] = [
-        ((hash >> 56) & 0xFF) as u8,
-        ((hash >> 48) & 0xFF) as u8,
-        ((hash >> 40) & 0xFF) as u8,
-        ((hash >> 32) & 0xFF) as u8,
-        ((hash >> 24) & 0xFF) as u8,
-        ((hash >> 16) & 0xFF) as u8,
-        ((hash >> 8) & 0xFF) as u8,
-        (hash & 0xFF) as u8,
-        ((hash >> 56) & 0xFF) as u8,
-        ((hash >> 48) & 0xFF) as u8,
-        ((hash >> 40) & 0xFF) as u8,
-        ((hash >> 32) & 0xFF) as u8,
-        ((hash >> 24) & 0xFF) as u8,
-        ((hash >> 16) & 0xFF) as u8,
-        ((hash >> 8) & 0xFF) as u8,
-        (hash & 0xFF) as u8,
-    ];
+/// Extract document structure (element types and sections) using functional composition
+fn extract_document_structure(docling_response: &Value) -> (Vec<String>, Vec<String>) {
+    let texts = docling_response
+        .get("document")
+        .and_then(|doc| doc.get("texts"))
+        .and_then(|v| v.as_array());
 
-    Uuid::from_bytes(bytes)
+    match texts {
+        Some(texts) => {
+            let element_types: Vec<String> = texts
+                .iter()
+                .filter_map(|item| item.get("_object_type").and_then(|v| v.as_str()))
+                .map(|s| s.to_string())
+                .collect::<std::collections::HashSet<_>>()
+                .into_iter()
+                .collect();
+
+            let sections = texts
+                .iter()
+                .filter(|item| {
+                    item.get("_object_type")
+                        .and_then(|v| v.as_str())
+                        .is_some_and(|t| t == "SectionHeader")
+                })
+                .filter_map(|item| item.get("content").and_then(|v| v.as_str()))
+                .map(|s| s.to_string())
+                .collect();
+
+            (element_types, sections)
+        }
+        None => (Vec::new(), Vec::new()),
+    }
+}
+
+/// Count array items at the given key path
+fn count_array_items(json: &Value, path: &[&str]) -> usize {
+    let mut current = json;
+    for key in path {
+        match current.get(key) {
+            Some(val) => current = val,
+            None => return 0,
+        }
+    }
+    current.as_array().map(|arr| arr.len()).unwrap_or(0)
+}
+
+/// Check if document contains formulas
+fn has_formulas_in_document(docling_response: &Value) -> bool {
+    docling_response
+        .get("document")
+        .and_then(|doc| doc.get("md_content").and_then(|v| v.as_str()))
+        .map(|content| content.contains("$$") || content.contains("\\["))
+        .unwrap_or(false)
+}
+
+/// Calculate extraction quality metrics using pure function
+fn calculate_extraction_quality(has_content: bool, has_structure: bool, has_metadata: bool) -> ExtractionQuality {
+    ExtractionQuality {
+        confidence_score: if has_content && has_structure { 0.9 } else { 0.6 },
+        completeness: if has_content && has_structure && has_metadata { 0.95 } else { 0.7 },
+        layout_preserved: has_structure,
+    }
+}
+
+// Note: merge_entities and generate_category_uuid have been moved to
+// services::enrichment_utils as pure functions and are imported above
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn test_extract_string_field_with_single_key() {
+        let json = json!({ "title": "Test Title" });
+        let mut result = None;
+        extract_string_field(&json, &["title"], &mut result, "");
+        assert_eq!(result, Some("Test Title".to_string()));
+    }
+
+    #[test]
+    fn test_extract_string_field_with_prioritized_keys() {
+        let json = json!({ "modified": "2024-01-01", "modification_date": "2024-01-02" });
+        let mut result = None;
+        extract_string_field(&json, &["modified", "modification_date"], &mut result, "");
+        assert_eq!(result, Some("2024-01-01".to_string()));
+    }
+
+    #[test]
+    fn test_extract_string_field_empty_values_skipped() {
+        let json = json!({ "title": "", "author": "John Doe" });
+        let mut result = None;
+        extract_string_field(&json, &["title", "author"], &mut result, "");
+        assert_eq!(result, Some("John Doe".to_string()));
+    }
+
+    #[test]
+    fn test_extract_array_if_nonempty_success() {
+        let json = json!({ "items": [1, 2, 3] });
+        let result = extract_array_if_nonempty(&json, &["items"]);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().len(), 3);
+    }
+
+    #[test]
+    fn test_extract_array_if_nonempty_empty_array() {
+        let json = json!({ "items": [] });
+        let result = extract_array_if_nonempty(&json, &["items"]);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_extract_array_if_nonempty_missing_key() {
+        let json = json!({});
+        let result = extract_array_if_nonempty(&json, &["items"]);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_extract_document_origin() {
+        let docling = json!({
+            "document": {
+                "metadata": {
+                    "mimetype": "application/pdf",
+                    "filename": "test.pdf",
+                    "binary_hash": "abc123",
+                    "uri": "file:///test.pdf"
+                }
+            }
+        });
+        let origin = extract_document_origin(&docling);
+        assert!(origin.is_some());
+        let o = origin.unwrap();
+        assert_eq!(o.mimetype, Some("application/pdf".to_string()));
+        assert_eq!(o.filename, Some("test.pdf".to_string()));
+    }
+
+    #[test]
+    fn test_extract_document_structure() {
+        let docling = json!({
+            "document": {
+                "texts": [
+                    { "_object_type": "Text", "content": "Hello" },
+                    { "_object_type": "SectionHeader", "content": "Introduction" },
+                    { "_object_type": "Text", "content": "World" },
+                ]
+            }
+        });
+        let (types, sections) = extract_document_structure(&docling);
+        assert!(types.contains(&"Text".to_string()));
+        assert!(types.contains(&"SectionHeader".to_string()));
+        assert_eq!(sections, vec!["Introduction".to_string()]);
+    }
+
+    #[test]
+    fn test_count_array_items() {
+        let json = json!({ "document": { "tables": [1, 2, 3, 4, 5] } });
+        let count = count_array_items(&json, &["document", "tables"]);
+        assert_eq!(count, 5);
+    }
+
+    #[test]
+    fn test_count_array_items_missing_path() {
+        let json = json!({});
+        let count = count_array_items(&json, &["document", "tables"]);
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn test_has_formulas_in_document_true() {
+        let docling = json!({
+            "document": {
+                "md_content": "The equation is $$x^2 + y^2 = z^2$$"
+            }
+        });
+        assert!(has_formulas_in_document(&docling));
+    }
+
+    #[test]
+    fn test_has_formulas_in_document_with_brackets() {
+        let docling = json!({
+            "document": {
+                "md_content": "Formula: \\[x = \\frac{-b}{2a}\\]"
+            }
+        });
+        assert!(has_formulas_in_document(&docling));
+    }
+
+    #[test]
+    fn test_has_formulas_in_document_false() {
+        let docling = json!({
+            "document": {
+                "md_content": "No formulas here"
+            }
+        });
+        assert!(!has_formulas_in_document(&docling));
+    }
+
+    #[test]
+    fn test_calculate_extraction_quality_full() {
+        let quality = calculate_extraction_quality(true, true, true);
+        assert_eq!(quality.confidence_score, 0.9);
+        assert_eq!(quality.completeness, 0.95);
+        assert!(quality.layout_preserved);
+    }
+
+    #[test]
+    fn test_calculate_extraction_quality_partial() {
+        let quality = calculate_extraction_quality(true, false, false);
+        assert_eq!(quality.confidence_score, 0.6);
+        assert_eq!(quality.completeness, 0.7);
+        assert!(!quality.layout_preserved);
+    }
+
+    #[test]
+    fn test_split_into_sentences() {
+        let text = "First sentence. Second sentence! Third sentence?";
+        let sentences = split_into_sentences(text);
+        assert!(!sentences.is_empty());
+        assert!(sentences.iter().all(|s| !s.is_empty()));
+    }
 }

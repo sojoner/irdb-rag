@@ -1,0 +1,10 @@
+{
+  "coverage": {
+    "exclude": [
+      "src/web_app/**/*.rs",
+      "src/*/pages/**/*.rs",
+      "src/*/components/**/*.rs"
+    ],
+    "comment": "Leptos components are tested via E2E tests, not unit tests. Components require browser DOM runtime and can't be meaningfully unit tested."
+  }
+}

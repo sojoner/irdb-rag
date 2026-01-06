@@ -9,6 +9,10 @@ use sqlx::{postgres::PgPoolOptions, PgPool};
 use uuid::Uuid;
 
 use crate::domain::models::{Document, DocumentChunk, DocumentAsset, Category, SearchResult};
+use crate::infra::db_utils::{
+    sanitize_bm25_query, embedding_to_string, has_entity_or_wordcount_filters,
+    extract_unique_ids,
+};
 
 /// Get embedding dimensions from environment (required)
 /// This must match the embedding model's output dimension
@@ -86,6 +90,52 @@ pub struct SearchFilters {
     pub word_count_max: Option<i32>,
 }
 
+/// Check if a document matches all active filters using functional composition
+/// Pure function - composable predicate
+fn matches_all_filters(doc: &Document, filters: &SearchFilters) -> bool {
+    [
+        matches_author_filter(doc, &filters.authors),
+        matches_word_count_filter(doc, filters.word_count_min, filters.word_count_max),
+        matches_entity_filter(doc, &filters.concepts, "concepts"),
+        matches_entity_filter(doc, &filters.organizations, "organizations"),
+        matches_entity_filter(doc, &filters.persons, "persons"),
+        matches_entity_filter(doc, &filters.products, "products"),
+    ]
+    .iter()
+    .all(|&predicate| predicate)
+}
+
+/// Check author filter - pure predicate
+fn matches_author_filter(doc: &Document, authors: &Option<Vec<String>>) -> bool {
+    authors.as_ref()
+        .map(|filter_authors| {
+            doc.author.as_ref()
+                .is_some_and(|author| filter_authors.iter().any(|a| a == author))
+        })
+        .unwrap_or(true)
+}
+
+/// Check word count filter - pure predicate
+fn matches_word_count_filter(doc: &Document, min: Option<i32>, max: Option<i32>) -> bool {
+    let word_count = doc.word_count.unwrap_or(0);
+    min.is_none_or(|m| word_count >= m) && max.is_none_or(|m| word_count <= m)
+}
+
+/// Check single entity filter - pure predicate
+fn matches_entity_filter(doc: &Document, filter: &Option<Vec<String>>, entity_key: &str) -> bool {
+    let Some(filter_vals) = filter else { return true; };
+
+    doc.entities
+        .as_ref()
+        .and_then(|entities| entities.get(entity_key).and_then(|v| v.as_array()))
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str())
+                .any(|s| filter_vals.iter().any(|fv| fv == s))
+        })
+        .unwrap_or(false)
+}
+
 /// Perform hybrid search combining BM25 and vector similarity
 pub async fn hybrid_search(
     pool: &PgPool,
@@ -96,34 +146,11 @@ pub async fn hybrid_search(
     bm25_weight: f64,
     vector_weight: f64,
 ) -> Result<Vec<SearchResult>> {
-    // Sanitize query to handle wildcards and internal ParadeDB query representations
-    // that cause parsing errors. "*" seems to be converted to "id:(*)" internally.
-    let trimmed = query.trim();
+    // Sanitize query using pure function
+    let sanitized_query = sanitize_bm25_query(query);
 
-    // Check for empty ID queries like "id:()", "id: ()", "id:(*)"
-    let is_empty_id = if let Some(stripped) = trimmed.strip_prefix("id:") {
-        let rest = stripped.trim();
-        if rest.starts_with('(') && rest.ends_with(')') {
-            let inside = rest[1..rest.len()-1].trim();
-            inside.is_empty() || inside == "*" || inside == "**"
-        } else {
-            false
-        }
-    } else {
-        false
-    };
-
-    let sanitized_query = if trimmed.is_empty() || trimmed == "*" || is_empty_id {
-        "id:__no_match__"
-    } else {
-        query
-    };
-
-    // Convert embedding to PostgreSQL vector format
-    let embedding_str = format!(
-        "[{}]",
-        embedding.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(",")
-    );
+    // Convert embedding to PostgreSQL vector format using pure function
+    let embedding_str = embedding_to_string(embedding);
 
     let dims = get_embedding_dimensions();
     let sql = format!(
@@ -158,122 +185,22 @@ pub async fn hybrid_search(
         .fetch_all(pool)
         .await?;
 
-    // Apply entity and word count filters by fetching full documents and filtering in-memory
-    if filters.authors.is_some()
-        || filters.concepts.is_some()
-        || filters.organizations.is_some()
-        || filters.persons.is_some()
-        || filters.products.is_some()
-        || filters.word_count_min.is_some()
-        || filters.word_count_max.is_some() {
-
-        // Get full documents for filtering
+    // Apply entity and word count filters using functional composition
+    if has_entity_or_wordcount_filters(filters) {
         let result_ids: Vec<Uuid> = results.iter().map(|r| r.id).collect();
         let docs = get_documents_by_ids(pool, &result_ids).await?;
+        let doc_map: std::collections::HashMap<Uuid, &Document> =
+            docs.iter().map(|d| (d.id, d)).collect();
 
         results.retain(|r| {
-            if let Some(doc) = docs.iter().find(|d| d.id == r.id) {
-                // Check author filter
-                if let Some(ref authors) = filters.authors {
-                    if let Some(ref author) = doc.author {
-                        if !authors.iter().any(|a| a == author) {
-                            return false;
-                        }
-                    } else {
-                        return false;
-                    }
-                }
-
-                // Check word count filter
-                if let Some(min) = filters.word_count_min {
-                    if let Some(wc) = doc.word_count {
-                        if wc < min {
-                            return false;
-                        }
-                    } else {
-                        return false;
-                    }
-                }
-                if let Some(max) = filters.word_count_max {
-                    if let Some(wc) = doc.word_count {
-                        if wc > max {
-                            return false;
-                        }
-                    } else {
-                        return false;
-                    }
-                }
-
-                // Check entity filters (concepts, organizations, persons, products)
-                if let Some(ref entities_obj) = doc.entities {
-                    if let Some(ref concepts) = filters.concepts {
-                        if let Some(entity_concepts) = entities_obj.get("concepts").and_then(|v| v.as_array()) {
-                            let entity_strs: Vec<String> = entity_concepts.iter()
-                                .filter_map(|v| v.as_str())
-                                .map(|s| s.to_string())
-                                .collect();
-                            if !concepts.iter().any(|c| entity_strs.contains(c)) {
-                                return false;
-                            }
-                        } else {
-                            return false;
-                        }
-                    }
-
-                    if let Some(ref orgs) = filters.organizations {
-                        if let Some(entity_orgs) = entities_obj.get("organizations").and_then(|v| v.as_array()) {
-                            let entity_strs: Vec<String> = entity_orgs.iter()
-                                .filter_map(|v| v.as_str())
-                                .map(|s| s.to_string())
-                                .collect();
-                            if !orgs.iter().any(|o| entity_strs.contains(o)) {
-                                return false;
-                            }
-                        } else {
-                            return false;
-                        }
-                    }
-
-                    if let Some(ref persons) = filters.persons {
-                        if let Some(entity_persons) = entities_obj.get("persons").and_then(|v| v.as_array()) {
-                            let entity_strs: Vec<String> = entity_persons.iter()
-                                .filter_map(|v| v.as_str())
-                                .map(|s| s.to_string())
-                                .collect();
-                            if !persons.iter().any(|p| entity_strs.contains(p)) {
-                                return false;
-                            }
-                        } else {
-                            return false;
-                        }
-                    }
-
-                    if let Some(ref products) = filters.products {
-                        if let Some(entity_products) = entities_obj.get("products").and_then(|v| v.as_array()) {
-                            let entity_strs: Vec<String> = entity_products.iter()
-                                .filter_map(|v| v.as_str())
-                                .map(|s| s.to_string())
-                                .collect();
-                            if !products.iter().any(|pr| entity_strs.contains(pr)) {
-                                return false;
-                            }
-                        } else {
-                            return false;
-                        }
-                    }
-                }
-
-                true
-            } else {
-                true // Keep results that we couldn't fetch full documents for
-            }
+            doc_map.get(&r.id)
+                .map(|doc| matches_all_filters(doc, filters))
+                .unwrap_or(true)
         });
     }
 
     // Truncate to requested limit
-    results.truncate(limit as usize);
-
-    Ok(results)
+    Ok(results.into_iter().take(limit as usize).collect())
 }
 
 /// Get documents by list of IDs
@@ -302,30 +229,11 @@ pub async fn bm25_search(
     query: &str,
     limit: i32,
 ) -> Result<Vec<Document>> {
-    let trimmed = query.trim();
-    
-    // Check for empty ID queries like "id:()", "id: ()", "id:(*)"
-    let is_empty_id = if let Some(stripped) = trimmed.strip_prefix("id:") {
-        let rest = stripped.trim();
-        if rest.starts_with('(') && rest.ends_with(')') {
-            let inside = rest[1..rest.len()-1].trim();
-            inside.is_empty() || inside == "*" || inside == "**"
-        } else {
-            false
-        }
-    } else {
-        false
-    };
-
-    let sanitized_query = if trimmed.is_empty() || trimmed == "*" || is_empty_id {
-        "id:__no_match__"
-    } else {
-        query
-    };
+    let sanitized_query = sanitize_bm25_query(query);
 
     let results = sqlx::query_as::<_, Document>(
         r#"
-        SELECT d.* 
+        SELECT d.*
         FROM documents d
         WHERE d.id @@@ $1
         ORDER BY paradedb.score(d.id) DESC
@@ -347,10 +255,7 @@ pub async fn vector_search(
     embedding: &[f32],
     limit: i32,
 ) -> Result<Vec<Document>> {
-    let embedding_str = format!(
-        "[{}]",
-        embedding.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(",")
-    );
+    let embedding_str = embedding_to_string(embedding);
 
     let dims = get_embedding_dimensions();
     let sql = format!(
@@ -394,11 +299,7 @@ pub async fn insert_document(
     pool: &PgPool,
     params: InsertDocumentParams<'_>,
 ) -> Result<Uuid> {
-    let embedding_str = format!(
-        "[{}]",
-        params.embedding.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(",")
-    );
-
+    let embedding_str = embedding_to_string(params.embedding);
     let word_count = params.content.split_whitespace().count() as i32;
 
     let dims = get_embedding_dimensions();
@@ -441,10 +342,7 @@ pub async fn insert_chunk(
     embedding: &[f32],
     page_number: Option<i32>,
 ) -> Result<Uuid> {
-    let embedding_str = format!(
-        "[{}]",
-        embedding.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(",")
-    );
+    let embedding_str = embedding_to_string(embedding);
 
     // Estimate token count (rough approximation: ~4 chars per token)
     let token_count = (content.len() / 4) as i32;
@@ -527,10 +425,7 @@ pub async fn get_relevant_chunks(
     limit: i32,
     document_ids: Option<&[Uuid]>,
 ) -> Result<Vec<DocumentChunk>> {
-    let embedding_str = format!(
-        "[{}]",
-        embedding.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(",")
-    );
+    let embedding_str = embedding_to_string(embedding);
 
     let dims = get_embedding_dimensions();
     let sql = format!(
@@ -761,15 +656,9 @@ pub async fn search_and_get_documents(
     )
     .await?;
 
-    // Step 2: Extract unique document IDs, maintaining order by relevance
-    let mut doc_ids = vec![];
-    let mut seen = std::collections::HashSet::new();
-
-    for result in search_results {
-        if seen.insert(result.id) {
-            doc_ids.push(result.id);
-        }
-    }
+    // Step 2: Extract unique document IDs, maintaining order by relevance using pure function
+    let result_ids: Vec<Uuid> = search_results.iter().map(|r| r.id).collect();
+    let doc_ids = extract_unique_ids(&result_ids);
 
     // Step 3: Fetch full documents (limit to requested count)
     let doc_ids_to_fetch: Vec<Uuid> = doc_ids
@@ -916,4 +805,169 @@ pub async fn get_import_job_stats(pool: &PgPool, job_id: Uuid) -> Result<(i32, i
     .await?;
 
     Ok(stats)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::{json, Value};
+
+    fn create_test_document(
+        id: Uuid,
+        author: Option<&str>,
+        word_count: Option<i32>,
+        entities: Option<Value>,
+    ) -> Document {
+        use chrono::Utc;
+        Document {
+            id,
+            title: "Test Doc".to_string(),
+            content: "Test content".to_string(),
+            source_path: None,
+            source_type: "test".to_string(),
+            summary: None,
+            keywords: None,
+            locations: None,
+            entities,
+            author: author.map(|s| s.to_string()),
+            category_id: None,
+            word_count,
+            metadata: None,
+            status: "indexed".to_string(),
+            created_at: Utc::now(),
+        }
+    }
+
+    fn create_test_filters() -> SearchFilters {
+        SearchFilters {
+            category_id: None,
+            date_from: None,
+            date_to: None,
+            locations: None,
+            keywords: None,
+            source_types: None,
+            authors: None,
+            concepts: None,
+            organizations: None,
+            persons: None,
+            products: None,
+            word_count_min: None,
+            word_count_max: None,
+        }
+    }
+
+    #[test]
+    fn test_matches_author_filter_matches() {
+        let doc = create_test_document(Uuid::new_v4(), Some("John"), None, None);
+        let mut filters = create_test_filters();
+        filters.authors = Some(vec!["John".to_string()]);
+
+        assert!(matches_author_filter(&doc, &filters.authors));
+    }
+
+    #[test]
+    fn test_matches_author_filter_no_match() {
+        let doc = create_test_document(Uuid::new_v4(), Some("John"), None, None);
+        let mut filters = create_test_filters();
+        filters.authors = Some(vec!["Jane".to_string()]);
+
+        assert!(!matches_author_filter(&doc, &filters.authors));
+    }
+
+    #[test]
+    fn test_matches_author_filter_no_filter() {
+        let doc = create_test_document(Uuid::new_v4(), Some("John"), None, None);
+        assert!(matches_author_filter(&doc, &None));
+    }
+
+    #[test]
+    fn test_matches_word_count_filter_both_constraints() {
+        let doc = create_test_document(Uuid::new_v4(), None, Some(100), None);
+        assert!(matches_word_count_filter(&doc, Some(50), Some(150)));
+        assert!(!matches_word_count_filter(&doc, Some(150), Some(200)));
+        assert!(!matches_word_count_filter(&doc, Some(50), Some(80)));
+    }
+
+    #[test]
+    fn test_matches_word_count_filter_min_only() {
+        let doc = create_test_document(Uuid::new_v4(), None, Some(100), None);
+        assert!(matches_word_count_filter(&doc, Some(50), None));
+        assert!(!matches_word_count_filter(&doc, Some(150), None));
+    }
+
+    #[test]
+    fn test_matches_word_count_filter_no_constraints() {
+        let doc = create_test_document(Uuid::new_v4(), None, Some(100), None);
+        assert!(matches_word_count_filter(&doc, None, None));
+    }
+
+    #[test]
+    fn test_matches_entity_filter_found() {
+        let entities = json!({
+            "concepts": ["AI", "Machine Learning"]
+        });
+        let doc = create_test_document(Uuid::new_v4(), None, None, Some(entities));
+        let filter = Some(vec!["AI".to_string()]);
+
+        assert!(matches_entity_filter(&doc, &filter, "concepts"));
+    }
+
+    #[test]
+    fn test_matches_entity_filter_not_found() {
+        let entities = json!({
+            "concepts": ["AI", "Machine Learning"]
+        });
+        let doc = create_test_document(Uuid::new_v4(), None, None, Some(entities));
+        let filter = Some(vec!["Blockchain".to_string()]);
+
+        assert!(!matches_entity_filter(&doc, &filter, "concepts"));
+    }
+
+    #[test]
+    fn test_matches_entity_filter_no_filter() {
+        let doc = create_test_document(Uuid::new_v4(), None, None, None);
+        assert!(matches_entity_filter(&doc, &None, "concepts"));
+    }
+
+    #[test]
+    fn test_matches_entity_filter_no_entities() {
+        let doc = create_test_document(Uuid::new_v4(), None, None, None);
+        let filter = Some(vec!["AI".to_string()]);
+        assert!(!matches_entity_filter(&doc, &filter, "concepts"));
+    }
+
+    #[test]
+    fn test_matches_all_filters_all_pass() {
+        let entities = json!({"concepts": ["AI"]});
+        let doc = create_test_document(Uuid::new_v4(), Some("John"), Some(100), Some(entities));
+
+        let mut filters = create_test_filters();
+        filters.authors = Some(vec!["John".to_string()]);
+        filters.word_count_min = Some(50);
+        filters.word_count_max = Some(150);
+        filters.concepts = Some(vec!["AI".to_string()]);
+
+        assert!(matches_all_filters(&doc, &filters));
+    }
+
+    #[test]
+    fn test_matches_all_filters_author_fails() {
+        let doc = create_test_document(Uuid::new_v4(), Some("John"), Some(100), None);
+
+        let mut filters = create_test_filters();
+        filters.authors = Some(vec!["Jane".to_string()]);
+
+        assert!(!matches_all_filters(&doc, &filters));
+    }
+
+    #[test]
+    fn test_matches_all_filters_word_count_fails() {
+        let doc = create_test_document(Uuid::new_v4(), Some("John"), Some(100), None);
+
+        let mut filters = create_test_filters();
+        filters.authors = Some(vec!["John".to_string()]);
+        filters.word_count_min = Some(150);
+
+        assert!(!matches_all_filters(&doc, &filters));
+    }
 }

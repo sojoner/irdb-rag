@@ -249,25 +249,22 @@ impl ImportJobRunner {
             .fetch_all(pool)
             .await?;
 
-            // Delete documents and their related data
-            for (doc_id_opt,) in document_ids {
-                if let Some(doc_id) = doc_id_opt {
-                    // Delete chunks first (if they reference documents)
-                    sqlx::query("DELETE FROM chunks WHERE document_id = $1")
-                        .bind(doc_id)
-                        .execute(pool)
-                        .await
-                        .ok(); // Ignore errors if chunks don't exist
+            // Delete documents and their related data (functional composition with filter_map)
+            let deletion_tasks: Vec<_> = document_ids
+                .into_iter()
+                .filter_map(|(doc_id_opt,)| doc_id_opt)
+                .collect();
 
-                    // Delete document
-                    sqlx::query("DELETE FROM documents WHERE id = $1")
-                        .bind(doc_id)
-                        .execute(pool)
-                        .await
-                        .ok(); // Ignore errors if document doesn't exist
-
-                    tracing::debug!("Deleted document and chunks: {}", doc_id);
-                }
+            for doc_id in deletion_tasks {
+                let _ = sqlx::query("DELETE FROM chunks WHERE document_id = $1")
+                    .bind(doc_id)
+                    .execute(pool)
+                    .await;
+                let _ = sqlx::query("DELETE FROM documents WHERE id = $1")
+                    .bind(doc_id)
+                    .execute(pool)
+                    .await;
+                tracing::debug!("Deleted document and chunks: {}", doc_id);
             }
         }
 
@@ -584,6 +581,60 @@ fn is_indexable_file(path: &std::path::Path) -> bool {
 }
 
 // ============================================================================
+// Error Handling (Functional)
+// ============================================================================
+
+/// Handle item processing error with functional error classification
+/// Pure decision logic extracted from main loop
+async fn handle_item_error(
+    stats: &mut ProcessingStats,
+    pool: &PgPool,
+    item_mgr: &ImportItemManager,
+    item: &ImportItem,
+    error_type: crate::domain::models::ErrorType,
+    error_msg: &str,
+    config: &ImportConfig,
+) -> Result<()> {
+    match error_type {
+        crate::domain::models::ErrorType::Transient => {
+            if item.retry_count < config.max_retries as i32 {
+                let delay = calculate_retry_delay(item.retry_count as u32, config);
+                tracing::warn!(
+                    "Item {} failed with transient error (attempt {}): {}. Will retry in {:?}",
+                    item.id, item.retry_count + 1, error_msg, delay
+                );
+                item_mgr.mark_failed(pool, item.id, item.retry_count + 1, error_msg).await?;
+                tokio::time::sleep(delay).await;
+                sqlx::query("UPDATE import_items SET status = 'pending' WHERE id = $1")
+                    .bind(item.id)
+                    .execute(pool)
+                    .await?;
+            } else {
+                tracing::error!(
+                    "Item {} failed after {} retries: {}",
+                    item.id, item.retry_count, error_msg
+                );
+                item_mgr.mark_failed(pool, item.id, item.retry_count + 1, error_msg).await?;
+                stats.failed += 1;
+            }
+        }
+        crate::domain::models::ErrorType::Permanent => {
+            tracing::warn!("Item {} skipped due to permanent error: {}", item.id, error_msg);
+            item_mgr.mark_skipped(pool, item.id, error_msg).await?;
+            stats.skipped += 1;
+        }
+    }
+    Ok(())
+}
+
+#[derive(Default)]
+struct ProcessingStats {
+    completed: i32,
+    failed: i32,
+    skipped: i32,
+}
+
+// ============================================================================
 // Background Processor
 // ============================================================================
 
@@ -622,90 +673,46 @@ pub async fn process_import_job(
     let total_items = items.len();
     tracing::info!("Processing {} items for job {}", total_items, job_id);
 
-    let mut completed = 0;
-    let mut failed = 0;
-    let mut skipped = 0;
+    let stats = {
+        let mut stats = ProcessingStats::default();
 
-    for item in items {
-        tracing::info!("Processing item: {} ({})", item.id, item.source_path);
+        for item in items {
+            tracing::info!("Processing item: {} ({})", item.id, item.source_path);
+            item_mgr.update_item_status(pool, item.id, "processing").await?;
 
-        // Update item status to processing
-        item_mgr.update_item_status(pool, item.id, "processing").await?;
+            let is_url = item.source_path.starts_with("http://") || item.source_path.starts_with("https://");
+            let result = if is_url {
+                indexing::index_url(pool, embedder, &item.source_path).await
+            } else {
+                indexing::index_path(pool, embedder, &item.source_path).await
+            };
 
-        // Determine if it's a file or URL
-        let is_url = item.source_path.starts_with("http://") || item.source_path.starts_with("https://");
-
-        // Process through indexing pipeline
-        let result = if is_url {
-            indexing::index_url(pool, embedder, &item.source_path).await
-        } else {
-            indexing::index_path(pool, embedder, &item.source_path).await
-        };
-
-        match result {
-            Ok(_) => {
-                // Success - mark item as completed
-                // Note: We don't have the document_id from the indexing function yet
-                // This would need to be returned from the indexing pipeline
-                item_mgr.mark_completed(pool, item.id, None).await?;
-                completed += 1;
-                tracing::info!("Successfully processed item: {}", item.id);
-            }
-            Err(e) => {
-                let error_msg = e.to_string();
-                let error_type = classify_error(&error_msg);
-
-                match error_type {
-                    ErrorType::Transient => {
-                        // Check if we should retry
-                        if item.retry_count < config.max_retries as i32 {
-                            // Calculate retry delay
-                            let delay = calculate_retry_delay(item.retry_count as u32, &config);
-
-                            tracing::warn!(
-                                "Item {} failed with transient error (attempt {}): {}. Will retry in {:?}",
-                                item.id, item.retry_count + 1, error_msg, delay
-                            );
-
-                            // Mark as failed with retry info
-                            item_mgr.mark_failed(pool, item.id, item.retry_count + 1, &error_msg).await?;
-
-                            // Reset to pending for retry (in a real system, you'd schedule this)
-                            tokio::time::sleep(delay).await;
-                            sqlx::query("UPDATE import_items SET status = 'pending' WHERE id = $1")
-                                .bind(item.id)
-                                .execute(pool)
-                                .await?;
-                        } else {
-                            // Max retries reached
-                            tracing::error!(
-                                "Item {} failed after {} retries: {}",
-                                item.id, item.retry_count, error_msg
-                            );
-                            item_mgr.mark_failed(pool, item.id, item.retry_count + 1, &error_msg).await?;
-                            failed += 1;
-                        }
-                    }
-                    ErrorType::Permanent => {
-                        // Permanent error - skip immediately
-                        tracing::warn!("Item {} skipped due to permanent error: {}", item.id, error_msg);
-                        item_mgr.mark_skipped(pool, item.id, &error_msg).await?;
-                        skipped += 1;
-                    }
+            match result {
+                Ok(_) => {
+                    item_mgr.mark_completed(pool, item.id, None).await?;
+                    stats.completed += 1;
+                    tracing::info!("Successfully processed item: {}", item.id);
+                }
+                Err(e) => {
+                    let error_msg = e.to_string();
+                    let error_type = classify_error(&error_msg);
+                    handle_item_error(&mut stats, pool, &item_mgr, &item, error_type, &error_msg, &config).await?;
                 }
             }
         }
-    }
+
+        stats
+    };
 
     // Update job progress
     let total = total_items as i32;
-    let processed = completed + failed + skipped;
-    runner.update_job_progress(pool, job_id, total, processed, failed, skipped).await?;
+    let processed = stats.completed + stats.failed + stats.skipped;
+    runner.update_job_progress(pool, job_id, total, processed, stats.failed, stats.skipped).await?;
 
     // Complete job
-    let final_status = if failed == 0 && skipped == 0 {
+    let final_status = if stats.failed == 0 && stats.skipped == 0 {
         "completed"
-    } else if completed == 0 {
+    } else if stats.completed == 0 {
         "failed"
     } else {
         "completed_with_errors"
@@ -715,7 +722,7 @@ pub async fn process_import_job(
 
     tracing::info!(
         "Job {} processing complete: {} completed, {} failed, {} skipped",
-        job_id, completed, failed, skipped
+        job_id, stats.completed, stats.failed, stats.skipped
     );
 
     Ok(())
