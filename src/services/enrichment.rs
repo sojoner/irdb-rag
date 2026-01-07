@@ -9,7 +9,7 @@ use std::path::Path;
 use uuid::Uuid;
 
 use crate::domain::models::LLMConfig;
-use crate::infra::llm::{call_llm_with_options};
+use crate::infra::llm::call_llm_with_timeout;
 use crate::services::enrichment_utils::{
     parse_keywords_from_string, clean_json_response, extract_author_from_entities,
     merge_entities, generate_category_uuid, batch_text,
@@ -123,6 +123,8 @@ impl Default for DocumentMetadata {
 pub struct Enricher {
     llm_config: LLMConfig,
     ner_config: LLMConfig,
+    docling_url: String,
+    llm_timeout_seconds: u64,
 }
 
 impl Default for Enricher {
@@ -134,9 +136,46 @@ impl Default for Enricher {
 impl Enricher {
     /// Create a new Enricher instance
     pub fn new() -> Self {
+        Self::with_config(None, None, None)
+    }
+
+    /// Create Enricher with custom settings
+    pub fn with_config(
+        docling_url: Option<String>,
+        llm_timeout_seconds: Option<u64>,
+        settings: Option<&crate::config::Settings>,
+    ) -> Self {
+        let docling_url = docling_url.unwrap_or_else(|| "http://localhost:5001".to_string());
+        let llm_timeout_seconds = llm_timeout_seconds.unwrap_or(300);
+
+        let (llm_config, ner_config) = if let Some(s) = settings {
+            (
+                LLMConfig::from_provider_config(&s.llm.metadata),
+                LLMConfig::from_provider_config(&s.llm.ner),
+            )
+        } else {
+            // Fallback defaults if settings not provided
+            (
+                LLMConfig {
+                    provider: "openai".to_string(),
+                    api_url: "https://api.openai.com/v1".to_string(),
+                    api_key: String::new(),
+                    model: "ibm/granite-4-h-tiny".to_string(),
+                },
+                LLMConfig {
+                    provider: "openai".to_string(),
+                    api_url: "https://api.openai.com/v1".to_string(),
+                    api_key: String::new(),
+                    model: "google/gemini-3-flash-preview".to_string(),
+                },
+            )
+        };
+
         Self {
-            llm_config: LLMConfig::for_metadata(),
-            ner_config: LLMConfig::for_ner(),
+            llm_config,
+            ner_config,
+            docling_url,
+            llm_timeout_seconds,
         }
     }
 
@@ -193,8 +232,7 @@ impl Enricher {
     /// Extract text content from a file using Docling
     /// Returns (content, full_docling_response)
     async fn extract_file_content(&self, path: &Path) -> Result<(String, Value)> {
-        let docling_url = std::env::var("DOCLING_URL")
-            .unwrap_or_else(|_| "http://localhost:5001".to_string());
+        let docling_url = &self.docling_url;
 
         // Read file bytes
         let file_bytes = tokio::fs::read(path).await
@@ -367,7 +405,7 @@ impl Enricher {
             title, content
         );
 
-        let response = call_llm_with_options(&self.llm_config, system, &user, Some(150), Some(0.3))
+        let response = call_llm_with_timeout(&self.llm_config, system, &user, Some(150), Some(0.3), self.llm_timeout_seconds)
             .await
             .context("Failed to generate summary")?;
 
@@ -383,7 +421,7 @@ impl Enricher {
             &content[..content.len().min(1000)]
         );
 
-        let response = call_llm_with_options(&self.llm_config, system, &user, Some(100), Some(0.2))
+        let response = call_llm_with_timeout(&self.llm_config, system, &user, Some(100), Some(0.2), self.llm_timeout_seconds)
             .await
             .context("Failed to extract keywords")?;
 
@@ -504,7 +542,7 @@ Respond ONLY with a JSON object in this exact format (no markdown, no explanatio
             concepts
         );
 
-        match call_llm_with_options(&self.llm_config, system, &user, Some(150), Some(0.3)).await {
+        match call_llm_with_timeout(&self.llm_config, system, &user, Some(150), Some(0.3), self.llm_timeout_seconds).await {
             Ok(response) => {
                 match self.parse_category_classification(&response) {
                     Ok(category) => Ok(Some(category)),
@@ -577,6 +615,7 @@ Text: {}"#,
         };
 
         // Create futures for all batches
+        let timeout = self.llm_timeout_seconds;
         let futures: Vec<_> = batches
             .iter()
             .map(|batch_text| {
@@ -585,12 +624,13 @@ Text: {}"#,
                 let ner_config = self.ner_config.clone();
 
                 async move {
-                    call_llm_with_options(
+                    call_llm_with_timeout(
                         &ner_config,
                         &system,
                         &user,
                         Some(500),  // Max tokens for entity extraction
                         Some(0.2),  // Temperature
+                        timeout,
                     )
                     .await
                 }

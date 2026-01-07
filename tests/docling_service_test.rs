@@ -1,12 +1,13 @@
 use anyhow::Result;
 use std::time::Instant;
+use rag_chat::config::Settings;
 
 #[tokio::test]
 async fn test_docling_parsing_speed() -> Result<()> {
-    dotenvy::from_filename("tests/test.env").ok();
+    std::env::set_var("RUN_ENV", "test");
 
-    let docling_url = std::env::var("DOCLING_URL")
-        .unwrap_or_else(|_| "http://localhost:5001".to_string());
+    let settings = Settings::new()?;
+    let docling_url = settings.docling.url.clone();
 
     println!("\n📋 Testing Docling parsing speed and capabilities...\n");
 
@@ -48,10 +49,10 @@ async fn test_docling_parsing_speed() -> Result<()> {
 
 #[tokio::test]
 async fn test_docling_table_detection() -> Result<()> {
-    dotenvy::from_filename("tests/test.env").ok();
+    std::env::set_var("RUN_ENV", "test");
 
-    let docling_url = std::env::var("DOCLING_URL")
-        .unwrap_or_else(|_| "http://localhost:5001".to_string());
+    let settings = Settings::new()?;
+    let docling_url = settings.docling.url.clone();
 
     println!("\n🔍 Testing Docling table detection...\n");
 
@@ -95,10 +96,10 @@ async fn test_docling_table_detection() -> Result<()> {
 
 #[tokio::test]
 async fn test_docling_metadata_extraction() -> Result<()> {
-    dotenvy::from_filename("tests/test.env").ok();
+    std::env::set_var("RUN_ENV", "test");
 
-    let docling_url = std::env::var("DOCLING_URL")
-        .unwrap_or_else(|_| "http://localhost:5001".to_string());
+    let settings = Settings::new()?;
+    let docling_url = settings.docling.url.clone();
 
     println!("\n📝 Testing Docling metadata extraction...\n");
 

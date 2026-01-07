@@ -4,6 +4,9 @@ use sqlx::FromRow;
 use uuid::Uuid;
 use chrono::{DateTime, Utc};
 
+#[cfg(feature = "ssr")]
+use crate::config::{LLMProviderConfig, EmbeddingConfig};
+
 // ============================================
 // Core Domain Models
 // ============================================
@@ -93,43 +96,14 @@ pub struct LLMConfig {
 }
 
 impl LLMConfig {
-    pub fn from_env() -> Self {
+    /// Create LLMConfig from a provider configuration
+    #[cfg(feature = "ssr")]
+    pub fn from_provider_config(config: &LLMProviderConfig) -> Self {
         Self {
-            provider: std::env::var("LLM_PROVIDER").unwrap_or_else(|_| "openai".to_string()),
-            api_url: std::env::var("LLM_API_URL").unwrap_or_else(|_| "https://api.openai.com/v1".to_string()),
-            api_key: std::env::var("LLM_API_KEY").unwrap_or_default(),
-            model: std::env::var("LLM_MODEL").unwrap_or_else(|_| "gpt-4".to_string()),
-        }
-    }
-
-    /// Create config for metadata extraction (uses faster, non-reasoning model)
-    pub fn for_metadata() -> Self {
-        Self {
-            provider: std::env::var("METADATA_LLM_PROVIDER")
-                .unwrap_or_else(|_| std::env::var("LLM_PROVIDER").unwrap_or_else(|_| "openai".to_string())),
-            api_url: std::env::var("METADATA_LLM_API_URL")
-                .unwrap_or_else(|_| std::env::var("LLM_API_URL").unwrap_or_else(|_| "https://api.openai.com/v1".to_string())),
-            api_key: std::env::var("METADATA_LLM_API_KEY")
-                .unwrap_or_else(|_| std::env::var("LLM_API_KEY").unwrap_or_default()),
-            model: std::env::var("METADATA_LLM_MODEL")
-                .unwrap_or_else(|_| "ibm/granite-4-h-tiny".to_string()),
-        }
-    }
-
-    /// Create config for NER (Named Entity Recognition)
-    pub fn for_ner() -> Self {
-        Self {
-            provider: std::env::var("NER_LLM_PROVIDER")
-                .unwrap_or_else(|_| std::env::var("METADATA_LLM_PROVIDER")
-                    .unwrap_or_else(|_| std::env::var("LLM_PROVIDER").unwrap_or_else(|_| "openai".to_string()))),
-            api_url: std::env::var("NER_LLM_API_URL")
-                .unwrap_or_else(|_| std::env::var("METADATA_LLM_API_URL")
-                    .unwrap_or_else(|_| std::env::var("LLM_API_URL").unwrap_or_else(|_| "https://api.openai.com/v1".to_string()))),
-            api_key: std::env::var("NER_LLM_API_KEY")
-                .unwrap_or_else(|_| std::env::var("METADATA_LLM_API_KEY")
-                    .unwrap_or_else(|_| std::env::var("LLM_API_KEY").unwrap_or_default())),
-            model: std::env::var("NER_LLM_MODEL")
-                .unwrap_or_else(|_| "google/gemini-3-flash-preview".to_string()),
+            provider: config.provider.clone(),
+            api_url: config.api_url.clone(),
+            api_key: config.api_key.clone(),
+            model: config.model.clone(),
         }
     }
 }
@@ -144,18 +118,15 @@ pub struct InfraEmbeddingConfig {
 }
 
 impl InfraEmbeddingConfig {
-    pub fn from_env() -> Self {
-        let dimensions = std::env::var("EMBEDDING_DIMENSIONS")
-            .ok()
-            .and_then(|s| s.parse::<u32>().ok())
-            .expect("EMBEDDING_DIMENSIONS environment variable must be set");
-
+    /// Create InfraEmbeddingConfig from a config file
+    #[cfg(feature = "ssr")]
+    pub fn from_config(config: &EmbeddingConfig) -> Self {
         Self {
-            provider: std::env::var("EMBEDDING_PROVIDER").unwrap_or_else(|_| "openai".to_string()),
-            api_url: std::env::var("EMBEDDING_API_URL").unwrap_or_else(|_| "https://api.openai.com/v1".to_string()),
-            api_key: std::env::var("EMBEDDING_API_KEY").unwrap_or_default(),
-            model: std::env::var("EMBEDDING_MODEL").unwrap_or_else(|_| "text-embedding-3-small".to_string()),
-            dimensions,
+            provider: config.provider.clone(),
+            api_url: config.api_url.clone(),
+            api_key: config.api_key.clone(),
+            model: config.model.clone(),
+            dimensions: config.dimensions,
         }
     }
 }

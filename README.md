@@ -89,26 +89,34 @@ docker compose ps
 
 ### 3. Configuration
 
-Copy the example environment file and configure your API endpoints:
+Configuration is managed via TOML files in the `config/` directory:
 
-```bash
-cp .env.example .env
+- `config/default.toml` - Base configuration
+- `config/production.toml` - Production overrides
+- `config/test.toml` - Test environment overrides
+
+Edit `config/production.toml` to configure your AI provider endpoints. For example, if using LM Studio locally:
+
+```toml
+[llm.chat]
+provider = "openai"
+api_url = "http://localhost:1234/v1"
+api_key = "lm-studio"
+model = "qwen2.5-7b-instruct"
+
+[embedding]
+provider = "openai"
+api_url = "http://localhost:1234/v1"
+api_key = "lm-studio"
+model = "text-embedding-nomic-embed-text-v1.5"
+dimensions = 768
 ```
 
-Edit `.env` to point to your AI provider. For example, if using LM Studio locally:
+Environment variables can override config values using the pattern `APP_<SECTION>__<KEY>`. For example:
 
-```env
-# Database
-DATABASE_URL=postgres://rag_user:rag_password@localhost:15432/rag_chat
-
-# LLM (Chat)
-LLM_API_URL=http://localhost:1234/v1
-LLM_MODEL=qwen2.5-7b-instruct
-
-# Embeddings
-EMBEDDING_API_URL=http://localhost:1234/v1
-EMBEDDING_MODEL=text-embedding-nomic-embed-text-v1.5
-EMBEDDING_DIMENSIONS=768
+```bash
+export APP_LLM__CHAT__API_KEY=your-api-key
+export APP_DATABASE__URL=postgres://user:pass@host/db
 ```
 
 ### 4. Run the Application

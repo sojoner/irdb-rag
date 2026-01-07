@@ -10,13 +10,9 @@
 ///
 /// Prerequisites:
 /// - PostgreSQL/ParadeDB running (docker compose up -d)
-/// - test.env configured with DATABASE_URL, DOCLING_URL, etc.
+/// - RUN_ENV=test environment variable set for config/test.toml loading
 use uuid::Uuid;
-
-// Test imports
-#[allow(dead_code)]
-#[path = "../src/domain/models.rs"]
-mod models;
+use rag_chat::config::Settings;
 
 // ============================================================================
 // TEST 1: Error Classification
@@ -247,11 +243,9 @@ fn test_import_item_retry_count() {
 #[tokio::test]
 #[ignore] // Run with: cargo test -- --ignored import_job_crud
 async fn test_import_job_crud() {
-    std::env::remove_var("DATABASE_URL");
-    dotenvy::from_filename("tests/test.env").ok();
-
-    let db_url = std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://rag_user:rag_password@localhost:15432/rag_chat".to_string());
+    std::env::set_var("RUN_ENV", "test");
+    let settings = Settings::new().expect("Failed to load settings");
+    let db_url = settings.database.url.clone();
 
     let pool = sqlx::postgres::PgPoolOptions::new()
         .max_connections(5)
@@ -327,11 +321,9 @@ async fn test_import_job_crud() {
 #[tokio::test]
 #[ignore] // Run with: cargo test -- --ignored import_item_tracking
 async fn test_import_item_tracking() {
-    std::env::remove_var("DATABASE_URL");
-    dotenvy::from_filename("tests/test.env").ok();
-
-    let db_url = std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://rag_user:rag_password@localhost:15432/rag_chat".to_string());
+    std::env::set_var("RUN_ENV", "test");
+    let settings = Settings::new().expect("Failed to load settings");
+    let db_url = settings.database.url.clone();
 
     let pool = sqlx::postgres::PgPoolOptions::new()
         .max_connections(5)
@@ -421,11 +413,9 @@ async fn test_import_item_tracking() {
 #[tokio::test]
 #[ignore] // Run with: cargo test -- --ignored test_import_folder_workflow
 async fn test_import_folder_workflow() {
-    std::env::remove_var("DATABASE_URL");
-    dotenvy::from_filename("tests/test.env").ok();
-
-    let db_url = std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://rag_user:rag_password@localhost:15432/rag_chat".to_string());
+    std::env::set_var("RUN_ENV", "test");
+    let settings = Settings::new().expect("Failed to load settings");
+    let db_url = settings.database.url.clone();
 
     let pool = sqlx::postgres::PgPoolOptions::new()
         .max_connections(5)
@@ -567,11 +557,9 @@ async fn test_real_file_import() {
     // This test validates importing a real file path
     // File: /Users/hagentonnies/Downloads/2025-10-09-cfp-kubecon-eu-26.md
 
-    std::env::remove_var("DATABASE_URL");
-    dotenvy::from_filename("tests/test.env").ok();
-
-    let db_url = std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://rag_user:rag_password@localhost:15432/rag_chat".to_string());
+    std::env::set_var("RUN_ENV", "test");
+    let settings = Settings::new().expect("Failed to load settings");
+    let db_url = settings.database.url.clone();
 
     let pool = sqlx::postgres::PgPoolOptions::new()
         .max_connections(5)
@@ -671,11 +659,9 @@ async fn test_real_url_import() {
     // This test validates importing a URL
     // URL: https://www.spiegel.de/politik/deutschland/
 
-    std::env::remove_var("DATABASE_URL");
-    dotenvy::from_filename("tests/test.env").ok();
-
-    let db_url = std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://rag_user:rag_password@localhost:15432/rag_chat".to_string());
+    std::env::set_var("RUN_ENV", "test");
+    let settings = Settings::new().expect("Failed to load settings");
+    let db_url = settings.database.url.clone();
 
     let pool = sqlx::postgres::PgPoolOptions::new()
         .max_connections(5)
@@ -766,11 +752,9 @@ async fn test_real_url_import() {
 #[tokio::test]
 #[ignore] // Run with: cargo test -- --ignored test_delete_import_job
 async fn test_delete_import_job_cascades_to_items() {
-    std::env::remove_var("DATABASE_URL");
-    dotenvy::from_filename("tests/test.env").ok();
-
-    let db_url = std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://rag_user:rag_password@localhost:15432/rag_chat".to_string());
+    std::env::set_var("RUN_ENV", "test");
+    let settings = Settings::new().expect("Failed to load settings");
+    let db_url = settings.database.url.clone();
 
     let pool = sqlx::postgres::PgPoolOptions::new()
         .max_connections(5)
@@ -849,11 +833,9 @@ async fn test_delete_import_job_cascades_to_items() {
 #[tokio::test]
 #[ignore] // Run with: cargo test -- --ignored test_delete_import_job_with_documents
 async fn test_delete_import_job_preserves_or_deletes_documents() {
-    std::env::remove_var("DATABASE_URL");
-    dotenvy::from_filename("tests/test.env").ok();
-
-    let db_url = std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://rag_user:rag_password@localhost:15432/rag_chat".to_string());
+    std::env::set_var("RUN_ENV", "test");
+    let settings = Settings::new().expect("Failed to load settings");
+    let db_url = settings.database.url.clone();
 
     let pool = sqlx::postgres::PgPoolOptions::new()
         .max_connections(5)
@@ -968,11 +950,9 @@ async fn test_processor_starts_immediately() {
     use tokio::sync::mpsc;
     use std::time::Duration;
 
-    std::env::remove_var("DATABASE_URL");
-    dotenvy::from_filename("tests/test.env").ok();
-
-    let db_url = std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://rag_user:rag_password@localhost:15432/rag_chat".to_string());
+    std::env::set_var("RUN_ENV", "test");
+    let settings = Settings::new().expect("Failed to load settings");
+    let db_url = settings.database.url.clone();
 
     let pool = sqlx::postgres::PgPoolOptions::new()
         .max_connections(5)

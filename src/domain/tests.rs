@@ -197,6 +197,7 @@ mod import_config_tests {
     #[test]
     fn test_import_config_default_values() {
         let config = ImportConfig {
+            workers: 2,
             max_retries: 3,
             retry_base_delay_ms: 1000,
             retry_max_delay_ms: 30000,
@@ -210,6 +211,7 @@ mod import_config_tests {
     #[test]
     fn test_import_config_clone() {
         let config = ImportConfig {
+            workers: 4,
             max_retries: 5,
             retry_base_delay_ms: 2000,
             retry_max_delay_ms: 60000,
@@ -229,6 +231,7 @@ mod retry_delay_tests {
     #[test]
     fn test_calculate_retry_delay_first_attempt() {
         let config = ImportConfig {
+            workers: 2,
             max_retries: 3,
             retry_base_delay_ms: 1000,
             retry_max_delay_ms: 30000,
@@ -243,6 +246,7 @@ mod retry_delay_tests {
     #[test]
     fn test_calculate_retry_delay_exponential_growth() {
         let config = ImportConfig {
+            workers: 2,
             max_retries: 3,
             retry_base_delay_ms: 1000,
             retry_max_delay_ms: 60000,
@@ -260,6 +264,7 @@ mod retry_delay_tests {
     #[test]
     fn test_calculate_retry_delay_capped() {
         let config = ImportConfig {
+            workers: 2,
             max_retries: 10,
             retry_base_delay_ms: 1000,
             retry_max_delay_ms: 5000,
@@ -273,6 +278,7 @@ mod retry_delay_tests {
     #[test]
     fn test_calculate_retry_delay_respects_max() {
         let config = ImportConfig {
+            workers: 2,
             max_retries: 3,
             retry_base_delay_ms: 1000,
             retry_max_delay_ms: 10000,
@@ -287,6 +293,7 @@ mod retry_delay_tests {
     #[test]
     fn test_calculate_retry_delay_jitter_variance() {
         let config = ImportConfig {
+            workers: 2,
             max_retries: 3,
             retry_base_delay_ms: 1000,
             retry_max_delay_ms: 30000,
@@ -307,6 +314,7 @@ mod retry_delay_tests {
     #[test]
     fn test_calculate_retry_delay_zero_base() {
         let config = ImportConfig {
+            workers: 2,
             max_retries: 3,
             retry_base_delay_ms: 0,
             retry_max_delay_ms: 30000,

@@ -114,10 +114,9 @@ pub async fn chat(
         .map(|c| format!("---\n{}\n", c.content))
         .collect();
 
-    // Build prompt - use system prompt from env or default
+    // Build prompt - use system prompt from settings or default
     let default_system_prompt = "You are a helpful assistant answering questions based on the provided context from documents. Answer based ONLY on the context provided. If the context doesn't contain enough information to answer, say so. Be concise and cite specific parts of the context when relevant.";
-    let env_system_prompt = std::env::var("RAG_SYSTEM_PROMPT").ok();
-    let system_prompt = env_system_prompt.as_deref().unwrap_or(default_system_prompt);
+    let system_prompt = state.settings.rag.system_prompt.as_deref().unwrap_or(default_system_prompt);
 
     let user_prompt = format!(
         "CONTEXT:\n{}\n\nQUESTION:\n{}",
@@ -192,8 +191,7 @@ pub async fn chat_stream(
         .collect();
 
     let default_system_prompt = "You are a helpful assistant answering questions based on the provided context from documents. Answer based ONLY on the context provided. If the context doesn't contain enough information to answer, say so. Be concise and cite specific parts of the context when relevant.";
-    let env_system_prompt = std::env::var("RAG_SYSTEM_PROMPT").ok();
-    let system_prompt = env_system_prompt.as_deref().unwrap_or(default_system_prompt).to_string();
+    let system_prompt = state.settings.rag.system_prompt.as_deref().unwrap_or(default_system_prompt).to_string();
 
     let user_prompt = format!(
         "CONTEXT:\n{}\n\nQUESTION:\n{}",
@@ -390,7 +388,7 @@ pub async fn get_status(
             llm_model: config.model,
             llm_api_url: config.api_url,
             embedding_api_url: state.embedder.get_api_url().to_string(),
-            docling_url: std::env::var("DOCLING_URL").unwrap_or_else(|_| "http://localhost:5001".to_string()),
+            docling_url: state.settings.docling.url.clone(),
         },
     }))
 }

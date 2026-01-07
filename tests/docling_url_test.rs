@@ -1,15 +1,16 @@
 use anyhow::Result;
 use serde_json::{json, Value};
+use rag_chat::config::Settings;
 
 /// Test docling URL processing with the /v1/convert/source endpoint
 /// This test verifies that docling returns a consistent structure for URL-based documents
 #[tokio::test]
 #[ignore] // Run with: cargo test --ignored test_docling_url_processing
 async fn test_docling_url_processing() -> Result<()> {
-    dotenvy::from_filename("tests/test.env").ok();
+    std::env::set_var("RUN_ENV", "test");
 
-    let docling_url = std::env::var("DOCLING_URL")
-        .unwrap_or_else(|_| "http://localhost:5001".to_string());
+    let settings = Settings::new()?;
+    let docling_url = settings.docling.url.clone();
 
     println!("\n📄 Testing Docling URL processing...\n");
 
@@ -109,10 +110,10 @@ async fn test_docling_url_processing() -> Result<()> {
 #[tokio::test]
 #[ignore] // Run with: cargo test --ignored test_docling_html_url
 async fn test_docling_html_url() -> Result<()> {
-    dotenvy::from_filename("tests/test.env").ok();
+    std::env::set_var("RUN_ENV", "test");
 
-    let docling_url = std::env::var("DOCLING_URL")
-        .unwrap_or_else(|_| "http://localhost:5001".to_string());
+    let settings = Settings::new()?;
+    let docling_url = settings.docling.url.clone();
 
     println!("\n🌐 Testing Docling HTML URL processing...\n");
 
@@ -171,10 +172,10 @@ async fn test_docling_html_url() -> Result<()> {
 #[tokio::test]
 #[ignore]
 async fn test_docling_structure_consistency() -> Result<()> {
-    dotenvy::from_filename("tests/test.env").ok();
+    std::env::set_var("RUN_ENV", "test");
 
-    let docling_url = std::env::var("DOCLING_URL")
-        .unwrap_or_else(|_| "http://localhost:5001".to_string());
+    let settings = Settings::new()?;
+    let docling_url = settings.docling.url.clone();
 
     println!("\n🔍 Testing Docling structure consistency...\n");
 

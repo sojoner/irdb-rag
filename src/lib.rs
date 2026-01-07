@@ -4,6 +4,7 @@
 //!
 //! Library modules for the RAG Chat application
 
+pub mod config;
 pub mod domain;
 #[cfg(feature = "ssr")]
 pub mod infra;

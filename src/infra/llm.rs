@@ -20,16 +20,22 @@ pub async fn call_llm_with_options(
     max_tokens: Option<u32>,
     temperature: Option<f32>,
 ) -> Result<String> {
+    call_llm_with_timeout(config, system, user, max_tokens, temperature, 300).await
+}
+
+/// Call the LLM API with custom timeout
+pub async fn call_llm_with_timeout(
+    config: &LLMConfig,
+    system: &str,
+    user: &str,
+    max_tokens: Option<u32>,
+    temperature: Option<f32>,
+    timeout_seconds: u64,
+) -> Result<String> {
     use std::time::Duration;
 
-    // Create client with timeout configuration
-    let timeout = std::env::var("LLM_TIMEOUT_SECONDS")
-        .ok()
-        .and_then(|s| s.parse::<u64>().ok())
-        .unwrap_or(300); // Default 5 minutes for local LLM Studio
-
     let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(timeout))
+        .timeout(Duration::from_secs(timeout_seconds))
         .connect_timeout(Duration::from_secs(30))
         .build()?;
 
@@ -75,16 +81,21 @@ pub async fn stream_llm(
     system: &str,
     user: &str,
 ) -> Result<BoxStream<'static, Result<String>>> {
+    stream_llm_with_timeout(config, system, user, 300).await
+}
+
+/// Stream LLM response using SSE with custom timeout
+pub async fn stream_llm_with_timeout(
+    config: &LLMConfig,
+    system: &str,
+    user: &str,
+    timeout_seconds: u64,
+) -> Result<BoxStream<'static, Result<String>>> {
     use std::time::Duration;
     use futures::stream::StreamExt;
 
-    let timeout = std::env::var("LLM_TIMEOUT_SECONDS")
-        .ok()
-        .and_then(|s| s.parse::<u64>().ok())
-        .unwrap_or(300);
-
     let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(timeout))
+        .timeout(Duration::from_secs(timeout_seconds))
         .connect_timeout(Duration::from_secs(30))
         .build()?;
 
@@ -173,15 +184,20 @@ pub async fn get_embedding(config: &InfraEmbeddingConfig, text: &str) -> Result<
 /// Generate embeddings for multiple text strings (batch operation)
 #[allow(dead_code)]
 pub async fn get_embeddings_batch(config: &InfraEmbeddingConfig, texts: &[&str]) -> Result<Vec<Vec<f32>>> {
+    get_embeddings_batch_with_timeout(config, texts, 120).await
+}
+
+/// Generate embeddings for multiple text strings with custom timeout
+#[allow(dead_code)]
+pub async fn get_embeddings_batch_with_timeout(
+    config: &InfraEmbeddingConfig,
+    texts: &[&str],
+    timeout_seconds: u64,
+) -> Result<Vec<Vec<f32>>> {
     use std::time::Duration;
 
-    let timeout = std::env::var("EMBEDDING_TIMEOUT_SECONDS")
-        .ok()
-        .and_then(|s| s.parse::<u64>().ok())
-        .unwrap_or(120); // Default 2 minutes
-
     let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(timeout))
+        .timeout(Duration::from_secs(timeout_seconds))
         .connect_timeout(Duration::from_secs(30))
         .build()?;
 

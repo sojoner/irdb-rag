@@ -4,17 +4,17 @@ use async_openai::{
     types::{CreateEmbeddingRequestArgs, EmbeddingInput},
     Client,
 };
+use rag_chat::config::Settings;
 
 /// Generate embedding for a single text using OpenAI-compatible API
 async fn generate_embedding(text: &str) -> Result<Vec<f32>> {
-    dotenvy::from_filename("tests/test.env").ok();
+    std::env::set_var("RUN_ENV", "test");
 
-    let api_url = std::env::var("EMBEDDING_API_URL")?;
-    let api_key = std::env::var("EMBEDDING_API_KEY")?;
-    let model = std::env::var("EMBEDDING_MODEL")?;
-    let expected_dims: usize = std::env::var("EMBEDDING_DIMENSIONS")
-        .unwrap_or_else(|_| "4096".to_string())
-        .parse()?;
+    let settings = Settings::new()?;
+    let api_url = settings.embedding.api_url.clone();
+    let api_key = settings.embedding.api_key.clone();
+    let model = settings.embedding.model.clone();
+    let expected_dims: usize = settings.embedding.dimensions as usize;
 
     let config = OpenAIConfig::new()
         .with_api_base(&api_url)
@@ -144,11 +144,12 @@ async fn test_embedding_determinism() -> Result<()> {
 
 #[tokio::test]
 async fn test_batch_embedding_speed() -> Result<()> {
-    dotenvy::from_filename("tests/test.env").ok();
+    std::env::set_var("RUN_ENV", "test");
 
-    let api_url = std::env::var("EMBEDDING_API_URL")?;
-    let api_key = std::env::var("EMBEDDING_API_KEY")?;
-    let model = std::env::var("EMBEDDING_MODEL")?;
+    let settings = Settings::new()?;
+    let api_url = settings.embedding.api_url.clone();
+    let api_key = settings.embedding.api_key.clone();
+    let model = settings.embedding.model.clone();
 
     let texts = vec![
         "First test sentence.",
@@ -196,14 +197,13 @@ async fn test_batch_embedding_speed() -> Result<()> {
 
 #[tokio::test]
 async fn test_batch_embedding_api() -> Result<()> {
-    dotenvy::from_filename("tests/test.env").ok();
+    std::env::set_var("RUN_ENV", "test");
 
-    let api_url = std::env::var("EMBEDDING_API_URL")?;
-    let api_key = std::env::var("EMBEDDING_API_KEY")?;
-    let model = std::env::var("EMBEDDING_MODEL")?;
-    let expected_dims: usize = std::env::var("EMBEDDING_DIMENSIONS")
-        .unwrap_or_else(|_| "4096".to_string())
-        .parse()?;
+    let settings = Settings::new()?;
+    let api_url = settings.embedding.api_url.clone();
+    let api_key = settings.embedding.api_key.clone();
+    let model = settings.embedding.model.clone();
+    let expected_dims: usize = settings.embedding.dimensions as usize;
 
     let texts = vec![
         "Kubernetes is a container orchestration platform.",

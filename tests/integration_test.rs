@@ -4,15 +4,13 @@
 /// - PostgreSQL/ParadeDB running (docker compose up -d)
 /// - DATABASE_URL set in .env or environment
 
+use rag_chat::config::Settings;
+
 #[tokio::test]
-
 async fn test_database_connection() {
-    // Clear potential conflicting env vars and load test config
-    std::env::remove_var("DATABASE_URL");
-    dotenvy::from_filename("tests/test.env").ok();
-
-    let db_url = std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://rag_user:rag_password@localhost:15432/rag_chat".to_string());
+    std::env::set_var("RUN_ENV", "test");
+    let settings = Settings::new().expect("Failed to load settings");
+    let db_url = settings.database.url.clone();
 
     // Connect to database
     let pool = sqlx::postgres::PgPoolOptions::new()
@@ -40,12 +38,9 @@ async fn test_database_connection() {
 #[tokio::test]
 
 async fn test_index_local_pdf() {
-    // Clear potential conflicting env vars and load test config
-    std::env::remove_var("DATABASE_URL");
-    dotenvy::from_filename("tests/test.env").ok();
-
-    let db_url = std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://rag_user:rag_password@localhost:15432/rag_chat".to_string());
+    std::env::set_var("RUN_ENV", "test");
+    let settings = Settings::new().expect("Failed to load settings");
+    let db_url = settings.database.url.clone();
 
     let pdf_path = "documents/HumanPrincipals.pdf";
 
@@ -228,18 +223,17 @@ async fn test_docling_pipeline() {
 /// Validates that the LLM API is working correctly with the configured model.
 ///
 /// Prerequisites:
-/// - LLM_API_URL, LLM_API_KEY, and LLM_MODEL set in tests/test.env
+/// - RUN_ENV=test for loading config/test.toml with LLM settings
 #[tokio::test]
 async fn test_llm_api_integration() {
-    // Load test config
-    std::env::remove_var("DATABASE_URL");
-    dotenvy::from_filename("tests/test.env").ok();
+    std::env::set_var("RUN_ENV", "test");
+    let settings = Settings::new().expect("Failed to load settings");
 
     let config = rag_chat::domain::models::LLMConfig {
-        provider: std::env::var("LLM_PROVIDER").unwrap_or_else(|_| "openai".to_string()),
-        model: std::env::var("LLM_MODEL").expect("LLM_MODEL not set in tests/test.env"),
-        api_url: std::env::var("LLM_API_URL").expect("LLM_API_URL not set in tests/test.env"),
-        api_key: std::env::var("LLM_API_KEY").expect("LLM_API_KEY not set in tests/test.env"),
+        provider: settings.llm.chat.provider.clone(),
+        model: settings.llm.chat.model.clone(),
+        api_url: settings.llm.chat.api_url.clone(),
+        api_key: settings.llm.chat.api_key.clone(),
     };
 
     println!("Testing LLM API with model: {}", config.model);
@@ -266,20 +260,19 @@ async fn test_llm_api_integration() {
 /// Validates that the streaming LLM API returns a proper stream of responses.
 ///
 /// Prerequisites:
-/// - LLM_API_URL, LLM_API_KEY, and LLM_MODEL set in tests/test.env
+/// - RUN_ENV=test for loading config/test.toml with LLM settings
 #[tokio::test]
 async fn test_llm_streaming_api() {
     use futures::stream::StreamExt;
 
-    // Load test config
-    std::env::remove_var("DATABASE_URL");
-    dotenvy::from_filename("tests/test.env").ok();
+    std::env::set_var("RUN_ENV", "test");
+    let settings = Settings::new().expect("Failed to load settings");
 
     let config = rag_chat::domain::models::LLMConfig {
-        provider: std::env::var("LLM_PROVIDER").unwrap_or_else(|_| "openai".to_string()),
-        model: std::env::var("LLM_MODEL").expect("LLM_MODEL not set in tests/test.env"),
-        api_url: std::env::var("LLM_API_URL").expect("LLM_API_URL not set in tests/test.env"),
-        api_key: std::env::var("LLM_API_KEY").expect("LLM_API_KEY not set in tests/test.env"),
+        provider: settings.llm.chat.provider.clone(),
+        model: settings.llm.chat.model.clone(),
+        api_url: settings.llm.chat.api_url.clone(),
+        api_key: settings.llm.chat.api_key.clone(),
     };
 
     println!("Testing LLM streaming API with model: {}", config.model);
@@ -337,12 +330,9 @@ async fn test_chat_with_rag_context() {
     use axum::extract::State;
     use axum::Json;
 
-    // Load test config
-    std::env::remove_var("DATABASE_URL");
-    dotenvy::from_filename("tests/test.env").ok();
-
-    let db_url = std::env::var("DATABASE_URL")
-        .expect("DATABASE_URL must be set in tests/test.env");
+    std::env::set_var("RUN_ENV", "test");
+    let settings = Settings::new().expect("Failed to load settings");
+    let db_url = settings.database.url.clone();
 
     // Connect to database
     let pool = sqlx::postgres::PgPoolOptions::new()
@@ -366,7 +356,7 @@ async fn test_chat_with_rag_context() {
     println!("Found {} documents in database", doc_count.0);
 
     // Initialize embedder and state
-    let embedder = rag_chat::infra::embedder::Embedder::new()
+    let embedder = rag_chat::infra::embedder::Embedder::new(&settings.embedding)
         .expect("Failed to create Embedder");
 
     let log_buffer = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -384,6 +374,7 @@ async fn test_chat_with_rag_context() {
         log_buffer,
         leptos_options,
         import_job_tx,
+        std::sync::Arc::new(settings),
     );
 
     // Create a chat request

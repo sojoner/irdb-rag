@@ -2,16 +2,16 @@ use anyhow::Result;
 use rag_chat::domain::models::Document;
 use rag_chat::infra::db::SearchFilters;
 use rag_chat::infra::db::{create_pool, hybrid_search};
+use rag_chat::config::Settings;
 use sqlx::{PgPool, Row};
 use uuid::Uuid;
 
 async fn setup_db() -> Result<PgPool> {
-    // Ensure we don't use stale env var from shell
-    std::env::remove_var("DATABASE_URL");
-    dotenvy::from_filename("tests/test.env").ok();
-    
+    std::env::set_var("RUN_ENV", "test");
+    let settings = Settings::new()?;
+
     // Use the shared pool creation logic which handles config properly
-    create_pool().await
+    create_pool(&settings.database).await
 }
 
 #[tokio::test]

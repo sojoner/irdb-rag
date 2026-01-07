@@ -5,9 +5,8 @@ services:
     build:
       context: .
     container_name: rag-db
-    env_file:
-      - .env
     environment:
+      RUN_ENV: production
       POSTGRES_USER: rag_user
       POSTGRES_PASSWORD: rag_password
       POSTGRES_DB: rag_chat
@@ -16,6 +15,7 @@ services:
     volumes:
       - ./data/postgres:/var/lib/postgresql/data
       - ./sql/init.sql:/docker-entrypoint-initdb.d/01_init.sql:ro
+      - ./config:/config:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U rag_user -d rag_chat"]
       interval: 10s
@@ -37,13 +37,17 @@ services:
   db-init:
     image: docker.io/sojoner/database:latest
     container_name: rag-db-init
-    env_file:
-      - .env
+    environment:
+      RUN_ENV: production
+      PGPASSWORD: rag_password
+      POSTGRES_USER: rag_user
+      POSTGRES_DB: rag_chat
     depends_on:
       db:
         condition: service_healthy
     volumes:
       - ./sql/init.sql:/init.sql:ro
+      - ./config:/config:ro
     networks:
       - rag-network
     command: >
@@ -52,28 +56,23 @@ services:
         sed 's/$${EMBEDDING_DIMENSIONS}/'"$$EMBEDDING_DIMENSIONS"'/g' /init.sql | psql -h db -U $$POSTGRES_USER -d $$POSTGRES_DB;
         echo 'Database initialization complete!';
       "
-    environment:
-      PGPASSWORD: rag_password
-      POSTGRES_USER: rag_user
-      POSTGRES_DB: rag_chat
     restart: "no"
 
   # Docling - Document Processing with AI Models
   docling:
     image: quay.io/docling-project/docling-serve:latest
     container_name: rag-docling
-    env_file:
-      - .env
     ports:
       - "5001:5001"
     environment:
+      RUN_ENV: production
       DOCLING_SERVE_ENABLE_UI: "true"
       DOCLING_SERVE_MAX_SYNC_WAIT: "300"
-      DOCLING_SERVE_MODELS_TO_PRELOAD: "${DOCLING_MODELS}"
       DOCLING_LOG_LEVEL: "INFO"
     volumes:
       - ./data/docling_models:/app/models
       - ./documents:/documents:ro
+      - ./config:/config:ro
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:5001/health"]
       interval: 30s

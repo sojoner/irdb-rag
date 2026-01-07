@@ -8,32 +8,28 @@ use chrono::{DateTime, Utc};
 use sqlx::{postgres::PgPoolOptions, PgPool};
 use uuid::Uuid;
 
+use crate::config::DatabaseConfig;
 use crate::domain::models::{Document, DocumentChunk, DocumentAsset, Category, SearchResult};
 use crate::infra::db_utils::{
     sanitize_bm25_query, embedding_to_string, has_entity_or_wordcount_filters,
     extract_unique_ids,
 };
 
-/// Get embedding dimensions from environment (required)
-/// This must match the embedding model's output dimension
-fn get_embedding_dimensions() -> u32 {
-    std::env::var("EMBEDDING_DIMENSIONS")
-        .expect("EMBEDDING_DIMENSIONS environment variable must be set")
-        .parse::<u32>()
-        .expect("EMBEDDING_DIMENSIONS must be a valid u32")
+/// Get embedding dimensions from configuration
+/// This is a helper function for database operations that need to know the vector dimension
+pub fn get_embedding_dimensions() -> Result<u32> {
+    let settings = crate::config::Settings::new()?;
+    Ok(settings.embedding.dimensions)
 }
 
 /// Create a database connection pool
-pub async fn create_pool() -> Result<PgPool> {
+pub async fn create_pool(config: &DatabaseConfig) -> Result<PgPool> {
     use std::time::Duration;
 
-    let database_url = std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://rag_user:rag_password@localhost:15432/rag_chat".to_string());
-
     // Log connection attempt (masking password for security)
-    let masked_url = if let Some(start) = database_url.find("://") {
-        if let Some(end) = database_url[start+3..].find('@') {
-            format!("{}://****@{}", &database_url[..start], &database_url[start+3+end+1..])
+    let masked_url = if let Some(start) = config.url.find("://") {
+        if let Some(end) = config.url[start+3..].find('@') {
+            format!("{}://****@{}", &config.url[..start], &config.url[start+3+end+1..])
         } else {
             "postgres://****@...".to_string()
         }
@@ -42,29 +38,18 @@ pub async fn create_pool() -> Result<PgPool> {
     };
     tracing::info!("Connecting to database at {}", masked_url);
 
-    // Get pool configuration from environment or use defaults
-    let max_connections = std::env::var("DB_MAX_CONNECTIONS")
-        .ok()
-        .and_then(|s| s.parse::<u32>().ok())
-        .unwrap_or(20); // Increased from 10 to handle concurrent indexing
-
-    let acquire_timeout = std::env::var("DB_ACQUIRE_TIMEOUT_SECONDS")
-        .ok()
-        .and_then(|s| s.parse::<u64>().ok())
-        .unwrap_or(30);
-
     let pool = PgPoolOptions::new()
-        .max_connections(max_connections)
-        .acquire_timeout(Duration::from_secs(acquire_timeout))
+        .max_connections(config.max_connections)
+        .acquire_timeout(Duration::from_secs(config.acquire_timeout_seconds))
         .idle_timeout(Some(Duration::from_secs(600))) // 10 minutes
         .max_lifetime(Some(Duration::from_secs(1800))) // 30 minutes
-        .connect(&database_url)
+        .connect(&config.url)
         .await?;
 
     tracing::info!(
         "Connected to database (max_connections: {}, acquire_timeout: {}s)",
-        max_connections,
-        acquire_timeout
+        config.max_connections,
+        config.acquire_timeout_seconds
     );
     Ok(pool)
 }
@@ -152,7 +137,7 @@ pub async fn hybrid_search(
     // Convert embedding to PostgreSQL vector format using pure function
     let embedding_str = embedding_to_string(embedding);
 
-    let dims = get_embedding_dimensions();
+    let dims = get_embedding_dimensions()?;
     let sql = format!(
         r#"
         SELECT * FROM hybrid_search(
@@ -257,7 +242,7 @@ pub async fn vector_search(
 ) -> Result<Vec<Document>> {
     let embedding_str = embedding_to_string(embedding);
 
-    let dims = get_embedding_dimensions();
+    let dims = get_embedding_dimensions()?;
     let sql = format!(
         r#"
         SELECT * FROM documents
@@ -302,7 +287,7 @@ pub async fn insert_document(
     let embedding_str = embedding_to_string(params.embedding);
     let word_count = params.content.split_whitespace().count() as i32;
 
-    let dims = get_embedding_dimensions();
+    let dims = get_embedding_dimensions()?;
     let sql = format!(
         r#"
         INSERT INTO documents (
@@ -347,7 +332,7 @@ pub async fn insert_chunk(
     // Estimate token count (rough approximation: ~4 chars per token)
     let token_count = (content.len() / 4) as i32;
 
-    let dims = get_embedding_dimensions();
+    let dims = get_embedding_dimensions()?;
     let sql = format!(
         r#"
         INSERT INTO document_chunks (document_id, chunk_index, content, embedding, page_number, token_count)
@@ -427,7 +412,7 @@ pub async fn get_relevant_chunks(
 ) -> Result<Vec<DocumentChunk>> {
     let embedding_str = embedding_to_string(embedding);
 
-    let dims = get_embedding_dimensions();
+    let dims = get_embedding_dimensions()?;
     let sql = format!(
         r#"
         SELECT id, document_id, chunk_index, content, page_number, section_title

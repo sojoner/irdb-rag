@@ -4,8 +4,9 @@ use rag_chat::api::state::AppState;
 use rag_chat::api::handlers;
 use rag_chat::domain::dtos::SearchRequest;
 use rag_chat::infra::embedder::Embedder;
+use rag_chat::config::Settings;
 use sqlx::postgres::PgPoolOptions;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 #[tokio::test]
 async fn test_search_syntax_edge_cases() {
@@ -15,20 +16,17 @@ async fn test_search_syntax_edge_cases() {
         .try_init();
 
     // 1. Setup
-    std::env::remove_var("DATABASE_URL");
-    dotenvy::from_filename("tests/test.env").ok();
+    std::env::set_var("RUN_ENV", "test");
 
-    let db_url = std::env::var("DATABASE_URL")
-        .expect("DATABASE_URL must be set in tests/test.env");
+    let settings = Settings::new().expect("Failed to load settings");
 
     let pool = PgPoolOptions::new()
         .max_connections(5)
-        .connect(&db_url)
+        .connect(&settings.database.url)
         .await
         .expect("Failed to connect to database");
 
-    let embedder = Embedder::new().expect("Failed to create Embedder");
-    let log_buffer = Arc::new(Mutex::new(Vec::new()));
+    let embedder = Embedder::new(&settings.embedding).expect("Failed to create Embedder");
     let leptos_options = leptos::prelude::LeptosOptions::builder()
         .output_name("rag-chat")
         .site_root("target/site")
@@ -36,7 +34,7 @@ async fn test_search_syntax_edge_cases() {
     // Create dummy import job queue (tests don't need it)
     let (import_job_tx, _import_job_rx) = tokio::sync::mpsc::channel(100);
 
-    let state = AppState::new(pool.clone(), embedder, log_buffer, leptos_options, import_job_tx);
+    let state = AppState::new(pool.clone(), embedder, Arc::new(std::sync::Mutex::new(Vec::new())), leptos_options, import_job_tx, Arc::new(settings.clone()));
 
     // 2. Test Cases
     let test_queries = vec![

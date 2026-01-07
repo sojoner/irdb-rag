@@ -16,31 +16,26 @@ use sqlx::PgPool;
 use crate::domain::models::{ImportJob, ImportItem, ErrorType};
 
 // ============================================================================
-// Configuration
+// Re-export config from config module (TOML-based)
 // ============================================================================
 
-#[derive(Clone)]
-pub struct ImportConfig {
-    pub max_retries: u32,
-    pub retry_base_delay_ms: u64,
-    pub retry_max_delay_ms: u64,
-}
+pub use crate::config::ImportConfig;
 
+/// Extension trait for ImportConfig to support from_env() for backward compatibility
 impl ImportConfig {
+    /// Load ImportConfig from settings (for backward compatibility)
     pub fn from_env() -> Self {
-        Self {
-            max_retries: std::env::var("IMPORT_MAX_RETRIES")
-                .ok()
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(3),
-            retry_base_delay_ms: std::env::var("IMPORT_RETRY_BASE_DELAY_MS")
-                .ok()
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(1000),
-            retry_max_delay_ms: std::env::var("IMPORT_RETRY_MAX_DELAY_MS")
-                .ok()
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(30000),
+        match crate::config::Settings::new() {
+            Ok(settings) => settings.import,
+            Err(e) => {
+                tracing::error!("Failed to load settings for ImportConfig::from_env: {}", e);
+                Self {
+                    workers: 2,
+                    max_retries: 3,
+                    retry_base_delay_ms: 1000,
+                    retry_max_delay_ms: 30000,
+                }
+            }
         }
     }
 }
@@ -647,7 +642,8 @@ pub async fn process_import_job(
 ) -> Result<()> {
     use crate::services::indexing;
 
-    let config = ImportConfig::from_env();
+    let settings = crate::config::Settings::new()?;
+    let config = settings.import.clone();
     let runner = ImportJobRunner::new(config.clone());
     let item_mgr = ImportItemManager;
 
@@ -740,10 +736,14 @@ pub fn spawn_import_processor(
             tracing::error!("Background import processor failed for job {}: {}", job_id, e);
 
             // Try to mark job as failed
-            let config = ImportConfig::from_env();
-            let runner = ImportJobRunner::new(config);
-            if let Err(update_err) = runner.complete_job(&pool, job_id, "failed", Some(&e.to_string())).await {
-                tracing::error!("Failed to update job status: {}", update_err);
+            if let Ok(settings) = crate::config::Settings::new() {
+                let config = settings.import;
+                let runner = ImportJobRunner::new(config);
+                if let Err(update_err) = runner.complete_job(&pool, job_id, "failed", Some(&e.to_string())).await {
+                    tracing::error!("Failed to update job status: {}", update_err);
+                }
+            } else {
+                tracing::error!("Failed to load settings for job status update");
             }
         }
     });
@@ -785,10 +785,14 @@ pub fn spawn_import_workers(
                             tracing::error!("Worker {} failed to process job {}: {}", worker_id, job_id, e);
 
                             // Try to mark job as failed
-                            let config = ImportConfig::from_env();
-                            let runner = ImportJobRunner::new(config);
-                            if let Err(update_err) = runner.complete_job(&pool, job_id, "failed", Some(&e.to_string())).await {
-                                tracing::error!("Worker {} failed to update job status: {}", worker_id, update_err);
+                            if let Ok(settings) = crate::config::Settings::new() {
+                                let config = settings.import;
+                                let runner = ImportJobRunner::new(config);
+                                if let Err(update_err) = runner.complete_job(&pool, job_id, "failed", Some(&e.to_string())).await {
+                                    tracing::error!("Worker {} failed to update job status: {}", worker_id, update_err);
+                                }
+                            } else {
+                                tracing::error!("Worker {} failed to load settings", worker_id);
                             }
                         } else {
                             tracing::info!("Worker {} completed job {}", worker_id, job_id);
@@ -814,6 +818,7 @@ mod tests {
     #[test]
     fn test_retry_delay_exponential() {
         let config = ImportConfig {
+            workers: 2,
             max_retries: 3,
             retry_base_delay_ms: 1000,
             retry_max_delay_ms: 30000,

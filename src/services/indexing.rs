@@ -38,6 +38,11 @@ fn chunk_text(text: &str, target_tokens: usize) -> Vec<String> {
 
 /// Index a file or directory
 pub async fn index_path(pool: &PgPool, embedder: &Embedder, path: &str) -> Result<()> {
+    index_path_with_config(pool, embedder, path, None).await
+}
+
+/// Index a file or directory with custom settings
+pub async fn index_path_with_config(pool: &PgPool, embedder: &Embedder, path: &str, settings: Option<&crate::config::Settings>) -> Result<()> {
     let path = Path::new(path);
 
     if path.is_dir() {
@@ -97,7 +102,7 @@ pub async fn index_path(pool: &PgPool, embedder: &Embedder, path: &str) -> Resul
                     let embedder = embedder.clone();
 
                     async move {
-                        index_file(&pool, &embedder, &file_path).await
+                        index_file(&pool, &embedder, &file_path, settings).await
                     }
                 })
                 .collect();
@@ -121,14 +126,14 @@ pub async fn index_path(pool: &PgPool, embedder: &Embedder, path: &str) -> Resul
 
         tracing::info!("🎉 Indexing complete: {} documents processed ({:.2} MB total)\n", total, total_size_mb);
     } else {
-        index_file(pool, embedder, path).await?;
+        index_file(pool, embedder, path, settings).await?;
     }
 
     Ok(())
 }
 
 /// Index a single file
-async fn index_file(pool: &PgPool, embedder: &Embedder, path: &Path) -> Result<()> {
+async fn index_file(pool: &PgPool, embedder: &Embedder, path: &Path, settings: Option<&crate::config::Settings>) -> Result<()> {
     use std::time::Instant;
 
     let extension = path.extension()
@@ -147,7 +152,7 @@ async fn index_file(pool: &PgPool, embedder: &Embedder, path: &Path) -> Result<(
     let start_stage1 = Instant::now();
     tracing::info!("  ├─ Stage 1/5: Extracting & enriching content...");
 
-    let enricher = Enricher::new();
+    let enricher = Enricher::with_config(None, None, settings);
     let (content, metadata) = enricher.enrich_file(path).await?;
 
     let title = metadata.title.clone().unwrap_or_else(|| {
@@ -394,7 +399,7 @@ pub async fn watch_folders(
                     for path in event.paths {
                         if path.is_file() {
                             tracing::info!("Detected change: {:?}", path);
-                            if let Err(e) = index_file(pool, embedder, &path).await {
+                            if let Err(e) = index_file(pool, embedder, &path, None).await {
                                 tracing::error!("Failed to index {:?}: {}", path, e);
                             }
                         }

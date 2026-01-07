@@ -5,6 +5,7 @@ use leptos::prelude::LeptosOptions;
 use axum::extract::FromRef;
 use uuid::Uuid;
 
+use crate::config::Settings;
 use crate::domain::models::LLMConfig;
 use crate::infra::embedder::Embedder;
 
@@ -16,6 +17,7 @@ pub struct AppState {
     pub log_buffer: Arc<Mutex<Vec<String>>>,
     pub leptos_options: LeptosOptions,
     pub import_job_queue: mpsc::Sender<Uuid>,
+    pub settings: Arc<Settings>,
 }
 
 impl AppState {
@@ -25,14 +27,17 @@ impl AppState {
         log_buffer: Arc<Mutex<Vec<String>>>,
         leptos_options: LeptosOptions,
         import_job_queue: mpsc::Sender<Uuid>,
+        settings: Arc<Settings>,
     ) -> Self {
+        let llm_config = LLMConfig::from_provider_config(&settings.llm.chat);
         Self {
             pool,
             embedder: Arc::new(embedder),
-            llm_config: Arc::new(RwLock::new(LLMConfig::from_env())),
+            llm_config: Arc::new(RwLock::new(llm_config)),
             log_buffer,
             leptos_options,
             import_job_queue,
+            settings,
         }
     }
 }

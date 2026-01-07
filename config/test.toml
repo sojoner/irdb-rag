@@ -1,0 +1,50 @@
+# RAG Chat - Test Configuration
+# Overrides default.toml for testing
+
+[database]
+url = "postgres://rag_user:rag_password@localhost:15432/rag_chat"
+
+# All LLMs use same OpenRouter config for tests
+[llm.chat]
+provider = "openrouter"
+api_url = "https://openrouter.ai/api/v1"
+api_key = "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"
+model = "google/gemini-3-flash-preview"
+
+[llm.metadata]
+provider = "openrouter"
+api_url = "https://openrouter.ai/api/v1"
+api_key = "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"
+model = "google/gemini-3-flash-preview"
+
+[llm.ner]
+provider = "openrouter"
+api_url = "https://openrouter.ai/api/v1"
+api_key = "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"
+model = "google/gemini-3-flash-preview"
+
+[llm]
+timeout_seconds = 300
+
+[embedding]
+provider = "openrouter"
+api_url = "https://openrouter.ai/api/v1"
+api_key = "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"
+model = "Qwen/Qwen3-Embedding-8B"
+dimensions = 4096
+timeout_seconds = 120
+
+[docling]
+url = "http://localhost:5001"
+timeout_seconds = 180
+models = "DocLayNet,TableFormer,ibm-granite/granite-docling-258M-mlx-bf16"
+
+[import]
+workers = 2
+max_retries = 3
+retry_base_delay_ms = 1000
+retry_max_delay_ms = 30000
+
+[rag]
+system_prompt = "You are a helpful AI assistant specialized in answering questions about documents. Use the provided document context to give accurate, well-sourced answers. If information is not available in the context, clearly state that. Always cite which documents you're referencing."
+entity_extraction_enabled = true

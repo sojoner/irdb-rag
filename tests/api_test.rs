@@ -4,31 +4,28 @@ use rag_chat::api::state::AppState;
 use rag_chat::api::handlers;
 use rag_chat::domain::dtos::SearchRequest;
 use rag_chat::infra::embedder::Embedder;
+use rag_chat::config::Settings;
 use sqlx::postgres::PgPoolOptions;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 #[tokio::test]
 async fn test_search_api_with_db() {
     // 1. Setup
-    // Clear potential conflicting env vars and load test config
-    std::env::remove_var("DATABASE_URL");
-    dotenvy::from_filename("tests/test.env").ok();
+    std::env::set_var("RUN_ENV", "test");
 
-    let db_url = std::env::var("DATABASE_URL")
-        .expect("DATABASE_URL must be set in tests/test.env");
+    let settings = Settings::new().expect("Failed to load settings");
 
     // Connect to database
     let pool = PgPoolOptions::new()
         .max_connections(5)
-        .connect(&db_url)
+        .connect(&settings.database.url)
         .await
         .expect("Failed to connect to database");
 
     // Initialize Embedder
-    let embedder = Embedder::new().expect("Failed to create Embedder");
-    
+    let embedder = Embedder::new(&settings.embedding).expect("Failed to create Embedder");
+
     // Initialize AppState
-    let log_buffer = Arc::new(Mutex::new(Vec::new()));
     let leptos_options = leptos::prelude::LeptosOptions::builder()
         .output_name("rag-chat")
         .site_root("target/site")
@@ -37,15 +34,15 @@ async fn test_search_api_with_db() {
     // Create dummy import job queue (tests don't need it)
     let (import_job_tx, _import_job_rx) = tokio::sync::mpsc::channel(100);
 
-    let state = AppState::new(pool.clone(), embedder, log_buffer, leptos_options, import_job_tx);
+    let state = AppState::new(pool.clone(), embedder, Arc::new(std::sync::Mutex::new(Vec::new())), leptos_options, import_job_tx, Arc::new(settings.clone()));
 
     // 2. Index PDF
     let pdf_path = "/Users/hagentonnies/Workspace/irdb-rag/documents/HumanPrincipals.pdf";
     assert!(std::path::Path::new(pdf_path).exists(), "PDF file not found at {}", pdf_path);
 
     println!("Indexing PDF: {}", pdf_path);
-    // We use the index_path function from indexing module
-    rag_chat::services::indexing::index_path(&pool, &state.embedder, pdf_path)
+    // We use the index_path_with_config function from indexing module with settings
+    rag_chat::services::indexing::index_path_with_config(&pool, &state.embedder, pdf_path, Some(&settings))
         .await
         .expect("Failed to index PDF");
 
@@ -106,20 +103,17 @@ async fn test_search_api_with_db() {
 #[tokio::test]
 async fn test_search_api_syntax_edge_cases() {
     // 1. Setup
-    std::env::remove_var("DATABASE_URL");
-    dotenvy::from_filename("tests/test.env").ok();
+    std::env::set_var("RUN_ENV", "test");
 
-    let db_url = std::env::var("DATABASE_URL")
-        .expect("DATABASE_URL must be set in tests/test.env");
+    let settings = Settings::new().expect("Failed to load settings");
 
     let pool = PgPoolOptions::new()
         .max_connections(2) // Low connection count for tests
-        .connect(&db_url)
+        .connect(&settings.database.url)
         .await
         .expect("Failed to connect to database");
 
-    let embedder = Embedder::new().expect("Failed to create Embedder");
-    let log_buffer = Arc::new(Mutex::new(Vec::new()));
+    let embedder = Embedder::new(&settings.embedding).expect("Failed to create Embedder");
     let leptos_options = leptos::prelude::LeptosOptions::builder()
         .output_name("rag-chat")
         .site_root("target/site")
@@ -127,7 +121,7 @@ async fn test_search_api_syntax_edge_cases() {
     // Create dummy import job queue (tests don't need it)
     let (import_job_tx, _import_job_rx) = tokio::sync::mpsc::channel(100);
 
-    let state = AppState::new(pool.clone(), embedder, log_buffer, leptos_options, import_job_tx);
+    let state = AppState::new(pool.clone(), embedder, Arc::new(std::sync::Mutex::new(Vec::new())), leptos_options, import_job_tx, Arc::new(settings.clone()));
 
     // 2. Test Cases
     let test_queries = vec![
@@ -186,20 +180,17 @@ async fn test_search_api_syntax_edge_cases() {
 #[tokio::test]
 async fn test_chat_stream_api_with_documents() {
     // 1. Setup
-    std::env::remove_var("DATABASE_URL");
-    dotenvy::from_filename("tests/test.env").ok();
+    std::env::set_var("RUN_ENV", "test");
 
-    let db_url = std::env::var("DATABASE_URL")
-        .expect("DATABASE_URL must be set in tests/test.env");
+    let settings = Settings::new().expect("Failed to load settings");
 
     let pool = PgPoolOptions::new()
         .max_connections(5)
-        .connect(&db_url)
+        .connect(&settings.database.url)
         .await
         .expect("Failed to connect to database");
 
-    let embedder = Embedder::new().expect("Failed to create Embedder");
-    let log_buffer = Arc::new(Mutex::new(Vec::new()));
+    let embedder = Embedder::new(&settings.embedding).expect("Failed to create Embedder");
     let leptos_options = leptos::prelude::LeptosOptions::builder()
         .output_name("rag-chat")
         .site_root("target/site")
@@ -207,13 +198,13 @@ async fn test_chat_stream_api_with_documents() {
     // Create dummy import job queue (tests don't need it)
     let (import_job_tx, _import_job_rx) = tokio::sync::mpsc::channel(100);
 
-    let state = AppState::new(pool.clone(), embedder, log_buffer, leptos_options, import_job_tx);
+    let state = AppState::new(pool.clone(), embedder, Arc::new(std::sync::Mutex::new(Vec::new())), leptos_options, import_job_tx, Arc::new(settings.clone()));
 
     // 2. Index PDF
     let pdf_path = "/Users/hagentonnies/Workspace/irdb-rag/documents/HumanPrincipals.pdf";
     if std::path::Path::new(pdf_path).exists() {
         println!("Indexing PDF: {}", pdf_path);
-        if let Err(e) = rag_chat::services::indexing::index_path(&pool, &state.embedder, pdf_path).await {
+        if let Err(e) = rag_chat::services::indexing::index_path_with_config(&pool, &state.embedder, pdf_path, Some(&settings)).await {
             println!("⚠ Could not index PDF: {}", e);
             println!("Skipping test - no documents to test with");
             return;
@@ -270,20 +261,17 @@ async fn test_chat_stream_api_with_documents() {
 #[tokio::test]
 async fn test_chat_api_with_documents() {
     // 1. Setup
-    std::env::remove_var("DATABASE_URL");
-    dotenvy::from_filename("tests/test.env").ok();
+    std::env::set_var("RUN_ENV", "test");
 
-    let db_url = std::env::var("DATABASE_URL")
-        .expect("DATABASE_URL must be set in tests/test.env");
+    let settings = Settings::new().expect("Failed to load settings");
 
     let pool = PgPoolOptions::new()
         .max_connections(5)
-        .connect(&db_url)
+        .connect(&settings.database.url)
         .await
         .expect("Failed to connect to database");
 
-    let embedder = Embedder::new().expect("Failed to create Embedder");
-    let log_buffer = Arc::new(Mutex::new(Vec::new()));
+    let embedder = Embedder::new(&settings.embedding).expect("Failed to create Embedder");
     let leptos_options = leptos::prelude::LeptosOptions::builder()
         .output_name("rag-chat")
         .site_root("target/site")
@@ -291,13 +279,13 @@ async fn test_chat_api_with_documents() {
     // Create dummy import job queue (tests don't need it)
     let (import_job_tx, _import_job_rx) = tokio::sync::mpsc::channel(100);
 
-    let state = AppState::new(pool.clone(), embedder, log_buffer, leptos_options, import_job_tx);
+    let state = AppState::new(pool.clone(), embedder, Arc::new(std::sync::Mutex::new(Vec::new())), leptos_options, import_job_tx, Arc::new(settings.clone()));
 
     // 2. Index PDF
     let pdf_path = "/Users/hagentonnies/Workspace/irdb-rag/documents/HumanPrincipals.pdf";
     if std::path::Path::new(pdf_path).exists() {
         println!("Indexing PDF: {}", pdf_path);
-        if let Err(e) = rag_chat::services::indexing::index_path(&pool, &state.embedder, pdf_path).await {
+        if let Err(e) = rag_chat::services::indexing::index_path_with_config(&pool, &state.embedder, pdf_path, Some(&settings)).await {
             println!("⚠ Could not index PDF: {}", e);
             println!("Skipping test - no documents to test with");
             return;

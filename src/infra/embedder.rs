@@ -6,6 +6,7 @@ use anyhow::{Context, Result};
 use serde_json::json;
 use std::sync::Arc;
 use std::time::Duration;
+use crate::config::EmbeddingConfig;
 
 /// Local embedding model wrapper using OpenAI-compatible APIs (LM Studio, OpenRouter, etc.)
 #[derive(Clone)]
@@ -17,33 +18,27 @@ pub struct Embedder {
 }
 
 impl Embedder {
-    pub fn new() -> Result<Self> {
-        let api_url = std::env::var("EMBEDDING_API_URL")
-            .unwrap_or_else(|_| "http://localhost:1234/v1".to_string());
-        let api_key = std::env::var("EMBEDDING_API_KEY").ok();
-        let model_name = std::env::var("EMBEDDING_MODEL")
-            .unwrap_or_else(|_| "qwen/qwen3-embedding-8b".to_string());
-
-        // Configure timeout for embedding requests
-        let timeout = std::env::var("EMBEDDING_TIMEOUT_SECONDS")
-            .ok()
-            .and_then(|s| s.parse::<u64>().ok())
-            .unwrap_or(120); // Default 2 minutes for embedding generation
+    pub fn new(config: &EmbeddingConfig) -> Result<Self> {
+        let api_key = if config.api_key.is_empty() {
+            None
+        } else {
+            Some(config.api_key.clone())
+        };
 
         let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(timeout))
+            .timeout(Duration::from_secs(config.timeout_seconds))
             .connect_timeout(Duration::from_secs(30))
             .pool_max_idle_per_host(10) // Reuse connections
             .build()?;
 
         tracing::info!("Initializing Embedder with URL: {}, Model: {}, Timeout: {}s",
-            api_url, model_name, timeout);
+            config.api_url, config.model, config.timeout_seconds);
 
         Ok(Self {
             client: Arc::new(client),
-            api_url,
+            api_url: config.api_url.clone(),
             api_key,
-            model_name,
+            model_name: config.model.clone(),
         })
     }
 

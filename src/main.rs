@@ -1,5 +1,5 @@
 //! RAG Chat - Hybrid Search RAG System
-//! 
+//!
 //! A Rust-based RAG system using ParadeDB (BM25 + pgvector) for hybrid search,
 //! Leptos for the UI, and FastEmbed for local embeddings.
 
@@ -7,7 +7,9 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use leptos::prelude::get_configuration;
+use std::sync::Arc;
 
+use rag_chat::config::Settings;
 use rag_chat::api::{self, state::AppState};
 use rag_chat::infra::{db, embedder::Embedder};
 use rag_chat::services::indexing;
@@ -57,68 +59,74 @@ async fn main() -> Result<()> {
         .with(buffer_layer)
         .init();
 
-    // Load environment
-    dotenvy::dotenv().ok();
+    // Load configuration
+    let settings = Settings::new()
+        .map_err(|e| anyhow::anyhow!("Failed to load configuration: {}", e))?;
 
     let cli = Cli::parse();
 
     match cli.command {
-        Some(Commands::Serve { port }) => {
-            serve(port, log_buffer).await?;
+        Some(Commands::Serve { port: cli_port }) => {
+            // CLI port overrides config if provided
+            let port = if cli_port != 3000 { cli_port } else { settings.server.port };
+            serve(port, log_buffer, settings).await?;
         }
         Some(Commands::Index { path, url }) => {
-            let pool = db::create_pool().await?;
-            let embedder = Embedder::new()?;
+            let pool = db::create_pool(&settings.database).await?;
+            let embedder = Embedder::new(&settings.embedding)?;
             embedder.init().await?;
-            
+
             if let Some(path) = path {
-                indexing::index_path(&pool, &embedder, &path).await?;
+                indexing::index_path_with_config(&pool, &embedder, &path, Some(&settings)).await?;
             }
             if let Some(url) = url {
                 indexing::index_url(&pool, &embedder, &url).await?;
             }
         }
         Some(Commands::Watch { folders }) => {
-            let pool = db::create_pool().await?;
-            let embedder = Embedder::new()?;
+            let pool = db::create_pool(&settings.database).await?;
+            let embedder = Embedder::new(&settings.embedding)?;
             embedder.init().await?;
             indexing::watch_folders(&pool, &embedder, folders).await?;
         }
         None => {
-            // Default: serve on port 3000
-            serve(3000, log_buffer).await?;
+            // Default: serve on configured port
+            serve(settings.server.port, log_buffer, settings).await?;
         }
     }
 
     Ok(())
 }
 
-async fn serve(port: u16, log_buffer: std::sync::Arc<std::sync::Mutex<Vec<String>>>) -> Result<()> {
+async fn serve(port: u16, log_buffer: std::sync::Arc<std::sync::Mutex<Vec<String>>>, settings: Settings) -> Result<()> {
     tracing::info!("Starting RAG Chat server on port {}", port);
 
     // Load Leptos configuration
     let conf = get_configuration(Some("Cargo.toml"))
-        .map_err(|e| anyhow::anyhow!("Failed to load configuration: {}", e))?;
+        .map_err(|e| anyhow::anyhow!("Failed to load Leptos configuration: {}", e))?;
     let leptos_options = conf.leptos_options;
     let addr = leptos_options.site_addr;
 
-    let pool = db::create_pool().await?;
-    let embedder = Embedder::new()?;
+    let pool = db::create_pool(&settings.database).await?;
+    let embedder = Embedder::new(&settings.embedding)?;
     embedder.init().await?;
 
     // Spawn import job workers
-    let num_workers = std::env::var("IMPORT_WORKERS")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(2);
     let import_job_queue = rag_chat::services::import::spawn_import_workers(
         pool.clone(),
         std::sync::Arc::new(embedder.clone()),
-        num_workers,
+        settings.import.workers,
     );
-    tracing::info!("Spawned {} import job workers", num_workers);
+    tracing::info!("Spawned {} import job workers", settings.import.workers);
 
-    let state = AppState::new(pool, embedder, log_buffer, leptos_options.clone(), import_job_queue);
+    let state = AppState::new(
+        pool,
+        embedder,
+        log_buffer,
+        leptos_options.clone(),
+        import_job_queue,
+        Arc::new(settings),
+    );
 
     // Create the Axum router with API routes and Leptos integration
     let app = api::routes::create_router(state);

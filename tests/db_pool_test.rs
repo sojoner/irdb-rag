@@ -2,17 +2,14 @@
 ///
 /// Tests to validate database connection pool behavior and identify timeout issues
 
+use rag_chat::config::Settings;
+
 #[tokio::test]
 async fn test_basic_db_connection() {
-    // Clear any existing DATABASE_URL to ensure we use test.env
-    std::env::remove_var("DATABASE_URL");
+    std::env::set_var("RUN_ENV", "test");
 
-    // Load test configuration
-    dotenvy::from_filename("tests/test.env")
-        .expect("Failed to load tests/test.env");
-
-    let db_url = std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://rag_user:rag_password@localhost:15432/rag_chat".to_string());
+    let settings = Settings::new().expect("Failed to load settings");
+    let db_url = settings.database.url.clone();
 
     println!("Connecting to database: {}", db_url);
 
@@ -38,15 +35,10 @@ async fn test_basic_db_connection() {
 
 #[tokio::test]
 async fn test_concurrent_db_queries() {
-    // Clear any existing DATABASE_URL to ensure we use test.env
-    std::env::remove_var("DATABASE_URL");
+    std::env::set_var("RUN_ENV", "test");
 
-    // Load test configuration
-    dotenvy::from_filename("tests/test.env")
-        .expect("Failed to load tests/test.env");
-
-    let db_url = std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://rag_user:rag_password@localhost:15432/rag_chat".to_string());
+    let settings = Settings::new().expect("Failed to load settings");
+    let db_url = settings.database.url.clone();
 
     // Create pool with limited connections to test pool behavior
     let pool = sqlx::postgres::PgPoolOptions::new()
@@ -90,15 +82,10 @@ async fn test_concurrent_db_queries() {
 
 #[tokio::test]
 async fn test_db_pool_under_load() {
-    // Clear any existing DATABASE_URL to ensure we use test.env
-    std::env::remove_var("DATABASE_URL");
+    std::env::set_var("RUN_ENV", "test");
 
-    // Load test configuration
-    dotenvy::from_filename("tests/test.env")
-        .expect("Failed to load tests/test.env");
-
-    let db_url = std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://rag_user:rag_password@localhost:15432/rag_chat".to_string());
+    let settings = Settings::new().expect("Failed to load settings");
+    let db_url = settings.database.url.clone();
 
     // Create pool with same settings as main application
     let pool = sqlx::postgres::PgPoolOptions::new()
@@ -156,15 +143,10 @@ async fn test_db_pool_under_load() {
 
 #[tokio::test]
 async fn test_db_connection_with_slow_query() {
-    // Clear any existing DATABASE_URL to ensure we use test.env
-    std::env::remove_var("DATABASE_URL");
+    std::env::set_var("RUN_ENV", "test");
 
-    // Load test configuration
-    dotenvy::from_filename("tests/test.env")
-        .expect("Failed to load tests/test.env");
-
-    let db_url = std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://rag_user:rag_password@localhost:15432/rag_chat".to_string());
+    let settings = Settings::new().expect("Failed to load settings");
+    let db_url = settings.database.url.clone();
 
     let pool = sqlx::postgres::PgPoolOptions::new()
         .max_connections(5)
