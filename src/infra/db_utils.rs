@@ -13,6 +13,7 @@ use uuid::Uuid;
 ///
 /// # Examples
 /// ```
+/// use rag_chat::infra::db_utils::sanitize_bm25_query;
 /// assert_eq!(sanitize_bm25_query(""), "id:__no_match__");
 /// assert_eq!(sanitize_bm25_query("*"), "id:__no_match__");
 /// assert_eq!(sanitize_bm25_query("id:()"), "id:__no_match__");
@@ -45,6 +46,7 @@ pub fn sanitize_bm25_query(query: &str) -> &str {
 ///
 /// # Examples
 /// ```
+/// use rag_chat::infra::db_utils::embedding_to_string;
 /// let embedding = vec![0.1, 0.2, 0.3];
 /// assert_eq!(embedding_to_string(&embedding), "[0.1,0.2,0.3]");
 /// ```
@@ -127,6 +129,7 @@ pub fn entity_array_matches(
 ///
 /// # Examples
 /// ```
+/// use rag_chat::infra::db_utils::calculate_search_limit;
 /// assert_eq!(calculate_search_limit(10, 0), 30); // No filters: 3x
 /// assert_eq!(calculate_search_limit(10, 1), 30); // 1 filter: 3x
 /// assert_eq!(calculate_search_limit(10, 3), 40); // 3 filters: 4x
@@ -152,6 +155,8 @@ pub fn calculate_search_limit(requested_limit: i32, filter_strictness: usize) ->
 ///
 /// # Examples
 /// ```
+/// use uuid::Uuid;
+/// use rag_chat::infra::db_utils::extract_unique_ids;
 /// let ids = vec![Uuid::nil(), Uuid::nil(), Uuid::max()];
 /// let unique = extract_unique_ids(&ids);
 /// assert_eq!(unique.len(), 2);

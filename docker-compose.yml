@@ -1,4 +1,47 @@
 services:
+  # RAG Chat Application
+  app:
+    image: docker.io/sojoner/rag-chat:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: rag-app
+    environment:
+      RUN_ENV: production
+      RUST_LOG: info
+      DATABASE_URL: postgres://rag_user:rag_password@db:5432/rag_chat
+      LEPTOS_SITE_ROOT: /app/site
+      LEPTOS_SITE_ADDR: 0.0.0.0:3000
+    ports:
+      - "3000:3000"
+    depends_on:
+      db:
+        condition: service_healthy
+      db-init:
+        condition: service_completed_successfully
+      docling:
+        condition: service_healthy
+    volumes:
+      - ./config:/app/config:ro
+      - ./documents:/documents:ro
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    restart: unless-stopped
+    networks:
+      - rag-network
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 2G
+        reservations:
+          cpus: '1.0'
+          memory: 1G
+
   # Updated to use Sojoner Database image while maintaining RAG naming/config
   db:
     image: docker.io/sojoner/database:latest

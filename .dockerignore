@@ -1,0 +1,53 @@
+# Git
+.git
+.gitignore
+.github
+
+# Build artifacts
+target/
+node_modules/
+dist/
+pkg/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Test and coverage
+.llvmcov.json
+target/llvm-cov/
+target/llvm-cov-target/
+*.profraw
+
+# Documentation
+*.md
+!README.md
+docs/
+
+# Test data
+tests/
+screenshots/
+
+# Runtime data
+data/
+documents/
+
+# CI/CD
+.claude/
+.playwright-mcp/
+
+# Environment files
+.env
+.env.*
+*.env
+
+# Logs
+*.log
+
+# OS
+.DS_Store
+Thumbs.db

@@ -11,6 +11,7 @@ use std::collections::HashSet;
 ///
 /// # Examples
 /// ```
+/// use rag_chat::services::enrichment_utils::parse_keywords_from_string;
 /// let keywords = "rust, database, vector".to_string();
 /// let parsed = parse_keywords_from_string(&keywords);
 /// assert_eq!(parsed.len(), 3);
@@ -48,8 +49,9 @@ pub fn split_text_by_sentences(text: &str) -> Vec<String> {
 ///
 /// # Examples
 /// ```
+/// use rag_chat::services::enrichment_utils::collect_context;
 /// let sentences = vec!["Hello.".to_string(), "World.".to_string()];
-/// let context = collect_context(&sentences, 10);
+/// let context = collect_context(&sentences, 20);
 /// assert_eq!(context, "Hello. World.");
 /// ```
 pub fn collect_context(sentences: &[String], char_limit: usize) -> String {
@@ -85,6 +87,7 @@ pub fn extract_preview(text: &str, max_chars: usize) -> String {
 ///
 /// # Examples
 /// ```
+/// use rag_chat::services::enrichment_utils::clean_json_response;
 /// let response = "```json\n{\"key\": \"value\"}\n```";
 /// let cleaned = clean_json_response(response);
 /// assert_eq!(cleaned, "{\"key\": \"value\"}");
@@ -197,6 +200,7 @@ pub fn calculate_completeness_score(
 ///
 /// # Examples
 /// ```
+/// use rag_chat::services::enrichment_utils::generate_category_uuid;
 /// let uuid1 = generate_category_uuid("Technology");
 /// let uuid2 = generate_category_uuid("Technology");
 /// assert_eq!(uuid1, uuid2);
