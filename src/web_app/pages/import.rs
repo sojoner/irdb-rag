@@ -241,6 +241,40 @@ pub async fn delete_import_job(
     Ok(())
 }
 
+#[server]
+pub async fn delete_import_item(
+    item_id: Uuid,
+    delete_document: bool,
+) -> Result<u64, ServerFnError> {
+    use crate::api::state::AppState;
+    use crate::infra::db;
+
+    let state = use_context::<AppState>()
+        .ok_or_else(|| ServerFnError::new("AppState not found"))?;
+
+    // If delete_document is true, first get the document ID and delete it
+    if delete_document {
+        if let Some(item) = db::get_import_item(&state.pool, item_id)
+            .await
+            .ok()
+            .flatten()
+        {
+            if let Some(doc_id) = item.document_id {
+                db::delete_document(&state.pool, doc_id)
+                    .await
+                    .map_err(|e| ServerFnError::new(e.to_string()))?;
+            }
+        }
+    }
+
+    // Delete the import item
+    let result = db::delete_import_item(&state.pool, item_id)
+        .await
+        .map_err(|e| ServerFnError::new(e.to_string()))?;
+
+    Ok(result)
+}
+
 #[component]
 pub fn ImportPage() -> impl IntoView {
     // State
@@ -259,6 +293,7 @@ pub fn ImportPage() -> impl IntoView {
     let items_action = ServerAction::<GetImportJobItems>::new();
     let resume_action = ServerAction::<ResumeImportJob>::new();
     let delete_action = ServerAction::<DeleteImportJob>::new();
+    let delete_item_action = ServerAction::<DeleteImportItem>::new();
 
     // Load jobs on mount and refresh
     Effect::new(move |_| {
@@ -290,6 +325,19 @@ pub fn ImportPage() -> impl IntoView {
         if let Some(Ok(_)) = delete_action.value().get() {
             set_selected_job_id.set(None);
             set_refresh_trigger.update(|n| *n += 1);
+        }
+    });
+
+    // Handle delete item success
+    Effect::new(move |_| {
+        if let Some(Ok(_)) = delete_item_action.value().get() {
+            if let Some(job_id) = selected_job_id.get() {
+                items_action.dispatch(GetImportJobItems {
+                    job_id,
+                    limit: 100,
+                    offset: 0,
+                });
+            }
         }
     });
 
@@ -338,10 +386,6 @@ pub fn ImportPage() -> impl IntoView {
 
     let handle_resume = move |job_id: Uuid| {
         resume_action.dispatch(ResumeImportJob { job_id });
-    };
-
-    let handle_delete = move |job_id: Uuid, delete_documents: bool| {
-        delete_action.dispatch(DeleteImportJob { job_id, delete_documents });
     };
 
     let handle_refresh = move |_| {
@@ -510,6 +554,19 @@ pub fn ImportPage() -> impl IntoView {
                                                                 </div>
                                                             </div>
                                                         </div>
+                                                        <button
+                                                            on:click=move |e| {
+                                                                e.stop_propagation();
+                                                                delete_action.dispatch(DeleteImportJob { job_id, delete_documents: false });
+                                                            }
+                                                            class="text-gray-400 hover:text-red-600 transition-colors p-1 flex-shrink-0"
+                                                            title="Delete job"
+                                                        >
+                                                            <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                                                      d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                                                            </svg>
+                                                        </button>
                                                     </div>
 
                                                     {
@@ -602,14 +659,7 @@ pub fn ImportPage() -> impl IntoView {
                                                         </Show>
                                                         <button
                                                             on:click=move |_| {
-                                                                if web_sys::window()
-                                                                    .and_then(|w| w.confirm_with_message(
-                                                                        "Delete this import job? Also delete imported documents?"
-                                                                    ).ok())
-                                                                    .unwrap_or(false)
-                                                                {
-                                                                    handle_delete(job_id, true);
-                                                                }
+                                                                delete_action.dispatch(DeleteImportJob { job_id, delete_documents: false });
                                                             }
                                                             class="px-3 py-1 text-xs font-medium text-white bg-red-600 rounded hover:bg-red-700 transition-colors"
                                                         >
@@ -724,6 +774,26 @@ pub fn ImportPage() -> impl IntoView {
                                                                                 }
                                                                             }
                                                                         </div>
+                                                                        <button
+                                                                            on:click=move |_| {
+                                                                                if web_sys::window()
+                                                                                    .and_then(|w| w.confirm_with_message("Delete this import item? Also delete the imported document?").ok())
+                                                                                    .unwrap_or(false)
+                                                                                {
+                                                                                    delete_item_action.dispatch(DeleteImportItem {
+                                                                                        item_id: item.id,
+                                                                                        delete_document: true
+                                                                                    });
+                                                                                }
+                                                                            }
+                                                                            class="text-gray-400 hover:text-red-600 transition-colors p-1 flex-shrink-0"
+                                                                            title="Delete item"
+                                                                        >
+                                                                            <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                                                                      d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                                                                            </svg>
+                                                                        </button>
                                                                     </div>
                                                                 </div>
                                                             }
@@ -904,6 +974,7 @@ pub fn ImportPage() -> impl IntoView {
                     </div>
                 </div>
             </Show>
+
         </div>
     }
 }

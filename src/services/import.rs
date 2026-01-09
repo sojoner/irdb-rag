@@ -691,8 +691,16 @@ pub async fn process_import_job(
                 }
                 Err(e) => {
                     let error_msg = e.to_string();
-                    let error_type = classify_error(&error_msg);
-                    handle_item_error(&mut stats, pool, &item_mgr, &item, error_type, &error_msg, &config).await?;
+
+                    // Check if this is a duplicate skip (not an error)
+                    if error_msg.contains("already indexed") || error_msg.contains("duplicate content") {
+                        item_mgr.mark_skipped(pool, item.id, "Duplicate document").await?;
+                        stats.skipped += 1;
+                        tracing::info!("Skipped duplicate item: {}", item.id);
+                    } else {
+                        let error_type = classify_error(&error_msg);
+                        handle_item_error(&mut stats, pool, &item_mgr, &item, error_type, &error_msg, &config).await?;
+                    }
                 }
             }
         }

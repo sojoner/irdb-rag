@@ -10,6 +10,7 @@ pub fn ResultsList(
     selected_context: Signal<Vec<Uuid>>,
     set_selected_context: WriteSignal<Vec<Uuid>>,
     #[prop(optional)] on_preview: Option<Callback<Uuid>>,
+    #[prop(optional)] on_delete: Option<Callback<Uuid>>,
 ) -> impl IntoView {
     let toggle_selection = move |id: Uuid| {
         set_selected_context.update(|ids: &mut Vec<Uuid>| {
@@ -24,6 +25,17 @@ pub fn ResultsList(
     let handle_preview_click = move |id: Uuid| {
         if let Some(callback) = on_preview {
             callback.run(id);
+        }
+    };
+
+    let handle_delete_click = move |id: Uuid| {
+        if let Some(callback) = on_delete {
+            if web_sys::window()
+                .and_then(|w| w.confirm_with_message("Delete this document permanently?").ok())
+                .unwrap_or(false)
+            {
+                callback.run(id);
+            }
         }
     };
 
@@ -102,15 +114,32 @@ pub fn ResultsList(
                                                     </span>
                                                     <span>"•"</span>
                                                 </Show>
-                                                <button
-                                                    class="ml-auto text-gray-400 hover:text-gray-600 transition-colors"
-                                                    on:click=move |_| handle_preview_click(id)
-                                                    title="View full details"
-                                                >
-                                                    <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
-                                                    </svg>
-                                                </button>
+                                                <div class="ml-auto flex items-center gap-1">
+                                                    <button
+                                                        class="text-gray-400 hover:text-gray-600 transition-colors"
+                                                        on:click=move |_| handle_preview_click(id)
+                                                        title="View full details"
+                                                    >
+                                                        <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+                                                        </svg>
+                                                    </button>
+                                                    <Show when=move || on_delete.is_some()>
+                                                        <button
+                                                            class="text-gray-400 hover:text-red-600 transition-colors"
+                                                            on:click=move |e: web_sys::MouseEvent| {
+                                                                e.stop_propagation();
+                                                                handle_delete_click(id);
+                                                            }
+                                                            title="Delete document"
+                                                        >
+                                                            <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                                                      d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                                                            </svg>
+                                                        </button>
+                                                    </Show>
+                                                </div>
                                             </div>
                                         </div>
                                     </div>

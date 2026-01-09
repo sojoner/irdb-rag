@@ -32,6 +32,7 @@ pub struct Document {
     pub entities: Option<serde_json::Value>,
     #[cfg_attr(feature = "ssr", sqlx(json))]
     pub metadata: Option<serde_json::Value>,
+    pub content_hash: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

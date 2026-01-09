@@ -136,6 +136,8 @@ pub async fn index_path_with_config(pool: &PgPool, embedder: &Embedder, path: &s
 async fn index_file(pool: &PgPool, embedder: &Embedder, path: &Path, settings: Option<&crate::config::Settings>) -> Result<()> {
     use std::time::Instant;
 
+    let path_str = path.to_string_lossy().to_string();
+
     let extension = path.extension()
         .and_then(|e| e.to_str())
         .unwrap_or("")
@@ -143,6 +145,12 @@ async fn index_file(pool: &PgPool, embedder: &Embedder, path: &Path, settings: O
 
     // Skip hidden files or non-document types
     if extension.is_empty() || matches!(extension.as_str(), "ds_store" | "gitignore") {
+        return Ok(());
+    }
+
+    // IDEMPOTENCY CHECK 1: Quick check if path exists
+    if db::document_exists_by_path(pool, &path_str).await? {
+        tracing::info!("  ⏭️  Skipping {} - already indexed (path exists)", path_str);
         return Ok(());
     }
 
@@ -154,6 +162,19 @@ async fn index_file(pool: &PgPool, embedder: &Embedder, path: &Path, settings: O
 
     let enricher = Enricher::with_config(None, None, settings);
     let (content, metadata) = enricher.enrich_file(path).await?;
+
+    // IDEMPOTENCY CHECK 2: Check content hash if available
+    if let Some(ref origin) = metadata.document_origin {
+        if let Some(ref hash) = origin.binary_hash {
+            if let Some(existing_id) = db::find_duplicate_document(pool, &path_str, hash).await? {
+                tracing::info!(
+                    "  ⏭️  Skipping {} - duplicate content (matches doc {})",
+                    path_str, existing_id
+                );
+                return Ok(());
+            }
+        }
+    }
 
     let title = metadata.title.clone().unwrap_or_else(|| {
         path.file_stem()
@@ -237,13 +258,18 @@ async fn index_file(pool: &PgPool, embedder: &Embedder, path: &Path, settings: O
         "extraction_quality": metadata.extraction_quality,
     });
 
+    // Extract content hash for idempotency
+    let content_hash = metadata.document_origin
+        .as_ref()
+        .and_then(|o| o.binary_hash.as_deref());
+
     // Insert document
     let doc_id = db::insert_document(
         pool,
         db::InsertDocumentParams {
             title: &title,
             content: &content,
-            source_path: Some(&path.to_string_lossy()),
+            source_path: Some(&path_str),
             source_type: &extension,
             embedding: doc_embedding,
             summary: metadata.summary.as_deref(),
@@ -252,6 +278,7 @@ async fn index_file(pool: &PgPool, embedder: &Embedder, path: &Path, settings: O
             author: metadata.author.as_deref(),
             category_id: metadata.category_id,
             metadata: Some(metadata_json),
+            content_hash,
         }
     ).await?;
 
@@ -336,6 +363,11 @@ pub async fn index_url(pool: &PgPool, embedder: &Embedder, url: &str) -> Result<
         "source_url": url,
     });
 
+    // Extract content hash for idempotency (URLs don't have binary_hash usually)
+    let content_hash = metadata.document_origin
+        .as_ref()
+        .and_then(|o| o.binary_hash.as_deref());
+
     let doc_id = db::insert_document(
         pool,
         db::InsertDocumentParams {
@@ -350,6 +382,7 @@ pub async fn index_url(pool: &PgPool, embedder: &Embedder, url: &str) -> Result<
             author: metadata.author.as_deref(),
             category_id: metadata.category_id,
             metadata: Some(metadata_json),
+            content_hash,
         }
     ).await?;
 

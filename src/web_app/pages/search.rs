@@ -40,35 +40,14 @@ pub fn SearchPage() -> impl IntoView {
 
     // Server Action for Search
     let search_action = ServerAction::<SearchDocuments>::new();
-    
-    // Derived signals from action
-    let search_results = move || {
-        let val = search_action.value().get();
-        leptos::logging::log!("SearchPage: search_action value changed: {:?}", val);
-        match val {
-            Some(Ok(res)) => {
-                leptos::logging::log!("SearchPage: received {} results", res.len());
-                res
-            },
-            Some(Err(e)) => {
-                leptos::logging::error!("SearchPage: Search failed: {:?}", e);
-                vec![]
-            }
-            None => vec![],
-        }
-    };
-    
-    let is_loading = search_action.pending();
 
-    // Dummy signals for read-only props
-    let (_, set_dummy_results) = signal(Vec::new());
-    let (_, set_dummy_loading) = signal(false);
+    // Server Action for Delete
+    let delete_action = ServerAction::<crate::web_app::components::search::DeleteDocument>::new();
+
+    // Derived signals from action
+    let (results, set_results) = signal(Vec::new());
 
     // ============ SEARCH FUNCTION ============
-    Effect::new(move |_| {
-        leptos::logging::log!("SearchPage mounted/hydrated");
-    });
-
     let execute_search = move |_| {
         let query = search_query.get();
         leptos::logging::log!("SearchPage: executing search for '{}'", query);
@@ -102,6 +81,47 @@ pub fn SearchPage() -> impl IntoView {
             }
         });
     };
+
+    let on_delete = Callback::new(move |id: Uuid| {
+        use crate::web_app::components::search::DeleteDocument;
+        delete_action.dispatch(DeleteDocument { doc_id: id });
+    });
+
+    let search_results = move || {
+        let val = search_action.value().get();
+        leptos::logging::log!("SearchPage: search_action value changed: {:?}", val);
+        match val {
+            Some(Ok(res)) => {
+                leptos::logging::log!("SearchPage: received {} results", res.len());
+                set_results.set(res.clone());
+                res
+            },
+            Some(Err(e)) => {
+                leptos::logging::error!("SearchPage: Search failed: {:?}", e);
+                vec![]
+            }
+            None => results.get(),
+        }
+    };
+
+    let is_loading = search_action.pending();
+
+    // Effect to refresh results after delete
+    Effect::new(move |_| {
+        if let Some(Ok(_)) = delete_action.value().get() {
+            // Re-run the search to update results
+            execute_search(());
+        }
+    });
+
+    // Dummy signals for read-only props
+    let (_, set_dummy_results) = signal(Vec::new());
+    let (_, set_dummy_loading) = signal(false);
+
+    // Effect for page mount
+    Effect::new(move |_| {
+        leptos::logging::log!("SearchPage mounted/hydrated");
+    });
 
     // ============ RENDER ============
     let search_error = move || {
@@ -221,6 +241,7 @@ pub fn SearchPage() -> impl IntoView {
                         selected_context=selected_context.into()
                         set_selected_context=set_selected_context
                         on_preview=Callback::new(move |id| set_selected_document_id.set(Some(id)))
+                        on_delete=on_delete
                     />
                 </div>
 

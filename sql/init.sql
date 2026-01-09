@@ -12,8 +12,7 @@ DROP TABLE IF EXISTS document_assets CASCADE;
 DROP TABLE IF EXISTS documents CASCADE;
 
 -- Documents table
--- Note: EMBEDDING_DIMENSIONS should match the embedding model's output dimension
--- Default: 4096 for Qwen3-Embedding-8B (supports MRL for custom dimensions 32-4096)
+-- Note: embedding vector will store embeddings of configured dimension (default 4096 for Qwen3-Embedding-8B)
 CREATE TABLE documents (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     title TEXT NOT NULL,
@@ -32,7 +31,8 @@ CREATE TABLE documents (
     status TEXT DEFAULT 'pending',
     entities JSONB,
     metadata JSONB,
-    embedding VECTOR(${EMBEDDING_DIMENSIONS})
+    content_hash TEXT,
+    embedding VECTOR
 );
 
 -- Document chunks
@@ -44,7 +44,7 @@ CREATE TABLE document_chunks (
     page_number INTEGER,
     section_title TEXT,
     token_count INTEGER,
-    embedding VECTOR(${EMBEDDING_DIMENSIONS}),
+    embedding VECTOR,
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
@@ -122,11 +122,13 @@ CREATE TABLE import_items (
 CREATE INDEX documents_search_idx ON documents USING bm25 (id, content, title, summary)
 WITH (key_field='id');
 
--- Vector Index on documents
-CREATE INDEX ON documents USING hnsw (embedding vector_cosine_ops);
+-- Vector indexes created after data insertion when dimensions are known
+-- (HNSW requires dimension specification, so we skip dynamic dimension creation)
 
--- Vector Index on chunks
-CREATE INDEX ON document_chunks USING hnsw (embedding vector_cosine_ops);
+-- Unique index for idempotency (source_path + content_hash)
+CREATE UNIQUE INDEX IF NOT EXISTS idx_documents_source_content_hash
+ON documents (source_path, content_hash)
+WHERE source_path IS NOT NULL AND content_hash IS NOT NULL;
 
 -- Import Job Indexes
 CREATE INDEX idx_import_jobs_status ON import_jobs(status);
@@ -136,7 +138,7 @@ CREATE INDEX idx_import_items_status ON import_items(status);
 -- Hybrid Search Function
 CREATE OR REPLACE FUNCTION hybrid_search(
   query_text TEXT,
-  query_embedding VECTOR(${EMBEDDING_DIMENSIONS}),
+  query_embedding VECTOR,
   match_count INT,
   bm25_weight FLOAT,
   vector_weight FLOAT,
@@ -158,16 +160,16 @@ CREATE OR REPLACE FUNCTION hybrid_search(
 BEGIN
   RETURN QUERY
   WITH bm25_results AS (
-    SELECT 
-      d.id, 
+    SELECT
+      d.id,
       ROW_NUMBER() OVER (ORDER BY paradedb.score(d.id) DESC) as rank
     FROM documents d
     WHERE d.id @@@ query_text
     LIMIT match_count * 2
   ),
   vector_results AS (
-    SELECT 
-      d.id, 
+    SELECT
+      d.id,
       ROW_NUMBER() OVER (ORDER BY d.embedding <=> query_embedding) as rank
     FROM documents d
     WHERE d.embedding IS NOT NULL
@@ -190,7 +192,7 @@ BEGIN
   LEFT JOIN categories c ON d.category_id = c.id
   LEFT JOIN bm25_results b ON d.id = b.id
   LEFT JOIN vector_results v ON d.id = v.id
-  WHERE 
+  WHERE
     (b.id IS NOT NULL OR v.id IS NOT NULL)
     AND (filter_category_id IS NULL OR d.category_id = filter_category_id)
     AND (filter_date_from IS NULL OR d.created_at >= filter_date_from)

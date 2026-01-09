@@ -9,7 +9,7 @@ use sqlx::{postgres::PgPoolOptions, PgPool};
 use uuid::Uuid;
 
 use crate::config::DatabaseConfig;
-use crate::domain::models::{Document, DocumentChunk, DocumentAsset, Category, SearchResult};
+use crate::domain::models::{Document, DocumentChunk, DocumentAsset, Category, SearchResult, ImportJob, ImportItem};
 use crate::infra::db_utils::{
     sanitize_bm25_query, embedding_to_string, has_entity_or_wordcount_filters,
     extract_unique_ids,
@@ -278,6 +278,7 @@ pub struct InsertDocumentParams<'a> {
     pub author: Option<&'a str>,
     pub category_id: Option<Uuid>,
     pub metadata: Option<serde_json::Value>,
+    pub content_hash: Option<&'a str>,
 }
 
 pub async fn insert_document(
@@ -292,9 +293,9 @@ pub async fn insert_document(
         r#"
         INSERT INTO documents (
             title, content, source_path, source_type, embedding,
-            summary, keywords, entities, author, category_id, word_count, metadata, status, indexed_at
+            summary, keywords, entities, author, category_id, word_count, metadata, content_hash, status, indexed_at
         )
-        VALUES ($1, $2, $3, $4, $5::vector({}), $6, $7, $8, $9, $10, $11, $12, 'indexed', NOW())
+        VALUES ($1, $2, $3, $4, $5::vector({}), $6, $7, $8, $9, $10, $11, $12, $13, 'indexed', NOW())
         RETURNING id
         "#,
         dims
@@ -313,6 +314,7 @@ pub async fn insert_document(
         .bind(params.category_id)
         .bind(word_count)
         .bind(&params.metadata)
+        .bind(params.content_hash)
         .fetch_one(pool)
         .await?;
 
@@ -447,6 +449,96 @@ pub async fn get_db_stats(pool: &PgPool) -> Result<crate::domain::models::DbStat
     .await?;
 
     Ok(stats)
+}
+
+/// Delete a document and all related data (chunks, assets)
+/// Returns the number of rows affected
+pub async fn delete_document(pool: &PgPool, id: Uuid) -> Result<u64> {
+    // Delete chunks (ON DELETE CASCADE handles this, but explicit is clearer)
+    sqlx::query("DELETE FROM document_chunks WHERE document_id = $1")
+        .bind(id)
+        .execute(pool)
+        .await?;
+
+    // Delete assets
+    sqlx::query("DELETE FROM document_assets WHERE document_id = $1")
+        .bind(id)
+        .execute(pool)
+        .await?;
+
+    // Delete the document itself
+    let result = sqlx::query("DELETE FROM documents WHERE id = $1")
+        .bind(id)
+        .execute(pool)
+        .await?;
+
+    tracing::info!("Deleted document {}: {} rows affected", id, result.rows_affected());
+    Ok(result.rows_affected())
+}
+
+/// Bulk delete multiple documents
+pub async fn delete_documents_batch(pool: &PgPool, ids: &[Uuid]) -> Result<u64> {
+    if ids.is_empty() {
+        return Ok(0);
+    }
+
+    // Delete chunks
+    sqlx::query("DELETE FROM document_chunks WHERE document_id = ANY($1)")
+        .bind(ids)
+        .execute(pool)
+        .await?;
+
+    // Delete assets
+    sqlx::query("DELETE FROM document_assets WHERE document_id = ANY($1)")
+        .bind(ids)
+        .execute(pool)
+        .await?;
+
+    // Delete documents
+    let result = sqlx::query("DELETE FROM documents WHERE id = ANY($1)")
+        .bind(ids)
+        .execute(pool)
+        .await?;
+
+    tracing::info!("Bulk deleted {} documents", result.rows_affected());
+    Ok(result.rows_affected())
+}
+
+/// Check if a document with the same source_path and content_hash already exists
+/// Returns the existing document ID if found
+pub async fn find_duplicate_document(
+    pool: &PgPool,
+    source_path: &str,
+    content_hash: &str,
+) -> Result<Option<Uuid>> {
+    let existing: Option<(Uuid,)> = sqlx::query_as(
+        r#"
+        SELECT id FROM documents
+        WHERE source_path = $1 AND content_hash = $2
+        LIMIT 1
+        "#
+    )
+    .bind(source_path)
+    .bind(content_hash)
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(existing.map(|(id,)| id))
+}
+
+/// Check if source_path already exists (for quick skip)
+pub async fn document_exists_by_path(
+    pool: &PgPool,
+    source_path: &str,
+) -> Result<bool> {
+    let exists: (bool,) = sqlx::query_as(
+        "SELECT EXISTS(SELECT 1 FROM documents WHERE source_path = $1)"
+    )
+    .bind(source_path)
+    .fetch_one(pool)
+    .await?;
+
+    Ok(exists.0)
 }
 
 pub async fn get_aggregation_stats(pool: &PgPool) -> Result<crate::domain::dtos::AggregationStats> {
@@ -683,8 +775,6 @@ pub async fn search_and_get_documents(
 // Import Operations
 // ============================================
 
-use crate::domain::models::{ImportJob, ImportItem};
-
 /// Get import job by ID
 pub async fn get_import_job(pool: &PgPool, job_id: Uuid) -> Result<ImportJob> {
     let job = sqlx::query_as::<_, ImportJob>(
@@ -792,6 +882,28 @@ pub async fn get_import_job_stats(pool: &PgPool, job_id: Uuid) -> Result<(i32, i
     Ok(stats)
 }
 
+/// Get a single import item by ID
+pub async fn get_import_item(pool: &PgPool, item_id: Uuid) -> Result<Option<ImportItem>> {
+    let item = sqlx::query_as::<_, ImportItem>(
+        "SELECT * FROM import_items WHERE id = $1"
+    )
+    .bind(item_id)
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(item)
+}
+
+/// Delete a single import item by ID
+pub async fn delete_import_item(pool: &PgPool, item_id: Uuid) -> Result<u64> {
+    let result = sqlx::query("DELETE FROM import_items WHERE id = $1")
+        .bind(item_id)
+        .execute(pool)
+        .await?;
+
+    Ok(result.rows_affected())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -818,6 +930,7 @@ mod tests {
             category_id: None,
             word_count,
             metadata: None,
+            content_hash: None,
             status: "indexed".to_string(),
             created_at: Utc::now(),
         }

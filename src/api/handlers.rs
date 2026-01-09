@@ -728,6 +728,52 @@ pub async fn delete_import(
 }
 
 // ============================================
+// Document Deletion
+// ============================================
+
+/// Delete a single document
+pub async fn delete_document(
+    State(state): State<AppState>,
+    Path(doc_id): Path<Uuid>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let rows = db::delete_document(&state.pool, doc_id)
+        .await
+        .map_err(|e| {
+            tracing::error!("Failed to delete document {}: {}", doc_id, e);
+            AppError::Internal(e.to_string())
+        })?;
+
+    if rows == 0 {
+        return Err(AppError::NotFound);
+    }
+
+    Ok(Json(serde_json::json!({
+        "status": "deleted",
+        "id": doc_id,
+        "rows_affected": rows
+    })))
+}
+
+/// Delete multiple documents
+pub async fn delete_documents_batch(
+    State(state): State<AppState>,
+    Json(req): Json<crate::domain::dtos::DeleteDocumentsRequest>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let rows = db::delete_documents_batch(&state.pool, &req.ids)
+        .await
+        .map_err(|e| {
+            tracing::error!("Failed to batch delete documents: {}", e);
+            AppError::Internal(e.to_string())
+        })?;
+
+    Ok(Json(serde_json::json!({
+        "status": "deleted",
+        "deleted_count": rows,
+        "requested_count": req.ids.len()
+    })))
+}
+
+// ============================================
 // Error Handling
 // ============================================
 

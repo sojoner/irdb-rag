@@ -90,3 +90,31 @@ pub async fn search_documents(
 
     Ok(results)
 }
+
+#[server(DeleteDocument, "/api")]
+pub async fn delete_document(doc_id: Uuid) -> Result<u64, ServerFnError> {
+    use crate::api::state::AppState;
+
+    let state = use_context::<AppState>()
+        .ok_or_else(|| ServerFnError::new("AppState not found"))?;
+
+    let rows = crate::infra::db::delete_document(&state.pool, doc_id)
+        .await
+        .map_err(|e| ServerFnError::new(e.to_string()))?;
+
+    Ok(rows)
+}
+
+#[server(DeleteDocumentsBatch, "/api")]
+pub async fn delete_documents_batch(doc_ids: Vec<Uuid>) -> Result<u64, ServerFnError> {
+    use crate::api::state::AppState;
+
+    let state = use_context::<AppState>()
+        .ok_or_else(|| ServerFnError::new("AppState not found"))?;
+
+    let rows = crate::infra::db::delete_documents_batch(&state.pool, &doc_ids)
+        .await
+        .map_err(|e| ServerFnError::new(e.to_string()))?;
+
+    Ok(rows)
+}

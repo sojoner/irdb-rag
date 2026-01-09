@@ -210,3 +210,23 @@ pub struct ImportUploadResponse {
     pub job_id: Uuid,
     pub message: String,
 }
+
+// ============================================
+// Delete DTOs
+// ============================================
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct DeleteDocumentRequest {
+    pub id: Uuid,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct DeleteDocumentsRequest {
+    pub ids: Vec<Uuid>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct DeleteResponse {
+    pub status: String,
+    pub deleted_count: u64,
+}
