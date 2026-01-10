@@ -8,35 +8,6 @@ use rag_chat::config::Settings;
 use sqlx::postgres::PgPoolOptions;
 use std::sync::Arc;
 
-async fn ensure_schema(pool: &sqlx::PgPool, embedding_dims: u32) -> Result<(), Box<dyn std::error::Error>> {
-    // Always reinitialize schema to ensure correct embedding dimensions
-    let mut schema = include_str!("../sql/init.sql").to_string();
-    // Replace template variables with the actual embedding dimensions
-    schema = schema.replace("${EMBEDDING_DIMENSIONS}", &embedding_dims.to_string());
-
-    // PostgreSQL doesn't support executing multi-statement scripts directly via sqlx
-    // So we split by semicolons but preserve multi-line statements
-    let statements: Vec<&str> = schema.split(';').collect();
-
-    for stmt in statements {
-        let trimmed = stmt.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-
-        // Try to execute each statement individually
-        match sqlx::query(trimmed).execute(pool).await {
-            Ok(_) => {}
-            Err(e) => {
-                // Log the error but don't fail - some statements like DROP IF EXISTS might fail
-                eprintln!("SQL execution notice: {}", e);
-            }
-        }
-    }
-
-    Ok(())
-}
-
 #[tokio::test]
 async fn test_search_api_with_db() {
     // 1. Setup

@@ -645,7 +645,6 @@ pub async fn process_import_job(
     let settings = crate::config::Settings::new()?;
     let config = settings.import.clone();
     let runner = ImportJobRunner::new(config.clone());
-    let item_mgr = ImportItemManager;
 
     tracing::info!("Starting background processing for job: {}", job_id);
 
@@ -669,44 +668,73 @@ pub async fn process_import_job(
     let total_items = items.len();
     tracing::info!("Processing {} items for job {}", total_items, job_id);
 
-    let stats = {
-        let mut stats = ProcessingStats::default();
+    use futures::StreamExt;
 
-        for item in items {
-            tracing::info!("Processing item: {} ({})", item.id, item.source_path);
-            item_mgr.update_item_status(pool, item.id, "processing").await?;
+    let results = futures::stream::iter(items)
+        .map(|item| {
+            let pool = pool.clone();
+            let embedder = embedder.clone();
+            let settings = settings.clone();
+            let item_mgr = ImportItemManager;
+            let config = config.clone();
 
-            let is_url = item.source_path.starts_with("http://") || item.source_path.starts_with("https://");
-            let result = if is_url {
-                indexing::index_url(pool, embedder, &item.source_path).await
-            } else {
-                indexing::index_path(pool, embedder, &item.source_path).await
-            };
-
-            match result {
-                Ok(_) => {
-                    item_mgr.mark_completed(pool, item.id, None).await?;
-                    stats.completed += 1;
-                    tracing::info!("Successfully processed item: {}", item.id);
+            async move {
+                let mut local_stats = ProcessingStats::default();
+                tracing::info!("Processing item: {} ({})", item.id, item.source_path);
+                
+                if let Err(e) = item_mgr.update_item_status(&pool, item.id, "processing").await {
+                    tracing::error!("Failed to update item status: {}", e);
                 }
-                Err(e) => {
-                    let error_msg = e.to_string();
 
-                    // Check if this is a duplicate skip (not an error)
-                    if error_msg.contains("already indexed") || error_msg.contains("duplicate content") {
-                        item_mgr.mark_skipped(pool, item.id, "Duplicate document").await?;
-                        stats.skipped += 1;
-                        tracing::info!("Skipped duplicate item: {}", item.id);
-                    } else {
-                        let error_type = classify_error(&error_msg);
-                        handle_item_error(&mut stats, pool, &item_mgr, &item, error_type, &error_msg, &config).await?;
+                let is_url = item.source_path.starts_with("http://") || item.source_path.starts_with("https://");
+                let result = if is_url {
+                    indexing::index_url_with_config(&pool, &embedder, &item.source_path, Some(&settings)).await
+                } else {
+                    indexing::index_path_with_config(&pool, &embedder, &item.source_path, Some(&settings)).await
+                        .map(|ids| ids.first().copied())
+                };
+
+                match result {
+                    Ok(doc_id_opt) => {
+                        if let Err(e) = item_mgr.mark_completed(&pool, item.id, doc_id_opt).await {
+                            tracing::error!("Failed to mark item completed: {}", e);
+                        }
+                        local_stats.completed += 1;
+                        tracing::info!("Successfully processed item: {}", item.id);
+                    }
+                    Err(e) => {
+                        let error_msg = e.to_string();
+
+                        // Check if this is a duplicate skip (not an error)
+                        if error_msg.contains("already indexed") || error_msg.contains("duplicate content") {
+                            if let Err(e) = item_mgr.mark_skipped(&pool, item.id, "Duplicate document").await {
+                                tracing::error!("Failed to mark item skipped: {}", e);
+                            }
+                            local_stats.skipped += 1;
+                            tracing::info!("Skipped duplicate item: {}", item.id);
+                        } else {
+                            let error_type = classify_error(&error_msg);
+                            if let Err(e) = handle_item_error(&mut local_stats, &pool, &item_mgr, &item, error_type, &error_msg, &config).await {
+                                tracing::error!("Failed to handle item error: {}", e);
+                                local_stats.failed += 1;
+                            }
+                        }
                     }
                 }
+                local_stats
             }
-        }
+        })
+        .buffer_unordered(2) // Process 2 items concurrently to avoid OOM/overload
+        .collect::<Vec<_>>()
+        .await;
 
-        stats
-    };
+    // Aggregate stats
+    let mut stats = ProcessingStats::default();
+    for res in results {
+        stats.completed += res.completed;
+        stats.failed += res.failed;
+        stats.skipped += res.skipped;
+    }
 
     // Update job progress
     let total = total_items as i32;

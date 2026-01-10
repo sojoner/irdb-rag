@@ -5,7 +5,7 @@ use rag_chat::config::Settings;
 /// Test docling URL processing with the /v1/convert/source endpoint
 /// This test verifies that docling returns a consistent structure for URL-based documents
 #[tokio::test]
-#[ignore] // Run with: cargo test --ignored test_docling_url_processing
+
 async fn test_docling_url_processing() -> Result<()> {
     std::env::set_var("RUN_ENV", "test");
 
@@ -108,7 +108,7 @@ async fn test_docling_url_processing() -> Result<()> {
 
 /// Test docling URL processing with a simple webpage (HTML content)
 #[tokio::test]
-#[ignore] // Run with: cargo test --ignored test_docling_html_url
+
 async fn test_docling_html_url() -> Result<()> {
     std::env::set_var("RUN_ENV", "test");
 
@@ -170,7 +170,7 @@ async fn test_docling_html_url() -> Result<()> {
 
 /// Test that verifies docling structure consistency across different document types
 #[tokio::test]
-#[ignore]
+
 async fn test_docling_structure_consistency() -> Result<()> {
     std::env::set_var("RUN_ENV", "test");
 

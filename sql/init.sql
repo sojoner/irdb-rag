@@ -13,7 +13,7 @@ DROP TABLE IF EXISTS documents CASCADE;
 
 -- Documents table
 -- Note: embedding vector will store embeddings of configured dimension (default 4096 for Qwen3-Embedding-8B)
-CREATE TABLE documents (
+CREATE TABLE IF NOT EXISTS documents (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     title TEXT NOT NULL,
     content TEXT NOT NULL,
@@ -36,7 +36,7 @@ CREATE TABLE documents (
 );
 
 -- Document chunks
-CREATE TABLE document_chunks (
+CREATE TABLE IF NOT EXISTS document_chunks (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     document_id UUID REFERENCES documents(id) ON DELETE CASCADE,
     chunk_index INTEGER NOT NULL,
@@ -49,7 +49,7 @@ CREATE TABLE document_chunks (
 );
 
 -- Document assets
-CREATE TABLE document_assets (
+CREATE TABLE IF NOT EXISTS document_assets (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     document_id UUID REFERENCES documents(id) ON DELETE CASCADE,
     asset_type TEXT NOT NULL,
@@ -62,7 +62,7 @@ CREATE TABLE document_assets (
 );
 
 -- Categories
-CREATE TABLE categories (
+CREATE TABLE IF NOT EXISTS categories (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     name TEXT NOT NULL UNIQUE,
     description TEXT,
@@ -70,7 +70,7 @@ CREATE TABLE categories (
 );
 
 -- Conversations (for chat history)
-CREATE TABLE conversations (
+CREATE TABLE IF NOT EXISTS conversations (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     title TEXT,
     created_at TIMESTAMPTZ DEFAULT NOW(),
@@ -78,7 +78,7 @@ CREATE TABLE conversations (
 );
 
 -- Messages
-CREATE TABLE messages (
+CREATE TABLE IF NOT EXISTS messages (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     conversation_id UUID REFERENCES conversations(id) ON DELETE CASCADE,
     role TEXT NOT NULL,
@@ -87,7 +87,7 @@ CREATE TABLE messages (
 );
 
 -- Import Jobs (for tracking batch import operations)
-CREATE TABLE import_jobs (
+CREATE TABLE IF NOT EXISTS import_jobs (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     status TEXT NOT NULL DEFAULT 'pending',  -- pending, running, completed, failed, cancelled
     source_type TEXT NOT NULL,               -- folder, url, file_upload
@@ -103,7 +103,7 @@ CREATE TABLE import_jobs (
 );
 
 -- Import Items (individual files/URLs within a job)
-CREATE TABLE import_items (
+CREATE TABLE IF NOT EXISTS import_items (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     job_id UUID REFERENCES import_jobs(id) ON DELETE CASCADE,
     source_path TEXT NOT NULL,
@@ -131,9 +131,9 @@ ON documents (source_path, content_hash)
 WHERE source_path IS NOT NULL AND content_hash IS NOT NULL;
 
 -- Import Job Indexes
-CREATE INDEX idx_import_jobs_status ON import_jobs(status);
-CREATE INDEX idx_import_items_job_id ON import_items(job_id);
-CREATE INDEX idx_import_items_status ON import_items(status);
+CREATE INDEX IF NOT EXISTS idx_import_jobs_status ON import_jobs(status);
+CREATE INDEX IF NOT EXISTS idx_import_items_job_id ON import_items(job_id);
+CREATE INDEX IF NOT EXISTS idx_import_items_status ON import_items(status);
 
 -- Hybrid Search Function
 CREATE OR REPLACE FUNCTION hybrid_search(

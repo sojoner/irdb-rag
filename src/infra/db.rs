@@ -541,6 +541,21 @@ pub async fn document_exists_by_path(
     Ok(exists.0)
 }
 
+/// Find document by source path
+pub async fn find_document_by_path(
+    pool: &PgPool,
+    source_path: &str,
+) -> Result<Option<Uuid>> {
+    let existing: Option<(Uuid,)> = sqlx::query_as(
+        "SELECT id FROM documents WHERE source_path = $1 LIMIT 1"
+    )
+    .bind(source_path)
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(existing.map(|(id,)| id))
+}
+
 pub async fn get_aggregation_stats(pool: &PgPool) -> Result<crate::domain::dtos::AggregationStats> {
     // Get categories with counts
     let categories_rows = sqlx::query_as::<_, (String, i64)>(

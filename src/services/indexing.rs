@@ -37,13 +37,14 @@ fn chunk_text(text: &str, target_tokens: usize) -> Vec<String> {
 
 
 /// Index a file or directory
-pub async fn index_path(pool: &PgPool, embedder: &Embedder, path: &str) -> Result<()> {
+pub async fn index_path(pool: &PgPool, embedder: &Embedder, path: &str) -> Result<Vec<uuid::Uuid>> {
     index_path_with_config(pool, embedder, path, None).await
 }
 
 /// Index a file or directory with custom settings
-pub async fn index_path_with_config(pool: &PgPool, embedder: &Embedder, path: &str, settings: Option<&crate::config::Settings>) -> Result<()> {
+pub async fn index_path_with_config(pool: &PgPool, embedder: &Embedder, path: &str, settings: Option<&crate::config::Settings>) -> Result<Vec<uuid::Uuid>> {
     let path = Path::new(path);
+    let mut indexed_ids = Vec::new();
 
     if path.is_dir() {
         // Collect all files first to show progress
@@ -114,8 +115,12 @@ pub async fn index_path_with_config(pool: &PgPool, embedder: &Embedder, path: &s
             for (idx_in_batch, result) in results.iter().enumerate() {
                 let doc_num = batch_idx * batch_size + idx_in_batch + 1;
                 match result {
-                    Ok(_) => {
+                    Ok(Some(id)) => {
                         tracing::info!("  └─ ✓ Document {}/{} completed", doc_num, total);
+                        indexed_ids.push(*id);
+                    }
+                    Ok(None) => {
+                        tracing::info!("  └─ ⏭️ Document {}/{} skipped", doc_num, total);
                     }
                     Err(e) => {
                         tracing::error!("  └─ ✗ Document {}/{} failed: {}", doc_num, total, e);
@@ -125,15 +130,15 @@ pub async fn index_path_with_config(pool: &PgPool, embedder: &Embedder, path: &s
         }
 
         tracing::info!("🎉 Indexing complete: {} documents processed ({:.2} MB total)\n", total, total_size_mb);
-    } else {
-        index_file(pool, embedder, path, settings).await?;
+    } else if let Some(id) = index_file(pool, embedder, path, settings).await? {
+        indexed_ids.push(id);
     }
 
-    Ok(())
+    Ok(indexed_ids)
 }
 
 /// Index a single file
-async fn index_file(pool: &PgPool, embedder: &Embedder, path: &Path, settings: Option<&crate::config::Settings>) -> Result<()> {
+async fn index_file(pool: &PgPool, embedder: &Embedder, path: &Path, settings: Option<&crate::config::Settings>) -> Result<Option<uuid::Uuid>> {
     use std::time::Instant;
 
     let path_str = path.to_string_lossy().to_string();
@@ -145,13 +150,13 @@ async fn index_file(pool: &PgPool, embedder: &Embedder, path: &Path, settings: O
 
     // Skip hidden files or non-document types
     if extension.is_empty() || matches!(extension.as_str(), "ds_store" | "gitignore") {
-        return Ok(());
+        return Ok(None);
     }
 
     // IDEMPOTENCY CHECK 1: Quick check if path exists
-    if db::document_exists_by_path(pool, &path_str).await? {
+    if let Some(existing_id) = db::find_document_by_path(pool, &path_str).await? {
         tracing::info!("  ⏭️  Skipping {} - already indexed (path exists)", path_str);
-        return Ok(());
+        return Ok(Some(existing_id));
     }
 
     let start_total = Instant::now();
@@ -171,7 +176,7 @@ async fn index_file(pool: &PgPool, embedder: &Embedder, path: &Path, settings: O
                     "  ⏭️  Skipping {} - duplicate content (matches doc {})",
                     path_str, existing_id
                 );
-                return Ok(());
+                return Ok(Some(existing_id));
             }
         }
     }
@@ -306,15 +311,20 @@ async fn index_file(pool: &PgPool, embedder: &Embedder, path: &Path, settings: O
     tracing::info!("      ✓ Duration: {:.2}s | Stored document #{}", stage5_duration.as_secs_f64(), doc_id);
     tracing::info!("  ⏱️  Total time: {:.2}s\n", total_duration.as_secs_f64());
 
-    Ok(())
+    Ok(Some(doc_id))
 }
 
 /// Index content from a URL
-pub async fn index_url(pool: &PgPool, embedder: &Embedder, url: &str) -> Result<()> {
+pub async fn index_url(pool: &PgPool, embedder: &Embedder, url: &str) -> Result<Option<uuid::Uuid>> {
+    index_url_with_config(pool, embedder, url, None).await
+}
+
+/// Index content from a URL with custom settings
+pub async fn index_url_with_config(pool: &PgPool, embedder: &Embedder, url: &str, settings: Option<&crate::config::Settings>) -> Result<Option<uuid::Uuid>> {
     tracing::info!("Processing URL: {}", url);
     
     // 1. Enrich Content (Docling + Metadata)
-    let enricher = Enricher::new();
+    let enricher = Enricher::with_config(None, None, settings);
     let (content, metadata) = enricher.enrich_url(url).await?;
     
     let title = metadata.title.clone().unwrap_or_else(|| {
@@ -399,7 +409,7 @@ pub async fn index_url(pool: &PgPool, embedder: &Embedder, url: &str) -> Result<
     }
 
     tracing::info!("Indexed URL: {} ({})", url, doc_id);
-    Ok(())
+    Ok(Some(doc_id))
 }
 
 /// Watch folders for changes and auto-index

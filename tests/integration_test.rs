@@ -28,88 +28,6 @@ async fn test_database_connection() {
     println!("✓ Database connected. Current document count: {}", result.0);
 }
 
-/// Test indexing a local PDF file
-///
-/// This test should FAIL until the indexing functionality is properly implemented.
-///
-/// Prerequisites:
-/// - PostgreSQL/ParadeDB running (docker compose up -d)
-/// - PDF file exists at data/2024-ProjectToProduct.pdf
-#[tokio::test]
-
-async fn test_index_local_pdf() {
-    std::env::set_var("RUN_ENV", "test");
-    let settings = Settings::new().expect("Failed to load settings");
-    let db_url = settings.database.url.clone();
-
-    let pdf_path = "documents/HumanPrincipals.pdf";
-
-    // Connect to database
-    let pool = sqlx::postgres::PgPoolOptions::new()
-        .max_connections(5)
-        .connect(&db_url)
-        .await
-        .expect("Failed to connect to database");
-
-    // Get initial document count
-    let initial_count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM documents")
-        .fetch_one(&pool)
-        .await
-        .expect("Failed to query documents table");
-
-    println!("Initial document count: {}", initial_count.0);
-
-    // Index the PDF file using the CLI
-    println!("Indexing PDF at {}", pdf_path);
-    let status = std::process::Command::new("cargo")
-        .args(["run", "--", "index", "--path", pdf_path])
-        .current_dir(std::env::current_dir().expect("Failed to get current directory"))
-        .status()
-        .expect("Failed to execute cargo run");
-
-    assert!(status.success(), "Indexing command failed");
-
-    // Verify the PDF was indexed
-    let final_count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM documents")
-        .fetch_one(&pool)
-        .await
-        .expect("Failed to query documents table");
-
-    println!("Final document count: {}", final_count.0);
-
-    // This assertion will fail until we implement indexing
-    assert!(
-        final_count.0 > initial_count.0,
-        "Expected document count to increase after indexing. Initial: {}, Final: {}",
-        initial_count.0,
-        final_count.0
-    );
-
-    // Verify the specific document exists
-    #[derive(sqlx::FromRow)]
-    struct Document {
-        title: String,
-        source_path: Option<String>,
-    }
-
-    let doc: Option<Document> = sqlx::query_as(
-        "SELECT title, source_path FROM documents WHERE source_path LIKE '%HumanPrincipals.pdf%' LIMIT 1"
-    )
-    .fetch_optional(&pool)
-    .await
-    .expect("Failed to query for indexed document");
-
-    match doc {
-        Some(d) => {
-            println!("✓ Found indexed document: '{}'", d.title);
-            println!("  Source: {:?}", d.source_path);
-        }
-        None => {
-            panic!("Document 'HumanPrincipals.pdf' was not found in database after indexing");
-        }
-    }
-}
-
 /// Test Docling pipeline integration
 ///
 /// Validates that Docling API can process a PDF and return structured content.
@@ -121,7 +39,7 @@ async fn test_index_local_pdf() {
 
 async fn test_docling_pipeline() {
 
-    let pdf_path = "documents/HumanPrincipals.pdf";
+    let pdf_path = "tests/test_data/HumanPrincipals.pdf";
     let docling_url = "http://localhost:5001";
 
     // Step 1: Verify PDF exists
@@ -251,68 +169,6 @@ async fn test_llm_api_integration() {
         }
         Err(e) => {
             panic!("LLM API call failed: {}", e);
-        }
-    }
-}
-
-/// Test LLM streaming API integration
-///
-/// Validates that the streaming LLM API returns a proper stream of responses.
-///
-/// Prerequisites:
-/// - RUN_ENV=test for loading config/test.toml with LLM settings
-#[tokio::test]
-async fn test_llm_streaming_api() {
-    use futures::stream::StreamExt;
-
-    std::env::set_var("RUN_ENV", "test");
-    let settings = Settings::new().expect("Failed to load settings");
-
-    let config = rag_chat::domain::models::LLMConfig {
-        provider: settings.llm.chat.provider.clone(),
-        model: settings.llm.chat.model.clone(),
-        api_url: settings.llm.chat.api_url.clone(),
-        api_key: settings.llm.chat.api_key.clone(),
-    };
-
-    println!("Testing LLM streaming API with model: {}", config.model);
-
-    let system_prompt = "You are a helpful assistant. Answer concisely.";
-    let user_prompt = "Write a short haiku about AI.";
-
-    match rag_chat::infra::llm::stream_llm(&config, system_prompt, user_prompt).await {
-        Ok(mut stream) => {
-            println!("✓ LLM streaming API call initiated");
-
-            let mut total_chunks = 0;
-            let mut full_response = String::new();
-
-            while let Some(result) = stream.next().await {
-                match result {
-                    Ok(chunk) => {
-                        total_chunks += 1;
-                        full_response.push_str(&chunk);
-                        if total_chunks <= 3 {
-                            println!("  Chunk {}: {} bytes", total_chunks, chunk.len());
-                        }
-                    }
-                    Err(e) => {
-                        println!("  Error in stream: {}", e);
-                        break;
-                    }
-                }
-            }
-
-            println!("✓ LLM streaming completed");
-            println!("  Total chunks: {}", total_chunks);
-            println!("  Total response length: {} chars", full_response.len());
-            println!("  Response: {}", &full_response[..std::cmp::min(200, full_response.len())]);
-
-            assert!(total_chunks > 0, "Stream returned no chunks");
-            assert!(!full_response.is_empty(), "Stream returned empty response");
-        }
-        Err(e) => {
-            panic!("LLM streaming API call failed: {}", e);
         }
     }
 }

@@ -242,6 +242,13 @@ impl Enricher {
             .and_then(|n| n.to_str())
             .unwrap_or("document");
 
+        // Docling doesn't support .txt, treat as .md
+        let file_name_to_send = if file_name.ends_with(".txt") {
+            format!("{}.md", file_name.trim_end_matches(".txt"))
+        } else {
+            file_name.to_string()
+        };
+
         // Create multipart form with options - use ALL Docling features
         let options = serde_json::json!({
             "do_ocr": true,
@@ -256,13 +263,15 @@ impl Enricher {
             .part(
                 "files",
                 reqwest::multipart::Part::bytes(file_bytes)
-                    .file_name(file_name.to_string())
+                    .file_name(file_name_to_send)
             )
             .text("options", options.to_string());
 
         let client = reqwest::Client::new();
+        
+        // 1. Submit async task
         let response = client
-            .post(format!("{}/v1/convert/file", docling_url))
+            .post(format!("{}/v1/convert/file/async", docling_url))
             .multipart(form)
             .send()
             .await
@@ -274,8 +283,65 @@ impl Enricher {
             anyhow::bail!("Docling service error ({}): {}", status, error_text);
         }
 
-        let json: Value = response.json().await
-            .context("Failed to parse Docling response")?;
+        let task_info: Value = response.json().await
+            .context("Failed to parse Docling task response")?;
+        
+        let task_id = task_info["task_id"].as_str()
+            .context("No task_id in Docling response")?
+            .to_string();
+
+        // 2. Poll for completion
+        let mut attempts = 0;
+        let max_attempts = 60; // 60 seconds timeout
+        
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            
+            let status_response = client
+                .get(format!("{}/v1/status/poll/{}", docling_url, task_id))
+                .send()
+                .await
+                .context("Failed to poll Docling status")?;
+            
+            if !status_response.status().is_success() {
+                 // If poll fails, maybe task is gone or server error
+                 let status = status_response.status();
+                 let error_text = status_response.text().await.unwrap_or_default();
+                 anyhow::bail!("Docling poll error ({}): {}", status, error_text);
+            }
+
+            let status_json: Value = status_response.json().await
+                .context("Failed to parse Docling status response")?;
+            
+            let status = status_json["task_status"].as_str().unwrap_or("unknown");
+            
+            if status == "success" || status == "completed" {
+                break;
+            } else if status == "failure" || status == "failed" {
+                anyhow::bail!("Docling task failed: {:?}", status_json);
+            }
+            
+            attempts += 1;
+            if attempts >= max_attempts {
+                anyhow::bail!("Docling task timed out after {} seconds", max_attempts);
+            }
+        }
+
+        // 3. Fetch result
+        let result_response = client
+            .get(format!("{}/v1/result/{}", docling_url, task_id))
+            .send()
+            .await
+            .context("Failed to fetch Docling result")?;
+
+        if !result_response.status().is_success() {
+            let status = result_response.status();
+            let error_text = result_response.text().await.unwrap_or_default();
+            anyhow::bail!("Docling result error ({}): {}", status, error_text);
+        }
+
+        let json: Value = result_response.json().await
+            .context("Failed to parse Docling result")?;
 
         // Extract markdown content from Docling response
         let content = json["document"]["md_content"]
@@ -366,13 +432,19 @@ impl Enricher {
         } else {
             &context
         };
-        let summary = self.generate_summary(summary_text, title_hint).await?;
+
+        // Parallelize summary generation and entity extraction
+        // extract_entities is usually the slowest, so running it alongside summary generation helps
+        let (summary_result, entities_result) = tokio::join!(
+            self.generate_summary(summary_text, title_hint),
+            self.extract_entities(&context)
+        );
+
+        let summary = summary_result?;
+        let entities = entities_result?;
 
         // 2. Extract keywords from summary + beginning
         let keywords = self.extract_keywords(&summary, &context).await?;
-
-        // 3. Extract entities using SLIM NER (works best on shorter chunks)
-        let entities = self.extract_entities(&context).await?;
 
         // 4. Extract author from entities if present using pure function
         let author = extract_author_from_entities(&entities);
@@ -407,6 +479,10 @@ impl Enricher {
 
         let response = call_llm_with_timeout(&self.llm_config, system, &user, Some(150), Some(0.3), self.llm_timeout_seconds)
             .await
+            .map_err(|e| {
+                eprintln!("❌ LLM Error in generate_summary: {:?}", e);
+                e
+            })
             .context("Failed to generate summary")?;
 
         Ok(response.trim().to_string())

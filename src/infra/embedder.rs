@@ -1,44 +1,42 @@
 //! Embedding Service
 //!
-//! Handles communication with embedding APIs.
+//! Handles communication with embedding APIs using async-openai.
 
 use anyhow::{Context, Result};
-use serde_json::json;
+use async_openai::{Client, config::{OpenAIConfig, Config as OpenAIConfigTrait}};
+use async_openai::types::CreateEmbeddingRequestArgs;
 use std::sync::Arc;
-use std::time::Duration;
 use crate::config::EmbeddingConfig;
 
 /// Local embedding model wrapper using OpenAI-compatible APIs (LM Studio, OpenRouter, etc.)
 #[derive(Clone)]
 pub struct Embedder {
-    client: Arc<reqwest::Client>,
-    api_url: String,
-    api_key: Option<String>,
+    client: Arc<Client<OpenAIConfig>>,
     model_name: String,
+    api_url: String,
 }
 
 impl Embedder {
     pub fn new(config: &EmbeddingConfig) -> Result<Self> {
-        let api_key = if config.api_key.is_empty() {
-            None
-        } else {
-            Some(config.api_key.clone())
-        };
+        // Configure OpenAI client for OpenAI-compatible APIs
+        // Note: async-openai adds /v1 automatically to the base URL
+        let mut openai_config = OpenAIConfig::new()
+            .with_api_base(&config.api_url);
 
-        let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(config.timeout_seconds))
-            .connect_timeout(Duration::from_secs(30))
-            .pool_max_idle_per_host(10) // Reuse connections
-            .build()?;
+        // Only set API key if it's not empty
+        if !config.api_key.is_empty() {
+            openai_config = openai_config.with_api_key(&config.api_key);
+        }
 
-        tracing::info!("Initializing Embedder with URL: {}, Model: {}, Timeout: {}s",
-            config.api_url, config.model, config.timeout_seconds);
+        tracing::info!("Initializing Embedder - Base URL: {}, Full API Base: {}, Model: {}",
+            config.api_url, openai_config.api_base(), config.model);
+
+        let client = Client::with_config(openai_config);
 
         Ok(Self {
             client: Arc::new(client),
-            api_url: config.api_url.clone(),
-            api_key,
             model_name: config.model.clone(),
+            api_url: config.api_url.clone(),
         })
     }
 
@@ -52,51 +50,22 @@ impl Embedder {
 
     /// Initialize and verify the embedding model
     pub async fn init(&self) -> Result<()> {
-        // Skip model verification for OpenRouter (embedding models aren't in /models endpoint)
-        if self.api_url.contains("openrouter.ai") {
-            tracing::info!("Skipping model verification for OpenRouter - embedding models not in /models endpoint");
-            return Ok(());
-        }
+        // Try to list models to verify connectivity
+        // If this fails, just warn but don't fail hard
+        match self.client.models().list().await {
+            Ok(models) => {
+                let model_ids: Vec<String> = models.data.iter()
+                    .map(|m| m.id.clone())
+                    .collect();
 
-        let url = format!("{}/models", self.api_url);
-
-        let response = self.client.get(&url)
-            .send()
-            .await;
-
-        // If we can't connect to list models, just warn but don't fail hard
-        // as some providers might not support this endpoint or have different auth
-        let response = match response {
-            Ok(res) => res,
-            Err(e) => {
-                tracing::warn!("Could not verify models at {}: {}", url, e);
-                return Ok(());
-            }
-        };
-
-        if !response.status().is_success() {
-            tracing::warn!("Failed to list models: {}", response.status());
-            return Ok(());
-        }
-
-        let json: serde_json::Value = response.json().await?;
-        let models = json["data"].as_array();
-
-        if let Some(models) = models {
-            let model_ids: Vec<String> = models.iter()
-                .filter_map(|m| m["id"].as_str().map(String::from))
-                .collect();
-
-            // Only verify if we got a non-empty model list
-            if !model_ids.is_empty() {
-                if !model_ids.contains(&self.model_name) {
-                    tracing::error!("Model '{}' not found in available models: {:?}", self.model_name, model_ids);
-                    anyhow::bail!("Model '{}' not found. Available models: {:?}", self.model_name, model_ids);
-                } else {
+                if !model_ids.is_empty() && !model_ids.contains(&self.model_name) {
+                    tracing::warn!("Model '{}' not found in available models: {:?}", self.model_name, model_ids);
+                } else if !model_ids.is_empty() {
                     tracing::info!("Verified model '{}' is available", self.model_name);
                 }
-            } else {
-                tracing::warn!("Model list is empty, skipping model verification for '{}'", self.model_name);
+            }
+            Err(e) => {
+                tracing::warn!("Could not verify models: {}", e);
             }
         }
 
@@ -105,116 +74,58 @@ impl Embedder {
 
     /// Generate embedding for a single text with retry logic
     pub async fn embed(&self, text: &str) -> Result<Vec<f32>> {
-        let url = format!("{}/embeddings", self.api_url);
+        let request = CreateEmbeddingRequestArgs::default()
+            .model(&self.model_name)
+            .input(text)
+            .build()?;
 
         // First attempt
-        let mut request = self.client.post(&url);
+        let response = self.client.embeddings().create(request.clone()).await;
 
-        // Add authorization header if API key is provided
-        if let Some(api_key) = &self.api_key {
-            request = request.header("Authorization", format!("Bearer {}", api_key));
-        }
+        let response = match response {
+            Ok(r) => r,
+            Err(e) => {
+                let error_msg = e.to_string();
+                // If model is unloaded or doesn't exist, wait and retry
+                if error_msg.contains("Model unloaded") || error_msg.contains("does not exist") {
+                    tracing::warn!("Embedding model needs loading, waiting 5 seconds and retrying...");
+                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
 
-        let response = request
-            .json(&json!({
-                "input": text,
-                "model": self.model_name
-            }))
-            .send()
-            .await?;
-
-        // Check if model needs loading
-        if !response.status().is_success() {
-            let error_text = response.text().await?;
-
-            // If model is unloaded or doesn't exist, wait and retry
-            if error_text.contains("Model unloaded") || error_text.contains("does not exist") {
-                tracing::warn!("Embedding model needs loading, waiting 5 seconds and retrying...");
-                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-
-                // Retry
-                let mut retry_request = self.client.post(&url);
-
-                // Add authorization header if API key is provided
-                if let Some(api_key) = &self.api_key {
-                    retry_request = retry_request.header("Authorization", format!("Bearer {}", api_key));
+                    // Retry
+                    self.client.embeddings().create(request).await
+                        .context("Embedding API error (after retry)")?
+                } else {
+                    return Err(e.into());
                 }
-
-                let retry_response = retry_request
-                    .json(&json!({
-                        "input": text,
-                        "model": self.model_name
-                    }))
-                    .send()
-                    .await?;
-
-                if !retry_response.status().is_success() {
-                    let retry_error = retry_response.text().await?;
-                    anyhow::bail!("Embedding API error (after retry): {}", retry_error);
-                }
-
-                let json: serde_json::Value = retry_response.json().await?;
-                let embedding = json["data"][0]["embedding"]
-                    .as_array()
-                    .context("Invalid embedding response format")?
-                    .iter()
-                    .map(|v| v.as_f64().unwrap() as f32)
-                    .collect();
-
-                return Ok(embedding);
-            } else {
-                anyhow::bail!("Embedding API error: {}", error_text);
             }
-        }
+        };
 
-        let json: serde_json::Value = response.json().await?;
-        let embedding = json["data"][0]["embedding"]
-            .as_array()
-            .context("Invalid embedding response format")?
-            .iter()
-            .map(|v| v.as_f64().unwrap() as f32)
-            .collect();
+        // Extract the embedding vector
+        let embedding = response.data
+            .first()
+            .context("No embedding data in response")?
+            .embedding
+            .clone();
 
         Ok(embedding)
     }
 
     /// Generate embeddings for multiple texts in a single API call
     pub async fn embed_batch(&self, texts: Vec<&str>) -> Result<Vec<Vec<f32>>> {
-        let url = format!("{}/embeddings", self.api_url);
+        let input: Vec<String> = texts.iter().map(|s| s.to_string()).collect();
 
-        let mut request = self.client.post(&url);
+        let request = CreateEmbeddingRequestArgs::default()
+            .model(&self.model_name)
+            .input(input)
+            .build()?;
 
-        // Add authorization header if API key is provided
-        if let Some(api_key) = &self.api_key {
-            request = request.header("Authorization", format!("Bearer {}", api_key));
-        }
+        let response = self.client.embeddings().create(request).await?;
 
-        let response = request
-            .json(&json!({
-                "input": texts,
-                "model": self.model_name
-            }))
-            .send()
-            .await?;
-
-        if !response.status().is_success() {
-            let error = response.text().await?;
-            anyhow::bail!("Embedding API error: {}", error);
-        }
-
-        let json: serde_json::Value = response.json().await?;
-        let data = json["data"].as_array().context("Invalid embedding response format")?;
-        
-        let mut embeddings = Vec::new();
-        for item in data {
-            let embedding = item["embedding"]
-                .as_array()
-                .context("Invalid embedding format")?
-                .iter()
-                .map(|v| v.as_f64().unwrap() as f32)
-                .collect();
-            embeddings.push(embedding);
-        }
+        // Extract all embeddings and maintain order
+        let embeddings: Vec<Vec<f32>> = response.data
+            .into_iter()
+            .map(|item| item.embedding)
+            .collect();
 
         Ok(embeddings)
     }

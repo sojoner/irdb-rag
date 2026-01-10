@@ -81,7 +81,8 @@ services:
     image: docker.io/sojoner/database:latest
     container_name: rag-db-init
     environment:
-      RUN_ENV: production
+      RUN_ENV: ${RUN_ENV:-production}
+      EMBEDDING_DIMENSIONS: ${EMBEDDING_DIMENSIONS:-1024}
       PGPASSWORD: rag_password
       POSTGRES_USER: rag_user
       POSTGRES_DB: rag_chat

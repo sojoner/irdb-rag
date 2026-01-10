@@ -1,12 +1,29 @@
 use anyhow::Result;
-use async_openai::{
-    config::OpenAIConfig,
-    types::{CreateEmbeddingRequestArgs, EmbeddingInput},
-    Client,
-};
 use rag_chat::config::Settings;
 
-/// Generate embedding for a single text using OpenAI-compatible API
+/// Check if vLLM embedding service is available
+async fn is_vllm_available() -> bool {
+    let settings = Settings::new().ok();
+    if let Some(settings) = settings {
+        // Try the models endpoint which should return a valid list if vLLM is running
+        let url = format!("{}/v1/models", settings.embedding.api_url);
+        let response = reqwest::Client::new()
+            .get(&url)
+            .timeout(std::time::Duration::from_secs(2))
+            .send()
+            .await;
+
+        if let Ok(resp) = response {
+            if let Ok(text) = resp.text().await {
+                // Check if response contains valid model data (not an error)
+                return !text.contains("\"error\"");
+            }
+        }
+    }
+    false
+}
+
+/// Generate embedding for a single text using direct HTTP API
 async fn generate_embedding(text: &str) -> Result<Vec<f32>> {
     std::env::set_var("RUN_ENV", "test");
 
@@ -16,25 +33,32 @@ async fn generate_embedding(text: &str) -> Result<Vec<f32>> {
     let model = settings.embedding.model.clone();
     let expected_dims: usize = settings.embedding.dimensions as usize;
 
-    let config = OpenAIConfig::new()
-        .with_api_base(&api_url)
-        .with_api_key(&api_key);
+    let client = reqwest::Client::new();
+    let response = client
+        .post(format!("{}/v1/embeddings", api_url))
+        .header("Authorization", format!("Bearer {}", api_key))
+        .header("Content-Type", "application/json")
+        .json(&serde_json::json!({
+            "model": model,
+            "input": text,
+            "encoding_format": "float"
+        }))
+        .send()
+        .await?;
 
-    let client = Client::with_config(config);
+    anyhow::ensure!(
+        response.status().is_success(),
+        "Embedding API failed: {}",
+        response.text().await?
+    );
 
-    let request = CreateEmbeddingRequestArgs::default()
-        .model(&model)
-        .input(EmbeddingInput::String(text.to_string()))
-        .build()?;
-
-    let response = client.embeddings().create(request).await?;
-
-    let embedding = response
-        .data
-        .first()
+    let json: serde_json::Value = response.json().await?;
+    let embedding = json["data"][0]["embedding"]
+        .as_array()
         .ok_or_else(|| anyhow::anyhow!("No embedding in response"))?
-        .embedding
-        .clone();
+        .iter()
+        .map(|v| v.as_f64().unwrap_or(0.0) as f32)
+        .collect::<Vec<f32>>();
 
     anyhow::ensure!(
         embedding.len() == expected_dims,
@@ -48,6 +72,13 @@ async fn generate_embedding(text: &str) -> Result<Vec<f32>> {
 
 #[tokio::test]
 async fn test_basic_embedding_generation() -> Result<()> {
+    eprintln!("🔍 Checking vLLM availability...");
+    if !is_vllm_available().await {
+        eprintln!("⚠️  Skipping test: vLLM embedding service not available");
+        return Ok(());
+    }
+    eprintln!("✓ vLLM is available, proceeding with test");
+
     let text = "This is a test sentence for embedding generation.";
 
     let start = std::time::Instant::now();
@@ -68,6 +99,11 @@ async fn test_basic_embedding_generation() -> Result<()> {
 
 #[tokio::test]
 async fn test_embedding_similarity() -> Result<()> {
+    if !is_vllm_available().await {
+        println!("⚠️  Skipping test: vLLM embedding service not available");
+        return Ok(());
+    }
+
     let text1 = "Kubernetes is a container orchestration platform.";
     let text2 = "Kubernetes manages Docker containers in production.";
     let text3 = "Pizza is a delicious Italian food.";
@@ -107,6 +143,11 @@ async fn test_embedding_similarity() -> Result<()> {
 
 #[tokio::test]
 async fn test_embedding_determinism() -> Result<()> {
+    if !is_vllm_available().await {
+        println!("⚠️  Skipping test: vLLM embedding service not available");
+        return Ok(());
+    }
+
     let text = "Platform engineering improves developer experience.";
 
     let emb1 = generate_embedding(text).await?;
@@ -144,6 +185,11 @@ async fn test_embedding_determinism() -> Result<()> {
 
 #[tokio::test]
 async fn test_batch_embedding_speed() -> Result<()> {
+    if !is_vllm_available().await {
+        println!("⚠️  Skipping test: vLLM embedding service not available");
+        return Ok(());
+    }
+
     std::env::set_var("RUN_ENV", "test");
 
     let settings = Settings::new()?;
@@ -197,6 +243,11 @@ async fn test_batch_embedding_speed() -> Result<()> {
 
 #[tokio::test]
 async fn test_batch_embedding_api() -> Result<()> {
+    if !is_vllm_available().await {
+        println!("⚠️  Skipping test: vLLM embedding service not available");
+        return Ok(());
+    }
+
     std::env::set_var("RUN_ENV", "test");
 
     let settings = Settings::new()?;
@@ -214,7 +265,7 @@ async fn test_batch_embedding_api() -> Result<()> {
     let client = reqwest::Client::new();
     let start = std::time::Instant::now();
     let response = client
-        .post(format!("{}/embeddings", api_url))
+        .post(format!("{}/v1/embeddings", api_url))
         .header("Authorization", format!("Bearer {}", api_key))
         .header("Content-Type", "application/json")
         .json(&serde_json::json!({
@@ -234,7 +285,7 @@ async fn test_batch_embedding_api() -> Result<()> {
 
     let json: serde_json::Value = response.json().await?;
     let data = json["data"].as_array()
-        .ok_or_else(|| anyhow::anyhow!("Invalid batch response format"))?;
+        .ok_or_else(|| anyhow::anyhow!("Invalid batch response format: {}", json))?;
 
     anyhow::ensure!(
         data.len() == texts.len(),
