@@ -173,9 +173,9 @@ pub fn FacetedFilters(
                                                            on_change.run(());
                                                        }
                                                    }
-                                                   class="rounded" />
-                                            <span class="text-gray-700">{cat_name.clone()}</span>
-                                            <span class="ml-auto text-xs text-gray-500">"(" {count} ")"</span>
+                                                   class="rounded flex-shrink-0" />
+                                            <span class="text-gray-700 min-w-0 break-all text-xs">{cat_name.clone()}</span>
+                                            <span class="ml-auto text-xs text-gray-500 flex-shrink-0">"(" {count} ")"</span>
                                         </label>
                                     </Show>
                                 }
@@ -221,8 +221,8 @@ pub fn FacetedFilters(
                                         <input type="checkbox"
                                                prop:checked=move || selected_keywords.get().contains(&keyword_copy)
                                                on:change=move |_| toggle_keyword(keyword_copy2.clone())
-                                               class="rounded" />
-                                        <span class="text-gray-700 truncate">{keyword.clone()}</span>
+                                               class="rounded flex-shrink-0" />
+                                        <span class="text-gray-700 min-w-0 break-all text-xs">{keyword.clone()}</span>
                                         <span class="ml-auto text-xs text-gray-500 flex-shrink-0">"(" {count} ")"</span>
                                     </label>
                                 }
@@ -276,8 +276,8 @@ pub fn FacetedFilters(
                                         <input type="checkbox"
                                                prop:checked=move || selected_concepts.get().contains(&concept_copy)
                                                on:change=move |_| toggle_concept(concept_copy2.clone())
-                                               class="rounded" />
-                                        <span class="text-gray-700 truncate">{concept.clone()}</span>
+                                               class="rounded flex-shrink-0" />
+                                        <span class="text-gray-700 min-w-0 break-all text-xs">{concept.clone()}</span>
                                         <span class="ml-auto text-xs text-gray-500 flex-shrink-0">"(" {count} ")"</span>
                                     </label>
                                 }
@@ -332,8 +332,8 @@ pub fn FacetedFilters(
                                         <input type="checkbox"
                                                prop:checked=move || selected_locations.get().contains(&location_copy)
                                                on:change=move |_| toggle_location(location_copy2.clone())
-                                               class="rounded" />
-                                        <span class="text-gray-700 truncate">{location.clone()}</span>
+                                               class="rounded flex-shrink-0" />
+                                        <span class="text-gray-700 min-w-0 break-all text-xs">{location.clone()}</span>
                                         <span class="ml-auto text-xs text-gray-500 flex-shrink-0">"(" {count} ")"</span>
                                     </label>
                                 }
@@ -387,8 +387,8 @@ pub fn FacetedFilters(
                                         <input type="checkbox"
                                                prop:checked=move || selected_persons.get().contains(&person_copy)
                                                on:change=move |_| toggle_person(person_copy2.clone())
-                                               class="rounded" />
-                                        <span class="text-gray-700 truncate">{person.clone()}</span>
+                                               class="rounded flex-shrink-0" />
+                                        <span class="text-gray-700 min-w-0 break-all text-xs">{person.clone()}</span>
                                         <span class="ml-auto text-xs text-gray-500 flex-shrink-0">"(" {count} ")"</span>
                                     </label>
                                 }
@@ -442,8 +442,8 @@ pub fn FacetedFilters(
                                         <input type="checkbox"
                                                prop:checked=move || selected_organizations.get().contains(&org_copy)
                                                on:change=move |_| toggle_organization(org_copy2.clone())
-                                               class="rounded" />
-                                        <span class="text-gray-700 truncate">{org.clone()}</span>
+                                               class="rounded flex-shrink-0" />
+                                        <span class="text-gray-700 min-w-0 break-all text-xs">{org.clone()}</span>
                                         <span class="ml-auto text-xs text-gray-500 flex-shrink-0">"(" {count} ")"</span>
                                     </label>
                                 }
@@ -497,8 +497,8 @@ pub fn FacetedFilters(
                                         <input type="checkbox"
                                                prop:checked=move || selected_authors.get().contains(&author_copy)
                                                on:change=move |_| toggle_author(author_copy2.clone())
-                                               class="rounded" />
-                                        <span class="text-gray-700 truncate">{author.clone()}</span>
+                                               class="rounded flex-shrink-0" />
+                                        <span class="text-gray-700 min-w-0 break-all text-xs">{author.clone()}</span>
                                         <span class="ml-auto text-xs text-gray-500 flex-shrink-0">"(" {count} ")"</span>
                                     </label>
                                 }

@@ -134,9 +134,29 @@ pub fn SearchPage() -> impl IntoView {
             <header class="bg-white shadow-sm z-10">
                 <div class="px-6 py-3 border-b border-gray-200 flex justify-between items-center bg-gradient-to-b from-gray-50 to-white">
                     <h1 class="text-2xl font-bold text-gray-900">"RAG Search"</h1>
+                </div>
+                <div class="px-6 py-3 border-b border-gray-200 flex justify-between items-center gap-4 bg-white">
+                    <div class="flex-1">
+                        <UnifiedSearch
+                            query=search_query.into()
+                            set_query=set_search_query
+                            results=Signal::derive(search_results)
+                            set_results=set_dummy_results
+                            loading=is_loading.into()
+                            set_loading=set_dummy_loading
+                            bm25_weight=bm25_weight.into()
+                            set_bm25_weight=set_bm25_weight
+                            vector_weight=vector_weight.into()
+                            set_vector_weight=set_vector_weight
+                            ai_mode_enabled=ai_mode_enabled.into()
+                            set_ai_mode_enabled=set_ai_mode_enabled
+                            on_search=Callback::new(move |_| execute_search(()))
+                            on_ai_search=Callback::new(move |_| execute_search(())) // Treat AI search as normal search for Phase 1
+                        />
+                    </div>
 
                     // macOS-style toolbar buttons on the right
-                    <div class="flex items-center gap-1 bg-gray-100/50 rounded-lg p-1 border border-gray-200/60 shadow-sm">
+                    <div class="flex items-center gap-1 bg-gray-100/50 rounded-lg p-1 border border-gray-200/60 shadow-sm flex-shrink-0">
                         <a
                             href="/import"
                             class="px-3 py-1.5 text-xs font-medium text-gray-700 bg-white rounded-md hover:bg-gray-50 transition-all flex items-center gap-1.5 shadow-sm border border-gray-200/40 hover:shadow"
@@ -168,24 +188,8 @@ pub fn SearchPage() -> impl IntoView {
                         </button>
                     </div>
                 </div>
-                <UnifiedSearch
-                    query=search_query.into()
-                    set_query=set_search_query
-                    results=Signal::derive(search_results)
-                    set_results=set_dummy_results
-                    loading=is_loading.into()
-                    set_loading=set_dummy_loading
-                    bm25_weight=bm25_weight.into()
-                    set_bm25_weight=set_bm25_weight
-                    vector_weight=vector_weight.into()
-                    set_vector_weight=set_vector_weight
-                    ai_mode_enabled=ai_mode_enabled.into()
-                    set_ai_mode_enabled=set_ai_mode_enabled
-                    on_search=Callback::new(move |_| execute_search(()))
-                    on_ai_search=Callback::new(move |_| execute_search(())) // Treat AI search as normal search for Phase 1
-                />
                 <Show when=move || search_error().is_some()>
-                    <div class="bg-red-50 border-l-4 border-red-500 p-4 mx-4 mt-2">
+                    <div class="bg-red-50 border-l-4 border-red-500 p-4 mx-6 mt-2">
                         <div class="flex">
                             <div class="flex-shrink-0">
                                 <svg class="h-5 w-5 text-red-400" viewBox="0 0 20 20" fill="currentColor">
@@ -204,8 +208,8 @@ pub fn SearchPage() -> impl IntoView {
 
             // MAIN CONTENT: 3 Column Layout (Filters + Results + Chat)
             <div class="flex-1 overflow-hidden flex gap-4 p-4 bg-gray-50">
-                // Column 1: Filters Sidebar (20%)
-                <div class="w-[20%] flex flex-col bg-white rounded-lg border border-gray-200 overflow-y-auto shadow-sm">
+                // Column 1: Filters Sidebar (minimum 200px, max 20%)
+                <div class="min-w-[200px] w-[20%] flex flex-col bg-white rounded-lg border border-gray-200 overflow-y-auto shadow-sm">
                     <div class="px-4 py-3 border-b border-gray-200 bg-gray-50">
                         <h2 class="text-sm font-bold text-gray-700">"Filters"</h2>
                     </div>
@@ -229,8 +233,8 @@ pub fn SearchPage() -> impl IntoView {
                     />
                 </div>
 
-                // Column 2: Search Results (35%)
-                <div class="w-[35%] flex flex-col bg-white rounded-lg border border-gray-200 overflow-hidden shadow-sm">
+                // Column 2: Search Results (minimum 300px, max 35%)
+                <div class="min-w-[300px] w-[35%] flex flex-col bg-white rounded-lg border border-gray-200 overflow-hidden shadow-sm">
                     <div class="px-4 py-3 border-b border-gray-200 bg-gray-50 flex justify-between items-center">
                         <h2 class="text-sm font-bold text-gray-700">"Discovery & Context"</h2>
                         <span class="text-xs text-gray-500">{move || format!("{} found", search_results().len())}</span>
@@ -245,8 +249,8 @@ pub fn SearchPage() -> impl IntoView {
                     />
                 </div>
 
-                // Column 3: Synthesis & Chat (45%)
-                <div class="md:flex w-[45%] flex-col bg-white rounded-lg border border-gray-200 overflow-hidden shadow-sm">
+                // Column 3: Synthesis & Chat (minimum 400px, max 45%)
+                <div class="md:flex min-w-[400px] w-[45%] flex-col bg-white rounded-lg border border-gray-200 overflow-hidden shadow-sm">
                     <ChatPanel
                         results=Signal::derive(search_results)
                         search_query=search_query.into()

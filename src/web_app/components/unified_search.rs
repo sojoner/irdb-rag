@@ -73,7 +73,10 @@ pub fn UnifiedSearch(
                 <div class="absolute inset-y-0 right-0 flex items-center pr-2 gap-1">
                     // AI Mode Toggle
                     <button
-                        on:click=move |_| set_ai_mode_enabled.update(|v| *v = !*v)
+                        on:click=move |_| {
+                            set_ai_mode_enabled.update(|v| *v = !*v);
+                            trigger_search(true);
+                        }
                         class=move || {
                             format!(
                                 "px-2 py-1 text-xs font-medium rounded-full transition-all {}",
