@@ -1,4 +1,4 @@
-.PHONY: test test-all test-db-reset test-db-init test-unit test-integration clean help docker-build docker-push docker-release
+.PHONY: test test-all test-db-reset test-db-init test-unit test-integration clean help docker-build docker-push docker-release gpu-up gpu-down gpu-build gpu-logs gpu-shell gpu-test gpu-watch
 
 # Test configuration - use 1024 for text-embedding-qwen3-embedding-0.6b
 EMBEDDING_DIMENSIONS ?= 1024
@@ -131,3 +131,41 @@ docker-push:
 # Build, tag, and push Docker image (all-in-one)
 docker-release: docker-build docker-push
 	@echo "✅ Docker release complete: $(IMAGE_FULL)"
+
+# GPU Development targets
+# Start GPU development environment
+gpu-up:
+	@echo "Starting GPU development environment..."
+	RUN_ENV=test EMBEDDING_DIMENSIONS=1024 docker compose -f docker-compose-gpu.yml up -d
+	@echo "Waiting for services to initialize..."
+	@sleep 10
+	@echo "GPU development environment ready!"
+	@echo "  - App:     http://localhost:3000"
+	@echo "  - Docling: http://localhost:5001"
+	@echo "  - Ollama:  http://localhost:11434"
+	@echo "  - DB:      localhost:15432"
+
+# Stop GPU development environment
+gpu-down:
+	docker compose -f docker-compose-gpu.yml down
+
+# Build dev container with parallel compilation
+gpu-build:
+	@echo "Building dev container with 16 parallel jobs..."
+	DOCKER_BUILDKIT=1 docker compose -f docker-compose-gpu.yml build --parallel dev
+
+# View logs
+gpu-logs:
+	docker compose -f docker-compose-gpu.yml logs -f
+
+# Shell into dev container
+gpu-shell:
+	docker compose -f docker-compose-gpu.yml exec dev bash
+
+# Run tests in GPU environment
+gpu-test:
+	docker compose -f docker-compose-gpu.yml exec dev cargo test
+
+# Watch mode in dev container
+gpu-watch:
+	docker compose -f docker-compose-gpu.yml exec dev cargo leptos watch

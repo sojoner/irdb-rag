@@ -1,0 +1,61 @@
+# RAG Chat - GPU Development Configuration
+# Optimized for local Ollama with RTX 3090
+
+[server]
+port = 3000
+log_level = "debug"
+
+[database]
+url = "postgres://rag_user:rag_password@db:5432/rag_chat"
+max_connections = 20
+acquire_timeout_seconds = 30
+
+# Chat LLM via Ollama
+[llm.chat]
+provider = "ollama"
+api_url = "http://ollama:11434/v1"
+api_key = "ollama"
+model = "granite4:tiny-h"
+
+# Metadata extraction - same model
+[llm.metadata]
+provider = "ollama"
+api_url = "http://ollama:11434/v1"
+api_key = "ollama"
+model = "granite4:tiny-h"
+
+# Named entity recognition - same model
+[llm.ner]
+provider = "ollama"
+api_url = "http://ollama:11434/v1"
+api_key = "ollama"
+model = "granite4:tiny-h"
+
+[llm]
+timeout_seconds = 300
+
+# Embeddings via Ollama
+[embedding]
+provider = "ollama"
+api_url = "http://ollama:11434/v1"
+api_key = "ollama"
+model = "qwen3-embedding:0.6b"
+dimensions = 1024
+timeout_seconds = 120
+
+# Docling with VLM support
+[docling]
+url = "http://docling:5001"
+timeout_seconds = 300
+models = "DocLayNet,TableFormer"
+# VLM model will be configured via Docling environment
+
+[import]
+workers = 4
+max_retries = 3
+retry_base_delay_ms = 1000
+retry_max_delay_ms = 30000
+
+[rag]
+system_prompt = "You are a helpful AI assistant specialized in answering questions about documents. Use the provided document context to give accurate, well-sourced answers. If information is not available in the context, clearly state that. Always cite which documents you're referencing."
+entity_extraction_enabled = true

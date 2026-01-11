@@ -1,0 +1,42 @@
+# Dockerfile.dev - GPU Development Environment
+FROM rust:1-slim-bookworm
+
+# Cache apt package lists and install dependencies
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    apt-get update && apt-get install -y --no-install-recommends \
+    pkg-config \
+    libssl-dev \
+    curl \
+    nodejs \
+    npm \
+    git \
+    ca-certificates \
+    inotify-tools \
+    lld \
+    clang \
+    make \
+    perl
+
+# Optimize cargo for fast parallel builds
+ENV CARGO_REGISTRIES_CRATES_IO_PROTOCOL=sparse \
+    CARGO_INCREMENTAL=1 \
+    CARGO_PROFILE_DEV_DEBUG=0 \
+    CARGO_BUILD_JOBS=16 \
+    RUSTFLAGS="-C link-arg=-fuse-ld=lld -C codegen-units=16" \
+    CARGO_NET_GIT_FETCH_WITH_CLI=true
+
+# Install wasm32 target
+RUN rustup target add wasm32-unknown-unknown
+
+# Install cargo-leptos with parallel compilation and cargo cache
+ARG CARGO_LEPTOS_VERSION=0.3.2
+RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
+    --mount=type=cache,target=/usr/local/cargo/git,sharing=locked \
+    cargo install cargo-leptos --version ${CARGO_LEPTOS_VERSION} --locked --jobs 16
+
+# Set working directory
+WORKDIR /app
+
+# Keep container running for interactive development
+CMD ["tail", "-f", "/dev/null"]

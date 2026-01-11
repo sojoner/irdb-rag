@@ -4,15 +4,20 @@
 # syntax=docker/dockerfile:1
 FROM --platform=linux/amd64 rust:1-slim-bookworm AS builder
 
-# Install build dependencies
-RUN apt-get update && apt-get install -y \
+# Install build dependencies with cache mounts
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    apt-get update && apt-get install -y --no-install-recommends \
     pkg-config \
     libssl-dev \
     curl \
     nodejs \
     npm \
     ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
+    lld \
+    clang \
+    make \
+    perl
 
 # Build parallelism - defaults to all available cores
 ARG BUILD_JOBS=0
@@ -21,25 +26,22 @@ ARG BUILD_JOBS=0
 # - Use sparse registry protocol for faster dependency downloads
 # - Disable incremental compilation for Docker builds (better caching)
 # - Limit codegen units to reduce memory usage
+# - Use lld linker for faster linking
 ENV CARGO_REGISTRIES_CRATES_IO_PROTOCOL=sparse \
     CARGO_INCREMENTAL=0 \
-    CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16
+    CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16 \
+    RUSTFLAGS="-C link-arg=-fuse-ld=lld" \
+    CARGO_NET_GIT_FETCH_WITH_CLI=true
 
 # Install wasm32 target (cached layer)
 RUN rustup target add wasm32-unknown-unknown
 
-# Install cargo-leptos from pre-built binary (much faster than compiling from source)
-# Download once and cache it, so subsequent builds are instant
+# Install cargo-leptos with parallel compilation and cargo cache
+# Build from source for better compatibility and to leverage cargo caching
 ARG CARGO_LEPTOS_VERSION=0.3.2
-RUN --mount=type=cache,target=/var/cache/cargo-leptos \
-    if [ ! -f /var/cache/cargo-leptos/cargo-leptos-${CARGO_LEPTOS_VERSION} ]; then \
-        mkdir -p /var/cache/cargo-leptos && \
-        curl -L "https://github.com/leptos-rs/cargo-leptos/releases/download/v${CARGO_LEPTOS_VERSION}/cargo-leptos-x86_64-unknown-linux-musl.tar.gz" \
-        | tar xz --strip-components=1 -C /var/cache/cargo-leptos/ \
-        && mv /var/cache/cargo-leptos/cargo-leptos /var/cache/cargo-leptos/cargo-leptos-${CARGO_LEPTOS_VERSION}; \
-    fi \
-    && cp /var/cache/cargo-leptos/cargo-leptos-${CARGO_LEPTOS_VERSION} /usr/local/cargo/bin/cargo-leptos \
-    && chmod +x /usr/local/cargo/bin/cargo-leptos
+RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
+    --mount=type=cache,target=/usr/local/cargo/git,sharing=locked \
+    cargo install cargo-leptos --version ${CARGO_LEPTOS_VERSION} --locked --jobs $(if [ "$BUILD_JOBS" -eq 0 ]; then nproc; else echo "$BUILD_JOBS"; fi)
 
 # Set working directory
 WORKDIR /app
@@ -49,7 +51,7 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 COPY tailwind.config.js postcss.config.js ./
 # Use npm cache mount for faster installs
-RUN --mount=type=cache,target=/root/.npm \
+RUN --mount=type=cache,target=/root/.npm,sharing=locked \
     npm ci
 
 # === Cache Rust dependencies ===
@@ -66,23 +68,23 @@ RUN mkdir -p src && \
 # Build dependencies only (this layer will be cached)
 # Update Cargo.lock for Linux platform if it was built on macOS
 # Use cache mounts for faster dependency resolution
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/usr/local/cargo/git \
+RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
+    --mount=type=cache,target=/usr/local/cargo/git,sharing=locked \
     cargo update --workspace
 
 # Build dependencies WITHOUT LTO for much faster builds
 # LTO will only be applied during the final build with actual code
 # This saves 50-80% of build time for dependency compilation
 # Use BuildKit cache mounts for cargo registry, git deps, and build artifacts
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/usr/local/cargo/git \
-    --mount=type=cache,target=/app/target \
+RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
+    --mount=type=cache,target=/usr/local/cargo/git,sharing=locked \
+    --mount=type=cache,target=/app/target,sharing=locked \
     CARGO_PROFILE_RELEASE_LTO=false \
     cargo build --release --bin rag-chat --features ssr -j $(if [ "$BUILD_JOBS" -eq 0 ]; then nproc; else echo "$BUILD_JOBS"; fi)
 
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/usr/local/cargo/git \
-    --mount=type=cache,target=/app/target \
+RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
+    --mount=type=cache,target=/usr/local/cargo/git,sharing=locked \
+    --mount=type=cache,target=/app/target,sharing=locked \
     CARGO_PROFILE_RELEASE_LTO=false \
     cargo build --release --lib --target wasm32-unknown-unknown --no-default-features --features hydrate -j $(if [ "$BUILD_JOBS" -eq 0 ]; then nproc; else echo "$BUILD_JOBS"; fi)
 
@@ -102,9 +104,9 @@ RUN npm run build:css
 # For production builds with full optimization, use: --profile production
 # Dependencies are already compiled, so this is fast
 # Use cache mounts for cargo registry, git deps, and build artifacts
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/usr/local/cargo/git \
-    --mount=type=cache,target=/app/target \
+RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
+    --mount=type=cache,target=/usr/local/cargo/git,sharing=locked \
+    --mount=type=cache,target=/app/target,sharing=locked \
     cargo leptos build --release && \
     # Copy artifacts out of cache mount before it's unmounted
     cp -r target/release/rag-chat /tmp/rag-chat && \
@@ -120,10 +122,11 @@ RUN mkdir -p target/release target/site && \
 # ============================================
 FROM --platform=linux/amd64 debian:bookworm-slim
 
-# Install runtime dependencies (minimal)
-RUN apt-get update && apt-get install -y \
-    ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
+# Install runtime dependencies (minimal) with cache mounts
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates
 
 # Create non-root user for security
 RUN useradd -m -u 1000 -s /bin/bash appuser
