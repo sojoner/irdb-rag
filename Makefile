@@ -1,7 +1,14 @@
-.PHONY: test test-all test-db-reset test-db-init test-unit test-integration clean help
+.PHONY: test test-all test-db-reset test-db-init test-unit test-integration clean help docker-build docker-push docker-release
 
 # Test configuration - use 1024 for text-embedding-qwen3-embedding-0.6b
 EMBEDDING_DIMENSIONS ?= 1024
+
+# Docker configuration
+IMAGE_NAME ?= rag-chat
+IMAGE_TAG ?= latest
+REGISTRY ?= docker.io
+IMAGE_FULL := $(REGISTRY)/$(IMAGE_NAME):$(IMAGE_TAG)
+BUILD_JOBS ?= 0
 
 help:
 	@echo "Available targets:"
@@ -12,9 +19,21 @@ help:
 	@echo "  test-db-reset     - Reset test database schema (DOWN and UP)"
 	@echo "  test-db-init      - Initialize test database with correct embedding dimensions"
 	@echo "  clean             - Clean all test artifacts (DB data, target/)"
+	@echo "  docker-build      - Build Docker image with BuildKit (fast: no LTO)"
+	@echo "  docker-push       - Push Docker image to registry"
+	@echo "  docker-release    - Build, tag, and push Docker image (all-in-one)"
 	@echo ""
 	@echo "Environment variables:"
 	@echo "  EMBEDDING_DIMENSIONS - Embedding vector dimensions (default: 1024)"
+	@echo "  IMAGE_NAME           - Docker image name (default: rag-chat)"
+	@echo "  IMAGE_TAG            - Docker image tag (default: latest)"
+	@echo "  REGISTRY             - Docker registry (default: docker.io)"
+	@echo "  BUILD_JOBS           - Parallel build jobs, 0=all cores (default: 0)"
+	@echo ""
+	@echo "Build profiles:"
+	@echo "  release       - No LTO, fastest compile (default)"
+	@echo "  thin-lto      - Thin LTO, balanced speed and size"
+	@echo "  production    - Full LTO, slow compile, maximum optimization"
 
 # Reset and reinitialize the test database
 test-db-reset:
@@ -90,3 +109,25 @@ clean:
 	rm -rf data/postgres
 	rm -rf target
 	@echo "Clean complete!"
+
+# Build Docker image with BuildKit and persistent caching
+docker-build:
+	@echo "Building Docker image: $(IMAGE_FULL)"
+	@echo "Using BuildKit with optimized caching..."
+	@echo "Build parallelism: BUILD_JOBS=$(BUILD_JOBS) (0=all cores)"
+	DOCKER_BUILDKIT=1 docker build \
+		--build-arg BUILD_JOBS=$(BUILD_JOBS) \
+		-t $(IMAGE_NAME):$(IMAGE_TAG) \
+		-t $(IMAGE_FULL) \
+		.
+	@echo "✅ Build complete: $(IMAGE_FULL)"
+
+# Push Docker image to registry
+docker-push:
+	@echo "Pushing Docker image: $(IMAGE_FULL)"
+	docker push $(IMAGE_FULL)
+	@echo "✅ Push complete: $(IMAGE_FULL)"
+
+# Build, tag, and push Docker image (all-in-one)
+docker-release: docker-build docker-push
+	@echo "✅ Docker release complete: $(IMAGE_FULL)"
