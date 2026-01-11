@@ -26,13 +26,13 @@ pub struct Document {
     pub keywords: Option<Vec<String>>,
     pub locations: Option<Vec<String>>,
     pub created_at: DateTime<Utc>,
-    pub word_count: Option<i32>,
     pub status: String,
     #[cfg_attr(feature = "ssr", sqlx(json))]
     pub entities: Option<serde_json::Value>,
     #[cfg_attr(feature = "ssr", sqlx(json))]
     pub metadata: Option<serde_json::Value>,
     pub content_hash: Option<String>,
+    pub embedding: Option<Vec<f32>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -79,6 +79,8 @@ pub struct SearchResult {
     pub bm25_score: f64,
     pub vector_score: f64,
     pub combined_score: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reranker_score: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -164,6 +166,7 @@ pub struct ImportItem {
     pub error_message: Option<String>,
     pub error_type: Option<String>, // transient, permanent
     pub document_id: Option<Uuid>,
+    pub file_size_bytes: i64, // for prioritizing processing (smallest first)
     pub created_at: DateTime<Utc>,
     pub processed_at: Option<DateTime<Utc>>,
 }
@@ -205,17 +208,48 @@ impl std::str::FromStr for ErrorType {
 
 impl ErrorType {
     /// Classify error based on error message
+    /// Distinguishes between transient errors (should retry) and permanent errors (should skip)
     pub fn classify(error_message: &str) -> Self {
         let msg_lower = error_message.to_lowercase();
+
+        // Transient errors - should retry with backoff
         if msg_lower.contains("timeout")
             || msg_lower.contains("503")
             || msg_lower.contains("connection refused")
             || msg_lower.contains("rate limit")
+            || msg_lower.contains("temporarily unavailable")
+            || msg_lower.contains("500 internal")
+            || msg_lower.contains("502 bad gateway")
+            || msg_lower.contains("504 gateway timeout")
+            || msg_lower.contains("too many requests")
         {
-            ErrorType::Transient
-        } else {
-            ErrorType::Permanent
+            return ErrorType::Transient;
         }
+
+        // Permanent errors - should skip immediately
+        // - Unsupported file formats
+        // - Corrupted files
+        // - Encoding issues
+        // - Scanned PDFs requiring OCR (when OCR disabled)
+        if msg_lower.contains("unsupported")
+            || msg_lower.contains("format not recognized")
+            || msg_lower.contains("invalid")
+            || msg_lower.contains("corrupted")
+            || msg_lower.contains("damaged")
+            || msg_lower.contains("file not found")
+            || msg_lower.contains("permission denied")
+            || msg_lower.contains("not a pdf")
+            || msg_lower.contains("utf-8")
+            || msg_lower.contains("encoding")
+            || msg_lower.contains("character decode")
+            || msg_lower.contains("scanned image")
+            || msg_lower.contains("ocr required")
+        {
+            return ErrorType::Permanent;
+        }
+
+        // Default to permanent to avoid infinite retries on unknown errors
+        ErrorType::Permanent
     }
 }
 

@@ -37,7 +37,12 @@ timeout_seconds = 120
 [docling]
 url = "http://localhost:5001"
 timeout_seconds = 180
-models = "DocLayNet,TableFormer,ibm-granite/granite-docling-258M-mlx-bf16"
+models = "DocLayNet,TableFormer"
+
+# Performance optimization options for local testing with vLLM
+do_layout_analysis = true
+do_table_structure = true
+do_ocr = true
 
 [import]
 workers = 2

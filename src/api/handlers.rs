@@ -33,6 +33,13 @@ pub async fn search(
     tracing::info!("Received search request: query='{}', limit={}, bm25_weight={}, vector_weight={}",
         req.query, req.limit, req.bm25_weight, req.vector_weight);
 
+    // Reject empty or special-only queries early to avoid embedding service timeout
+    let trimmed_query = req.query.trim();
+    if trimmed_query.is_empty() || trimmed_query == "*" {
+        tracing::info!("Query rejected: empty or special character only");
+        return Ok(Json(Vec::new()));
+    }
+
     // Generate embedding for query
     tracing::debug!("Generating embedding for query: '{}'", req.query);
     let embedding = state.embedder.embed(&req.query)
@@ -68,6 +75,7 @@ pub async fn search(
         req.limit,
         req.bm25_weight,
         req.vector_weight,
+        state.reranker.as_ref(),
     ).await.map_err(|e| {
         tracing::error!("Hybrid search failed: {}", e);
         AppError::Internal(e.to_string())
@@ -96,7 +104,7 @@ pub async fn chat(
 
     // Retrieve relevant chunks
     tracing::debug!("Retrieving {} relevant chunks", req.context_chunks);
-    let chunks = db::get_relevant_chunks(
+    let mut chunks = db::get_relevant_chunks(
         &state.pool,
         &embedding,
         req.context_chunks,
@@ -108,6 +116,27 @@ pub async fn chat(
             AppError::Internal(e.to_string())
         })?;
     tracing::debug!("Retrieved {} chunks", chunks.len());
+
+    // Rerank chunks if available
+    if let Some(reranker) = state.reranker.as_ref() {
+        let chunk_contents: Vec<&str> = chunks.iter().map(|c| c.content.as_str()).collect();
+
+        match reranker.rerank_and_sort(&req.message, &chunk_contents).await {
+            Ok(ranked) => {
+                let mut reranked = Vec::new();
+                for doc in ranked {
+                    if let Some(chunk) = chunks.get(doc.index) {
+                        reranked.push(chunk.clone());
+                    }
+                }
+                tracing::debug!("Reranked {} chunks for chat context", reranked.len());
+                chunks = reranked;
+            }
+            Err(e) => {
+                tracing::warn!("Chunk reranking failed, using original order: {}", e);
+            }
+        }
+    }
 
     // Build context
     let context: String = chunks.iter()
@@ -173,7 +202,7 @@ pub async fn chat_stream(
         })?;
 
     // Retrieve relevant chunks
-    let chunks = db::get_relevant_chunks(
+    let mut chunks = db::get_relevant_chunks(
         &state.pool,
         &embedding,
         req.context_chunks,
@@ -184,6 +213,27 @@ pub async fn chat_stream(
             tracing::error!("Failed to retrieve chunks: {}", e);
             AppError::Internal(e.to_string())
         })?;
+
+    // Rerank chunks if available
+    if let Some(reranker) = state.reranker.as_ref() {
+        let chunk_contents: Vec<&str> = chunks.iter().map(|c| c.content.as_str()).collect();
+
+        match reranker.rerank_and_sort(&req.message, &chunk_contents).await {
+            Ok(ranked) => {
+                let mut reranked = Vec::new();
+                for doc in ranked {
+                    if let Some(chunk) = chunks.get(doc.index) {
+                        reranked.push(chunk.clone());
+                    }
+                }
+                tracing::debug!("Reranked {} chunks for streaming chat context", reranked.len());
+                chunks = reranked;
+            }
+            Err(e) => {
+                tracing::warn!("Chunk reranking failed, using original order: {}", e);
+            }
+        }
+    }
 
     // Build context
     let context: String = chunks.iter()
@@ -379,7 +429,7 @@ pub async fn get_status(
         llm_config: config.clone(),
         embedding_config: EmbeddingInfo {
             model: state.embedder.get_model_name().to_string(),
-            chunk_size: indexing::CHUNK_SIZE,
+            chunk_size: indexing::DEFAULT_CHUNK_SIZE,
             chunk_overlap: 0,
         },
         env_vars: EnvVars {
@@ -770,6 +820,257 @@ pub async fn delete_documents_batch(
         "status": "deleted",
         "deleted_count": rows,
         "requested_count": req.ids.len()
+    })))
+}
+
+// ============================================
+// Knowledge Base Handlers
+// ============================================
+
+/// Add knowledge base paths (local paths and/or URLs)
+pub async fn add_knowledge_base_paths(
+    State(state): State<AppState>,
+    Json(req): Json<AddKnowledgeBasePathsRequest>,
+) -> Result<Json<AddKnowledgeBasePathsResponse>, AppError> {
+    use crate::services::import::ImportJobRunner;
+
+    tracing::info!("Received request to add knowledge base paths");
+
+    let mut sources = Vec::new();
+    let mut skipped = 0;
+
+    // Add local paths
+    if let Some(paths) = &req.local_paths {
+        for path in paths {
+            // Check if already indexed
+            let doc_count: (i64,) = sqlx::query_as(
+                "SELECT COUNT(*) FROM documents WHERE source_path = $1"
+            )
+            .bind(path)
+            .fetch_one(&state.pool)
+            .await
+            .map_err(|e| {
+                tracing::error!("Failed to check document existence: {}", e);
+                AppError::Internal(e.to_string())
+            })?;
+
+            if doc_count.0 > 0 {
+                tracing::debug!("Path already indexed: {}", path);
+                skipped += 1;
+            } else {
+                sources.push(path.clone());
+            }
+        }
+    }
+
+    // Add URLs
+    if let Some(urls) = &req.urls {
+        for url in urls {
+            // Check if already indexed
+            let doc_count: (i64,) = sqlx::query_as(
+                "SELECT COUNT(*) FROM documents WHERE source_path = $1"
+            )
+            .bind(url)
+            .fetch_one(&state.pool)
+            .await
+            .map_err(|e| {
+                tracing::error!("Failed to check URL existence: {}", e);
+                AppError::Internal(e.to_string())
+            })?;
+
+            if doc_count.0 > 0 {
+                tracing::debug!("URL already indexed: {}", url);
+                skipped += 1;
+            } else {
+                sources.push(url.clone());
+            }
+        }
+    }
+
+    if sources.is_empty() {
+        return Ok(Json(AddKnowledgeBasePathsResponse {
+            job_id: Uuid::new_v4(),
+            paths_queued: 0,
+            paths_skipped: skipped,
+            message: "No new sources to index".to_string(),
+        }));
+    }
+
+    // Create import job
+    let settings = crate::config::Settings::new()
+        .map_err(|e| AppError::Internal(e.to_string()))?;
+    let runner = ImportJobRunner::new(settings.import.clone());
+
+    let job_id = runner
+        .create_job(&state.pool, "manual_add_paths", None)
+        .await
+        .map_err(|e| {
+            tracing::error!("Failed to create import job: {}", e);
+            AppError::Internal(e.to_string())
+        })?;
+
+    // Create import items
+    let source_refs: Vec<&str> = sources.iter().map(|s| s.as_str()).collect();
+    crate::services::import::ImportItemManager
+        .create_items(&state.pool, job_id, source_refs)
+        .await
+        .map_err(|e| {
+            tracing::error!("Failed to create import items: {}", e);
+            AppError::Internal(e.to_string())
+        })?;
+
+    // Queue job
+    state
+        .import_job_queue
+        .send(job_id)
+        .await
+        .map_err(|e| {
+            tracing::error!("Failed to queue import job: {}", e);
+            AppError::Internal(e.to_string())
+        })?;
+
+    tracing::info!("Created import job {} with {} paths", job_id, sources.len());
+
+    Ok(Json(AddKnowledgeBasePathsResponse {
+        job_id,
+        paths_queued: sources.len(),
+        paths_skipped: skipped,
+        message: format!(
+            "Queued {} sources for import ({} already indexed)",
+            sources.len(),
+            skipped
+        ),
+    }))
+}
+
+/// Import Chrome bookmarks
+pub async fn import_chrome_bookmarks(
+    State(state): State<AppState>,
+    Json(req): Json<ImportBookmarksRequest>,
+) -> Result<Json<AddKnowledgeBasePathsResponse>, AppError> {
+    use crate::services::bookmark_parser;
+    use crate::services::import::ImportJobRunner;
+
+    tracing::info!("Received request to import Chrome bookmarks from: {}", req.path);
+
+    // Parse bookmarks
+    let urls = bookmark_parser::parse_chrome_bookmarks(&req.path)
+        .map_err(|e| {
+            tracing::error!("Failed to parse bookmarks: {}", e);
+            AppError::Internal(e.to_string())
+        })?;
+
+    if urls.is_empty() {
+        return Ok(Json(AddKnowledgeBasePathsResponse {
+            job_id: Uuid::new_v4(),
+            paths_queued: 0,
+            paths_skipped: 0,
+            message: "No URLs found in bookmarks file".to_string(),
+        }));
+    }
+
+    // Filter out already-indexed URLs
+    let mut filtered_urls = Vec::new();
+    let mut skipped = 0;
+
+    for url in urls {
+        let doc_count: (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM documents WHERE source_path = $1"
+        )
+        .bind(&url)
+        .fetch_one(&state.pool)
+        .await
+        .map_err(|e| {
+            tracing::error!("Failed to check URL existence: {}", e);
+            AppError::Internal(e.to_string())
+        })?;
+
+        if doc_count.0 > 0 {
+            skipped += 1;
+        } else {
+            filtered_urls.push(url);
+        }
+    }
+
+    if filtered_urls.is_empty() {
+        return Ok(Json(AddKnowledgeBasePathsResponse {
+            job_id: Uuid::new_v4(),
+            paths_queued: 0,
+            paths_skipped: skipped,
+            message: "All bookmarks already indexed".to_string(),
+        }));
+    }
+
+    // Create import job
+    let settings = crate::config::Settings::new()
+        .map_err(|e| AppError::Internal(e.to_string()))?;
+    let runner = ImportJobRunner::new(settings.import.clone());
+
+    let job_id = runner
+        .create_job(&state.pool, "chrome_bookmarks", Some(&req.path))
+        .await
+        .map_err(|e| {
+            tracing::error!("Failed to create import job: {}", e);
+            AppError::Internal(e.to_string())
+        })?;
+
+    // Create import items
+    let url_refs: Vec<&str> = filtered_urls.iter().map(|u| u.as_str()).collect();
+    crate::services::import::ImportItemManager
+        .create_items(&state.pool, job_id, url_refs)
+        .await
+        .map_err(|e| {
+            tracing::error!("Failed to create import items: {}", e);
+            AppError::Internal(e.to_string())
+        })?;
+
+    // Queue job
+    state
+        .import_job_queue
+        .send(job_id)
+        .await
+        .map_err(|e| {
+            tracing::error!("Failed to queue import job: {}", e);
+            AppError::Internal(e.to_string())
+        })?;
+
+    tracing::info!("Created import job {} with {} bookmarks", job_id, filtered_urls.len());
+
+    Ok(Json(AddKnowledgeBasePathsResponse {
+        job_id,
+        paths_queued: filtered_urls.len(),
+        paths_skipped: skipped,
+        message: format!(
+            "Queued {} bookmarks for import ({} already indexed)",
+            filtered_urls.len(),
+            skipped
+        ),
+    }))
+}
+
+/// Manually trigger knowledge base scan
+pub async fn trigger_scan(
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let settings = crate::config::Settings::new()
+        .map_err(|e| AppError::Internal(e.to_string()))?;
+
+    let scanner = crate::services::startup_scan::StartupScanner::new(
+        state.pool.clone(),
+        settings.knowledge_base.clone(),
+        state.import_job_queue.clone(),
+    );
+
+    // Spawn scan in background
+    tokio::spawn(async move {
+        if let Err(e) = scanner.run().await {
+            tracing::error!("Manual scan failed: {}", e);
+        }
+    });
+
+    Ok(Json(serde_json::json!({
+        "status": "scanning",
+        "message": "Knowledge base scan started in background"
     })))
 }
 

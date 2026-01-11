@@ -57,11 +57,23 @@ pub async fn search_documents(
     let state = use_context::<AppState>()
         .ok_or_else(|| ServerFnError::new("AppState not found in context"))?;
 
-    // Generate embedding for the query
-    let embedding = state.embedder.embed(&query).await
-        .map_err(|e| ServerFnError::new(format!("Embedding failed: {}", e)))?;
+    // Check if we have any search criteria
+    let trimmed_query = query.trim();
+    let has_query = !trimmed_query.is_empty() && trimmed_query != "*";
+    let has_filters = category_id.is_some() ||
+        (keywords.as_ref().map_or(false, |k| !k.is_empty())) ||
+        (concepts.as_ref().map_or(false, |c| !c.is_empty())) ||
+        (locations.as_ref().map_or(false, |l| !l.is_empty())) ||
+        (persons.as_ref().map_or(false, |p| !p.is_empty())) ||
+        (organizations.as_ref().map_or(false, |o| !o.is_empty())) ||
+        (authors.as_ref().map_or(false, |a| !a.is_empty()));
 
-    // Perform hybrid search with provided filters
+    if !has_query && !has_filters {
+        info!("SERVER: No query or filters provided, returning empty results");
+        return Ok(Vec::new());
+    }
+
+    // Build filter object
     let db_filters = db::SearchFilters {
         category_id,
         date_from: None,
@@ -78,17 +90,36 @@ pub async fn search_documents(
         word_count_max: None,
     };
 
-    let results = db::hybrid_search(
-        &state.pool,
-        &query,
-        &embedding,
-        &db_filters,
-        limit,
-        bm25_weight,
-        vector_weight,
-    ).await.map_err(|e| ServerFnError::new(format!("Search failed: {}", e)))?;
+    // If we have a query, use hybrid search; otherwise use filter-only search
+    if has_query {
+        // Generate embedding for the query
+        let embedding = state.embedder.embed(&query).await
+            .map_err(|e| ServerFnError::new(format!("Embedding failed: {}", e)))?;
 
-    Ok(results)
+        let results = db::hybrid_search(
+            &state.pool,
+            &query,
+            &embedding,
+            &db_filters,
+            limit,
+            bm25_weight,
+            vector_weight,
+            state.reranker.as_ref(),
+        ).await.map_err(|e| ServerFnError::new(format!("Search failed: {}", e)))?;
+
+        info!("SERVER: Hybrid search returned {} results", results.len());
+        Ok(results)
+    } else {
+        // Filter-only search (no text/semantic search, pure filter matching)
+        let results = db::filter_only_search(
+            &state.pool,
+            &db_filters,
+            limit,
+        ).await.map_err(|e| ServerFnError::new(format!("Search failed: {}", e)))?;
+
+        info!("SERVER: Filter-only search returned {} results", results.len());
+        Ok(results)
+    }
 }
 
 #[server(DeleteDocument, "/api")]

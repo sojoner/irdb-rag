@@ -31,7 +31,7 @@ api_key = ""
 model = "google/gemini-3-flash-preview"
 
 [llm]
-timeout_seconds = 300
+timeout_seconds = 600
 
 [embedding]
 provider = "openai"
@@ -43,15 +43,90 @@ timeout_seconds = 120
 
 [docling]
 url = "http://localhost:5001"
-timeout_seconds = 180
-models = "DocLayNet,TableFormer,ibm-granite/granite-docling-258M-mlx-bf16"
+timeout_seconds = 600
+models = "DocLayNet,TableFormer"
+
+# Performance optimization options
+# Set to false to disable specific processing steps for faster indexing:
+# - do_layout_analysis: false  = 3-4x faster for simple text documents (loses structure)
+# - do_table_structure: false  = faster for text-heavy documents without tables
+# - do_ocr: false              = MUCH faster for native text PDFs (can't process scanned docs)
+do_layout_analysis = true
+do_table_structure = true
+do_ocr = true
+
+# Batch configuration for optimal throughput
+# Note: For GPU-accelerated Docling, higher batch sizes improve GPU utilization
+# Docker env vars override these in production (see docker-compose-gpu.yml)
+batch_document_limit = 8   # Concurrent documents through Docling pipeline
+batch_chunk_limit = 16     # Chunks to process at once
+batch_embedding_limit = 32 # Embeddings to generate concurrently
 
 [import]
-workers = 2
+workers = 16
+indexing_batch_size = 4
+chunk_size_tokens = 2048  # Target tokens (text-splitter ~22% ratio = ~450 actual tokens for optimal retrieval)
 max_retries = 3
 retry_base_delay_ms = 1000
 retry_max_delay_ms = 30000
 
+[import.cleanup]
+enabled = true
+retention_hours = 24
+check_interval_hours = 1
+
+[knowledge_base]
+local_paths = ["/data/books/Wellbeing"]
+urls = []
+chrome_bookmarks_path = ""
+file_extensions = ["md", "pdf"]
+scan_on_startup = true
+
+[enrichment]
+# Enable/disable the enrichment service (metadata extraction, summaries, entities, category classification)
+# When disabled, documents will still be indexed but without LLM-based enrichment for faster indexing
+# Useful for: testing, offline mode, reducing API costs, focusing on search speed over metadata quality
+enabled = true
+
+# Enable/disable entity extraction (persons, organizations, locations, products, concepts, questions)
+# Slower operation that requires NER model - disable to speed up indexing
+extract_entities = true
+
+# Enable/disable summary generation for documents
+extract_summary = true
+
+# Enable/disable keyword extraction
+extract_keywords = true
+
+# Enable/disable document category classification into Wikipedia categories
+classify_category = true
+
 [rag]
 system_prompt = "You are a helpful AI assistant specialized in answering questions about documents. Use the provided document context to give accurate, well-sourced answers. If information is not available in the context, clearly state that. Always cite which documents you're referencing."
 entity_extraction_enabled = true
+
+[reranking]
+# Enable/disable reranking feature (default: false for safety)
+enabled = false
+
+# Ollama API URL (typically same as embedding service)
+api_url = "http://localhost:11434"
+
+# API key (empty for local Ollama)
+api_key = ""
+
+# Qwen reranker model
+# Options: dengcao/Qwen3-Reranker-0.6B:Q5_K_M (smallest, fastest - recommended)
+#          dengcao/Qwen3-Reranker-4B:Q5_K_M (balanced)
+#          dengcao/Qwen3-Reranker-8B:Q5_K_M (most accurate, slowest)
+model = "dengcao/Qwen3-Reranker-0.6B:Q5_K_M"
+
+# Timeout for reranking operations (seconds)
+timeout_seconds = 30
+
+# Maximum documents to rerank in search results
+# (reranking is expensive, so limit batch size)
+max_search_results = 10
+
+# Maximum chunks to rerank for chat context
+max_chat_chunks = 8

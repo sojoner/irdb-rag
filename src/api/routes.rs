@@ -39,6 +39,10 @@ pub fn create_router(state: AppState) -> Router {
         .route("/api/import/{id}", delete(handlers::delete_import))
         .route("/api/import/{id}/items", get(handlers::get_import_items))
         .route("/api/import/{id}/resume", post(handlers::resume_import))
+        // Knowledge base routes
+        .route("/api/knowledge-base/paths", post(handlers::add_knowledge_base_paths))
+        .route("/api/knowledge-base/bookmarks", post(handlers::import_chrome_bookmarks))
+        .route("/api/knowledge-base/scan", post(handlers::trigger_scan))
         // Handle server functions
         .route(
             "/api/{*fn_name}",

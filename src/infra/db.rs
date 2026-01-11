@@ -80,11 +80,12 @@ pub struct SearchFilters {
 fn matches_all_filters(doc: &Document, filters: &SearchFilters) -> bool {
     [
         matches_author_filter(doc, &filters.authors),
-        matches_word_count_filter(doc, filters.word_count_min, filters.word_count_max),
         matches_entity_filter(doc, &filters.concepts, "concepts"),
         matches_entity_filter(doc, &filters.organizations, "organizations"),
         matches_entity_filter(doc, &filters.persons, "persons"),
         matches_entity_filter(doc, &filters.products, "products"),
+        matches_array_filter(&doc.locations, &filters.locations, "locations"),
+        matches_array_filter(&doc.keywords, &filters.keywords, "keywords"),
     ]
     .iter()
     .all(|&predicate| predicate)
@@ -100,10 +101,17 @@ fn matches_author_filter(doc: &Document, authors: &Option<Vec<String>>) -> bool 
         .unwrap_or(true)
 }
 
-/// Check word count filter - pure predicate
-fn matches_word_count_filter(doc: &Document, min: Option<i32>, max: Option<i32>) -> bool {
-    let word_count = doc.word_count.unwrap_or(0);
-    min.is_none_or(|m| word_count >= m) && max.is_none_or(|m| word_count <= m)
+/// Check array field filter (locations, keywords) - pure predicate
+fn matches_array_filter(doc_array: &Option<Vec<String>>, filter: &Option<Vec<String>>, _field_name: &str) -> bool {
+    let Some(filter_vals) = filter else { return true; };
+
+    doc_array
+        .as_ref()
+        .map(|arr| {
+            arr.iter()
+                .any(|s| filter_vals.iter().any(|fv| fv == s))
+        })
+        .unwrap_or(false)
 }
 
 /// Check single entity filter - pure predicate
@@ -122,6 +130,7 @@ fn matches_entity_filter(doc: &Document, filter: &Option<Vec<String>>, entity_ke
 }
 
 /// Perform hybrid search combining BM25 and vector similarity
+#[allow(clippy::too_many_arguments)]
 pub async fn hybrid_search(
     pool: &PgPool,
     query: &str,
@@ -130,6 +139,7 @@ pub async fn hybrid_search(
     limit: i32,
     bm25_weight: f64,
     vector_weight: f64,
+    reranker: Option<&std::sync::Arc<crate::infra::reranker::Reranker>>,
 ) -> Result<Vec<SearchResult>> {
     // Sanitize query using pure function
     let sanitized_query = sanitize_bm25_query(query);
@@ -184,20 +194,49 @@ pub async fn hybrid_search(
         });
     }
 
+    // Apply reranking if enabled
+    if let Some(reranker) = reranker {
+        let documents: Vec<&str> = results.iter().map(|r| r.content.as_str()).collect();
+
+        match reranker.rerank_batch(query, &documents).await {
+            Ok(scores) => {
+                for (result, score) in results.iter_mut().zip(scores.iter()) {
+                    result.reranker_score = Some(*score);
+                    // Blend: 70% reranker + 30% hybrid
+                    result.combined_score = 0.7 * score + 0.3 * result.combined_score;
+                }
+
+                // Re-sort by new combined score
+                results.sort_by(|a, b| {
+                    b.combined_score.partial_cmp(&a.combined_score)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                });
+
+                tracing::debug!("Reranking complete: {} results reranked", results.len());
+            }
+            Err(e) => {
+                tracing::warn!("Reranking failed, using original scores: {}", e);
+            }
+        }
+    }
+
     // Truncate to requested limit
     Ok(results.into_iter().take(limit as usize).collect())
 }
 
 /// Get documents by list of IDs
-async fn get_documents_by_ids(pool: &PgPool, ids: &[Uuid]) -> Result<Vec<Document>> {
+pub async fn get_documents_by_ids(pool: &PgPool, ids: &[Uuid]) -> Result<Vec<Document>> {
     if ids.is_empty() {
         return Ok(Vec::new());
     }
 
     let docs = sqlx::query_as::<_, Document>(
         r#"
-        SELECT d.* FROM documents d
-        WHERE d.id = ANY($1)
+        SELECT id, title, content, source_path, source_type, summary, author,
+               category_id, keywords, locations, created_at, status,
+               entities, metadata, embedding::FLOAT4[] as embedding, content_hash
+        FROM documents
+        WHERE id = ANY($1)
         "#
     )
     .bind(ids)
@@ -245,7 +284,11 @@ pub async fn vector_search(
     let dims = get_embedding_dimensions()?;
     let sql = format!(
         r#"
-        SELECT * FROM documents
+        SELECT
+            id, title, content, source_path, source_type, summary, author,
+            category_id, keywords, locations, created_at, status, entities,
+            metadata, content_hash, embedding::FLOAT4[] as embedding
+        FROM documents
         WHERE embedding IS NOT NULL
         ORDER BY embedding <=> $1::vector({})
         LIMIT $2
@@ -274,6 +317,7 @@ pub struct InsertDocumentParams<'a> {
     pub embedding: &'a [f32],
     pub summary: Option<&'a str>,
     pub keywords: Option<Vec<String>>,
+    pub locations: Option<Vec<String>>,
     pub entities: Option<serde_json::Value>,
     pub author: Option<&'a str>,
     pub category_id: Option<Uuid>,
@@ -286,16 +330,15 @@ pub async fn insert_document(
     params: InsertDocumentParams<'_>,
 ) -> Result<Uuid> {
     let embedding_str = embedding_to_string(params.embedding);
-    let word_count = params.content.split_whitespace().count() as i32;
 
     let dims = get_embedding_dimensions()?;
     let sql = format!(
         r#"
         INSERT INTO documents (
             title, content, source_path, source_type, embedding,
-            summary, keywords, entities, author, category_id, word_count, metadata, content_hash, status, indexed_at
+            summary, keywords, locations, entities, author, category_id, metadata, content_hash, status
         )
-        VALUES ($1, $2, $3, $4, $5::vector({}), $6, $7, $8, $9, $10, $11, $12, $13, 'indexed', NOW())
+        VALUES ($1, $2, $3, $4, $5::vector({}), $6, $7, $8, $9, $10, $11, $12, $13, 'indexed')
         RETURNING id
         "#,
         dims
@@ -309,10 +352,10 @@ pub async fn insert_document(
         .bind(&embedding_str)
         .bind(params.summary)
         .bind(&params.keywords)
+        .bind(&params.locations)
         .bind(&params.entities)
         .bind(params.author)
         .bind(params.category_id)
-        .bind(word_count)
         .bind(&params.metadata)
         .bind(params.content_hash)
         .fetch_one(pool)
@@ -357,9 +400,72 @@ pub async fn insert_chunk(
     Ok(id)
 }
 
+pub struct InsertChunkParams {
+    pub chunk_index: i32,
+    pub content: String,
+    pub embedding: Vec<f32>,
+    pub page_number: Option<i32>,
+}
+
+/// Bulk insert multiple chunks in a single query for better performance
+pub async fn insert_chunks_batch(
+    pool: &PgPool,
+    document_id: Uuid,
+    chunks: Vec<InsertChunkParams>,
+) -> Result<()> {
+    if chunks.is_empty() {
+        return Ok(());
+    }
+
+    let dims = get_embedding_dimensions()?;
+    
+    let mut chunk_indices = Vec::with_capacity(chunks.len());
+    let mut contents = Vec::with_capacity(chunks.len());
+    let mut embeddings = Vec::with_capacity(chunks.len());
+    let mut page_numbers = Vec::with_capacity(chunks.len());
+    let mut token_counts = Vec::with_capacity(chunks.len());
+
+    for chunk in chunks {
+        chunk_indices.push(chunk.chunk_index);
+        contents.push(chunk.content.clone());
+        embeddings.push(embedding_to_string(&chunk.embedding));
+        page_numbers.push(chunk.page_number);
+        token_counts.push((chunk.content.len() / 4) as i32);
+    }
+
+    // Use UNNEST for bulk insert with vector casting
+    let sql = format!(
+        r#"
+        INSERT INTO document_chunks (document_id, chunk_index, content, embedding, page_number, token_count)
+        SELECT $1, t.chunk_index, t.content, t.embedding::vector({}), t.page_number, t.token_count
+        FROM UNNEST($2::INTEGER[], $3::TEXT[], $4::TEXT[], $5::INTEGER[], $6::INTEGER[]) 
+        AS t(chunk_index, content, embedding, page_number, token_count)
+        "#,
+        dims
+    );
+
+    sqlx::query(&sql)
+        .bind(document_id)
+        .bind(&chunk_indices)
+        .bind(&contents)
+        .bind(&embeddings)
+        .bind(&page_numbers)
+        .bind(&token_counts)
+        .execute(pool)
+        .await?;
+
+    Ok(())
+}
+
 pub async fn get_document(pool: &PgPool, id: Uuid) -> Result<Option<Document>> {
     let doc = sqlx::query_as::<_, Document>(
-        "SELECT * FROM documents WHERE id = $1"
+        r#"
+        SELECT
+            id, title, content, source_path, source_type, summary, author,
+            category_id, keywords, locations, created_at, status, entities,
+            metadata, content_hash, embedding::FLOAT4[] as embedding
+        FROM documents WHERE id = $1
+        "#
     )
     .bind(id)
     .fetch_optional(pool)
@@ -379,13 +485,77 @@ pub async fn get_document_assets(pool: &PgPool, document_id: Uuid) -> Result<Vec
     Ok(assets)
 }
 
+/// Insert a single document asset (image, figure, etc.)
+pub async fn insert_asset(
+    pool: &PgPool,
+    document_id: Uuid,
+    asset_type: &str,
+    page_number: Option<i32>,
+    alt_text: Option<&str>,
+    caption: Option<&str>,
+    metadata: Option<&serde_json::Value>,
+) -> Result<Uuid> {
+    let asset_id = sqlx::query_scalar::<_, Uuid>(
+        r#"
+        INSERT INTO document_assets (id, document_id, asset_type, page_number, alt_text, caption, metadata)
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
+        RETURNING id
+        "#
+    )
+    .bind(Uuid::new_v4())
+    .bind(document_id)
+    .bind(asset_type)
+    .bind(page_number)
+    .bind(alt_text)
+    .bind(caption)
+    .bind(metadata)
+    .fetch_one(pool)
+    .await?;
+
+    Ok(asset_id)
+}
+
+/// Insert multiple document assets in a batch
+pub async fn insert_assets_batch(
+    pool: &PgPool,
+    document_id: Uuid,
+    assets: &[(String, Option<i32>, Option<String>, Option<String>)], // (asset_type, page_number, alt_text, caption)
+) -> Result<usize> {
+    if assets.is_empty() {
+        return Ok(0);
+    }
+
+    let mut inserted = 0;
+    for (asset_type, page_number, alt_text, caption) in assets {
+        insert_asset(
+            pool,
+            document_id,
+            asset_type,
+            *page_number,
+            alt_text.as_deref(),
+            caption.as_deref(),
+            None,
+        )
+        .await?;
+        inserted += 1;
+    }
+
+    Ok(inserted)
+}
+
 pub async fn list_documents(
     pool: &PgPool,
     limit: i32,
     offset: i32,
 ) -> Result<Vec<Document>> {
     let docs = sqlx::query_as::<_, Document>(
-        "SELECT * FROM documents ORDER BY created_at DESC LIMIT $1 OFFSET $2"
+        r#"
+        SELECT
+            id, title, content, source_path, source_type, summary, author,
+            category_id, keywords, locations, created_at, status, entities,
+            metadata, content_hash, embedding::FLOAT4[] as embedding
+        FROM documents ORDER BY created_at DESC LIMIT $1 OFFSET $2
+        "#
     )
     .bind(limit)
     .bind(offset)
@@ -393,6 +563,71 @@ pub async fn list_documents(
     .await?;
 
     Ok(docs)
+}
+
+/// Filter-only search: returns documents matching filters without any text/semantic search
+pub async fn filter_only_search(
+    pool: &PgPool,
+    filters: &SearchFilters,
+    limit: i32,
+) -> Result<Vec<SearchResult>> {
+    // Build SQL with category filter - always use $1 for category, $2 for limit
+    let category_clause = if filters.category_id.is_some() {
+        "AND d.category_id = $1"
+    } else {
+        ""
+    };
+
+    let limit_param = if filters.category_id.is_some() { "$2" } else { "$1" };
+
+    let sql = format!(
+        r#"
+        SELECT
+            d.id,
+            d.title,
+            d.content,
+            d.source_path,
+            c.name as category_name,
+            0.0::FLOAT as bm25_score,
+            0.0::FLOAT as vector_score,
+            0.0::FLOAT as combined_score,
+            NULL::FLOAT as reranker_score
+        FROM documents d
+        LEFT JOIN categories c ON d.category_id = c.id
+        WHERE d.status = 'indexed'
+        {}
+        ORDER BY d.created_at DESC
+        LIMIT {}
+        "#,
+        category_clause, limit_param
+    );
+
+    let mut query = sqlx::query_as::<_, SearchResult>(&sql);
+
+    // Bind category_id if present
+    if let Some(cat_id) = filters.category_id {
+        query = query.bind(cat_id);
+    }
+    query = query.bind(limit);
+
+    let mut results = query.fetch_all(pool).await?;
+
+    // Apply in-memory entity filters (concepts, organizations, persons, etc.)
+    // Fetch full documents for filter matching
+    if !results.is_empty() {
+        let doc_ids: Vec<Uuid> = results.iter().map(|r| r.id).collect();
+        let full_docs = get_documents_by_ids(pool, &doc_ids).await?;
+
+        results.retain(|result| {
+            full_docs
+                .iter()
+                .find(|doc| doc.id == result.id)
+                .map(|doc| matches_all_filters(doc, filters))
+                .unwrap_or(false)
+        });
+    }
+
+    Ok(results)
 }
 
 pub async fn list_categories(pool: &PgPool) -> Result<Vec<Category>> {
@@ -403,6 +638,33 @@ pub async fn list_categories(pool: &PgPool) -> Result<Vec<Category>> {
     .await?;
 
     Ok(categories)
+}
+
+/// Get or create a category by name
+/// If the category doesn't exist, it will be created
+pub async fn get_or_create_category(pool: &PgPool, name: &str) -> Result<Uuid> {
+    // First, try to get existing category
+    let existing = sqlx::query_scalar::<_, Uuid>(
+        "SELECT id FROM categories WHERE LOWER(name) = LOWER($1)"
+    )
+    .bind(name)
+    .fetch_optional(pool)
+    .await?;
+
+    if let Some(id) = existing {
+        return Ok(id);
+    }
+
+    // Category doesn't exist, create it
+    let new_id = sqlx::query_scalar::<_, Uuid>(
+        "INSERT INTO categories (id, name, description) VALUES ($1, $2, NULL) RETURNING id"
+    )
+    .bind(Uuid::new_v4())
+    .bind(name)
+    .fetch_one(pool)
+    .await?;
+
+    Ok(new_id)
 }
 
 /// Get chunks for context retrieval
@@ -681,26 +943,9 @@ pub async fn get_aggregation_stats(pool: &PgPool) -> Result<crate::domain::dtos:
     .fetch_all(pool)
     .await?;
 
-    // Get word count ranges
-    let word_count_rows = sqlx::query_as::<_, (String, i64)>(
-        r#"
-        SELECT
-            CASE
-                WHEN word_count < 500 THEN 'Very Short (< 500 words)'
-                WHEN word_count < 2000 THEN 'Short (500-2K words)'
-                WHEN word_count < 5000 THEN 'Medium (2K-5K words)'
-                WHEN word_count < 10000 THEN 'Long (5K-10K words)'
-                ELSE 'Very Long (> 10K words)'
-            END as range,
-            COUNT(*) as count
-        FROM documents
-        WHERE word_count IS NOT NULL
-        GROUP BY range
-        ORDER BY COUNT(*) DESC
-        "#
-    )
-    .fetch_all(pool)
-    .await?;
+    // Word count ranges are not available (column removed from schema)
+    // Return empty vector for compatibility with AggregationStats
+    let word_count_rows: Vec<(String, i64)> = Vec::new();
 
     Ok(crate::domain::dtos::AggregationStats {
         categories: categories_rows,
@@ -745,6 +990,7 @@ pub async fn search_and_get_documents(
         limit * 3, // Fetch more to get unique documents
         bm25_weight,
         vector_weight,
+        None, // No reranker for internal document search
     )
     .await?;
 
@@ -766,8 +1012,8 @@ pub async fn search_and_get_documents(
     let documents = sqlx::query_as::<_, Document>(
         r#"
         SELECT id, title, content, source_path, source_type, summary, author,
-               category_id, keywords, locations, created_at, word_count, status,
-               entities, metadata
+               category_id, keywords, locations, created_at, status,
+               entities, metadata, embedding::FLOAT4[] as embedding, content_hash
         FROM documents
         WHERE id = ANY($1)
         ORDER BY created_at DESC
@@ -927,7 +1173,6 @@ mod tests {
     fn create_test_document(
         id: Uuid,
         author: Option<&str>,
-        word_count: Option<i32>,
         entities: Option<Value>,
     ) -> Document {
         use chrono::Utc;
@@ -943,11 +1188,11 @@ mod tests {
             entities,
             author: author.map(|s| s.to_string()),
             category_id: None,
-            word_count,
             metadata: None,
             content_hash: None,
             status: "indexed".to_string(),
             created_at: Utc::now(),
+            embedding: None,
         }
     }
 
@@ -971,7 +1216,7 @@ mod tests {
 
     #[test]
     fn test_matches_author_filter_matches() {
-        let doc = create_test_document(Uuid::new_v4(), Some("John"), None, None);
+        let doc = create_test_document(Uuid::new_v4(), Some("John"), None);
         let mut filters = create_test_filters();
         filters.authors = Some(vec!["John".to_string()]);
 
@@ -980,7 +1225,7 @@ mod tests {
 
     #[test]
     fn test_matches_author_filter_no_match() {
-        let doc = create_test_document(Uuid::new_v4(), Some("John"), None, None);
+        let doc = create_test_document(Uuid::new_v4(), Some("John"), None);
         let mut filters = create_test_filters();
         filters.authors = Some(vec!["Jane".to_string()]);
 
@@ -989,29 +1234,8 @@ mod tests {
 
     #[test]
     fn test_matches_author_filter_no_filter() {
-        let doc = create_test_document(Uuid::new_v4(), Some("John"), None, None);
+        let doc = create_test_document(Uuid::new_v4(), Some("John"), None);
         assert!(matches_author_filter(&doc, &None));
-    }
-
-    #[test]
-    fn test_matches_word_count_filter_both_constraints() {
-        let doc = create_test_document(Uuid::new_v4(), None, Some(100), None);
-        assert!(matches_word_count_filter(&doc, Some(50), Some(150)));
-        assert!(!matches_word_count_filter(&doc, Some(150), Some(200)));
-        assert!(!matches_word_count_filter(&doc, Some(50), Some(80)));
-    }
-
-    #[test]
-    fn test_matches_word_count_filter_min_only() {
-        let doc = create_test_document(Uuid::new_v4(), None, Some(100), None);
-        assert!(matches_word_count_filter(&doc, Some(50), None));
-        assert!(!matches_word_count_filter(&doc, Some(150), None));
-    }
-
-    #[test]
-    fn test_matches_word_count_filter_no_constraints() {
-        let doc = create_test_document(Uuid::new_v4(), None, Some(100), None);
-        assert!(matches_word_count_filter(&doc, None, None));
     }
 
     #[test]
@@ -1019,7 +1243,7 @@ mod tests {
         let entities = json!({
             "concepts": ["AI", "Machine Learning"]
         });
-        let doc = create_test_document(Uuid::new_v4(), None, None, Some(entities));
+        let doc = create_test_document(Uuid::new_v4(), None, Some(entities));
         let filter = Some(vec!["AI".to_string()]);
 
         assert!(matches_entity_filter(&doc, &filter, "concepts"));
@@ -1030,7 +1254,7 @@ mod tests {
         let entities = json!({
             "concepts": ["AI", "Machine Learning"]
         });
-        let doc = create_test_document(Uuid::new_v4(), None, None, Some(entities));
+        let doc = create_test_document(Uuid::new_v4(), None, Some(entities));
         let filter = Some(vec!["Blockchain".to_string()]);
 
         assert!(!matches_entity_filter(&doc, &filter, "concepts"));
@@ -1038,13 +1262,13 @@ mod tests {
 
     #[test]
     fn test_matches_entity_filter_no_filter() {
-        let doc = create_test_document(Uuid::new_v4(), None, None, None);
+        let doc = create_test_document(Uuid::new_v4(), None, None);
         assert!(matches_entity_filter(&doc, &None, "concepts"));
     }
 
     #[test]
     fn test_matches_entity_filter_no_entities() {
-        let doc = create_test_document(Uuid::new_v4(), None, None, None);
+        let doc = create_test_document(Uuid::new_v4(), None, None);
         let filter = Some(vec!["AI".to_string()]);
         assert!(!matches_entity_filter(&doc, &filter, "concepts"));
     }
@@ -1052,12 +1276,10 @@ mod tests {
     #[test]
     fn test_matches_all_filters_all_pass() {
         let entities = json!({"concepts": ["AI"]});
-        let doc = create_test_document(Uuid::new_v4(), Some("John"), Some(100), Some(entities));
+        let doc = create_test_document(Uuid::new_v4(), Some("John"), Some(entities));
 
         let mut filters = create_test_filters();
         filters.authors = Some(vec!["John".to_string()]);
-        filters.word_count_min = Some(50);
-        filters.word_count_max = Some(150);
         filters.concepts = Some(vec!["AI".to_string()]);
 
         assert!(matches_all_filters(&doc, &filters));
@@ -1065,21 +1287,10 @@ mod tests {
 
     #[test]
     fn test_matches_all_filters_author_fails() {
-        let doc = create_test_document(Uuid::new_v4(), Some("John"), Some(100), None);
+        let doc = create_test_document(Uuid::new_v4(), Some("John"), None);
 
         let mut filters = create_test_filters();
         filters.authors = Some(vec!["Jane".to_string()]);
-
-        assert!(!matches_all_filters(&doc, &filters));
-    }
-
-    #[test]
-    fn test_matches_all_filters_word_count_fails() {
-        let doc = create_test_document(Uuid::new_v4(), Some("John"), Some(100), None);
-
-        let mut filters = create_test_filters();
-        filters.authors = Some(vec!["John".to_string()]);
-        filters.word_count_min = Some(150);
 
         assert!(!matches_all_filters(&doc, &filters));
     }

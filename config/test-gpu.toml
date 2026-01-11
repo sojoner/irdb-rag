@@ -1,61 +1,110 @@
-# RAG Chat - GPU Development Configuration
-# Optimized for local Ollama with RTX 3090
-
-[server]
-port = 3000
-log_level = "debug"
+# RAG Chat - GPU Test Configuration
+# Overrides default.toml for GPU testing with Ollama
 
 [database]
-url = "postgres://rag_user:rag_password@db:5432/rag_chat"
-max_connections = 20
+url = "postgres://rag_user:rag_password@rag-db:5432/rag_chat"
+max_connections = 100
 acquire_timeout_seconds = 30
 
-# Chat LLM via Ollama
+# All LLMs use Ollama for GPU-accelerated testing
 [llm.chat]
-provider = "ollama"
-api_url = "http://ollama:11434/v1"
+provider = "openai"
+api_url = "http://rag-ollama:11434/v1"
 api_key = "ollama"
-model = "granite4:tiny-h"
+model = "granite3-moe:3b"
 
-# Metadata extraction - same model
 [llm.metadata]
-provider = "ollama"
-api_url = "http://ollama:11434/v1"
+provider = "openai"
+api_url = "http://rag-ollama:11434/v1"
 api_key = "ollama"
-model = "granite4:tiny-h"
+model = "granite3-moe:3b"
 
-# Named entity recognition - same model
 [llm.ner]
-provider = "ollama"
-api_url = "http://ollama:11434/v1"
+provider = "openai"
+api_url = "http://rag-ollama:11434/v1"
 api_key = "ollama"
-model = "granite4:tiny-h"
+model = "granite3-moe:3b"
 
 [llm]
-timeout_seconds = 300
+timeout_seconds = 600
 
-# Embeddings via Ollama
 [embedding]
-provider = "ollama"
-api_url = "http://ollama:11434/v1"
+provider = "openai"
+api_url = "http://rag-ollama:11434/v1"
 api_key = "ollama"
-model = "qwen3-embedding:0.6b"
-dimensions = 1024
+model = "nomic-embed-text-v2-moe"
+dimensions = 768
 timeout_seconds = 120
 
-# Docling with VLM support
 [docling]
-url = "http://docling:5001"
-timeout_seconds = 300
+# Docling API endpoint
+url = "http://rag-docling:5001"
+
+# ============================================================================
+# DOCLING PERFORMANCE OPTIMIZATION
+# ============================================================================
+# Based on Deepwiki Docling 8.3 Performance Optimization Guide for RTX 3090
+# Key insight: Batch size tuning is the most impactful performance lever
+# Target: 80-90% GPU utilization for optimal throughput
+# ============================================================================
+
+# Request timeout - increased for large batches and VLM enrichment
+# VLM (vision language models) can take 60-120s for complex enrichment tasks
+timeout_seconds = 600
+
+# Layout and structure models to use
 models = "DocLayNet,TableFormer"
-# VLM model will be configured via Docling environment
+
+# Performance optimization options
+# For faster indexing, set to false to skip:
+#   do_layout_analysis = false  → 3-4x faster for simple text documents
+#   do_table_structure = false  → faster for text-heavy documents without tables
+#   do_ocr = false              → MUCH faster for native text PDFs only
+#
+# VLM (picture descriptions/classifications) still enabled for enrichment
+do_layout_analysis = true
+do_table_structure = true
+do_ocr = false  # Disabled: ~3-4x speedup for searchable text PDFs, VLM still enabled
+
+# Optional: Batch configuration for import jobs
+# These values are used by the import service to optimize concurrent document processing
+# Increased from defaults for GPU-accelerated Docling
+batch_document_limit = 48  # Increased from 32
+batch_chunk_limit = 128    # Increased from 64
+batch_embedding_limit = 256 # Increased from 128
 
 [import]
-workers = 4
+workers = 1 # Reduced from 2 - single worker to avoid Docling concurrency issues
+indexing_batch_size = 2 # Reduced from 4 - process 2 documents per batch
+max_concurrent_documents = 4 # Reduced from 16 - limit concurrent documents to prevent Docling overload
+entity_extraction_batches = 4 # Reduced from 8 - fewer parallel LLM batches
+chunk_size_tokens = 4096 # Target tokens (text-splitter ~22% ratio = ~900 actual tokens, close to 768-dim embeddings)
 max_retries = 3
 retry_base_delay_ms = 1000
 retry_max_delay_ms = 30000
 
+[import.cleanup]
+enabled = true
+retention_hours = 24
+check_interval_hours = 1
+
+[knowledge_base]
+local_paths = ['/data/books']
+urls = []
+chrome_bookmarks_path = ""
+file_extensions = ["md", "pdf"]
+scan_on_startup = false
+
+[enrichment]
+# Full enrichment enabled for comprehensive knowledge base indexing
+# LLM operations (summaries, entities) are CPU-efficient after document extraction
+enabled = true
+extract_entities = true
+extract_summary = true
+extract_keywords = true
+classify_category = true
+
 [rag]
 system_prompt = "You are a helpful AI assistant specialized in answering questions about documents. Use the provided document context to give accurate, well-sourced answers. If information is not available in the context, clearly state that. Always cite which documents you're referencing."
+# Enable entity extraction for higher load
 entity_extraction_enabled = true

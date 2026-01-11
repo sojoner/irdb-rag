@@ -6,7 +6,12 @@ async fn is_vllm_available() -> bool {
     let settings = Settings::new().ok();
     if let Some(settings) = settings {
         // Try the models endpoint which should return a valid list if vLLM is running
-        let url = format!("{}/v1/models", settings.embedding.api_url);
+        let api_url = settings.embedding.api_url.trim_end_matches('/');
+        let url = if api_url.ends_with("/v1") {
+            format!("{}/models", api_url)
+        } else {
+            format!("{}/v1/models", api_url)
+        };
         let response = reqwest::Client::new()
             .get(&url)
             .timeout(std::time::Duration::from_secs(2))
@@ -25,7 +30,7 @@ async fn is_vllm_available() -> bool {
 
 /// Generate embedding for a single text using direct HTTP API
 async fn generate_embedding(text: &str) -> Result<Vec<f32>> {
-    std::env::set_var("RUN_ENV", "test");
+    if std::env::var("RUN_ENV").is_err() { if std::env::var("RUN_ENV").is_err() { std::env::set_var("RUN_ENV", "test"); } }
 
     let settings = Settings::new()?;
     let api_url = settings.embedding.api_url.clone();
@@ -34,8 +39,14 @@ async fn generate_embedding(text: &str) -> Result<Vec<f32>> {
     let expected_dims: usize = settings.embedding.dimensions as usize;
 
     let client = reqwest::Client::new();
+    let api_url = api_url.trim_end_matches('/');
+    let url = if api_url.ends_with("/v1") {
+        format!("{}/embeddings", api_url)
+    } else {
+        format!("{}/v1/embeddings", api_url)
+    };
     let response = client
-        .post(format!("{}/v1/embeddings", api_url))
+        .post(url)
         .header("Authorization", format!("Bearer {}", api_key))
         .header("Content-Type", "application/json")
         .json(&serde_json::json!({
@@ -190,7 +201,7 @@ async fn test_batch_embedding_speed() -> Result<()> {
         return Ok(());
     }
 
-    std::env::set_var("RUN_ENV", "test");
+    if std::env::var("RUN_ENV").is_err() { if std::env::var("RUN_ENV").is_err() { std::env::set_var("RUN_ENV", "test"); } }
 
     let settings = Settings::new()?;
     let api_url = settings.embedding.api_url.clone();
@@ -248,7 +259,7 @@ async fn test_batch_embedding_api() -> Result<()> {
         return Ok(());
     }
 
-    std::env::set_var("RUN_ENV", "test");
+    if std::env::var("RUN_ENV").is_err() { if std::env::var("RUN_ENV").is_err() { std::env::set_var("RUN_ENV", "test"); } }
 
     let settings = Settings::new()?;
     let api_url = settings.embedding.api_url.clone();
@@ -263,9 +274,15 @@ async fn test_batch_embedding_api() -> Result<()> {
     ];
 
     let client = reqwest::Client::new();
+    let api_url = api_url.trim_end_matches('/');
+    let url = if api_url.ends_with("/v1") {
+        format!("{}/embeddings", api_url)
+    } else {
+        format!("{}/v1/embeddings", api_url)
+    };
     let start = std::time::Instant::now();
     let response = client
-        .post(format!("{}/v1/embeddings", api_url))
+        .post(url)
         .header("Authorization", format!("Bearer {}", api_key))
         .header("Content-Type", "application/json")
         .json(&serde_json::json!({

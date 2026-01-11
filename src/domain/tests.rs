@@ -198,9 +198,14 @@ mod import_config_tests {
     fn test_import_config_default_values() {
         let config = ImportConfig {
             workers: 2,
+            indexing_batch_size: 4,
+            max_concurrent_documents: 32,
+            entity_extraction_batches: 16,
+            chunk_size_tokens: 4096,
             max_retries: 3,
             retry_base_delay_ms: 1000,
             retry_max_delay_ms: 30000,
+            cleanup: crate::config::JobCleanupConfig::default(),
         };
 
         assert_eq!(config.max_retries, 3);
@@ -212,9 +217,14 @@ mod import_config_tests {
     fn test_import_config_clone() {
         let config = ImportConfig {
             workers: 4,
+            indexing_batch_size: 4,
+            max_concurrent_documents: 32,
+            entity_extraction_batches: 16,
+            chunk_size_tokens: 4096,
             max_retries: 5,
             retry_base_delay_ms: 2000,
             retry_max_delay_ms: 60000,
+            cleanup: crate::config::JobCleanupConfig::default(),
         };
 
         let cloned = config.clone();
@@ -232,9 +242,14 @@ mod retry_delay_tests {
     fn test_calculate_retry_delay_first_attempt() {
         let config = ImportConfig {
             workers: 2,
+            indexing_batch_size: 4,
+            max_concurrent_documents: 32,
+            entity_extraction_batches: 16,
+            chunk_size_tokens: 4096,
             max_retries: 3,
             retry_base_delay_ms: 1000,
             retry_max_delay_ms: 30000,
+            cleanup: crate::config::JobCleanupConfig::default(),
         };
 
         let delay = calculate_retry_delay(0, &config);
@@ -247,9 +262,14 @@ mod retry_delay_tests {
     fn test_calculate_retry_delay_exponential_growth() {
         let config = ImportConfig {
             workers: 2,
+            indexing_batch_size: 4,
+            max_concurrent_documents: 32,
+            entity_extraction_batches: 16,
+            chunk_size_tokens: 4096,
             max_retries: 3,
             retry_base_delay_ms: 1000,
             retry_max_delay_ms: 60000,
+            cleanup: crate::config::JobCleanupConfig::default(),
         };
 
         let delay_0 = calculate_retry_delay(0, &config);
@@ -265,9 +285,14 @@ mod retry_delay_tests {
     fn test_calculate_retry_delay_capped() {
         let config = ImportConfig {
             workers: 2,
+            indexing_batch_size: 4,
+            max_concurrent_documents: 32,
+            entity_extraction_batches: 16,
+            chunk_size_tokens: 4096,
             max_retries: 10,
             retry_base_delay_ms: 1000,
             retry_max_delay_ms: 5000,
+            cleanup: crate::config::JobCleanupConfig::default(),
         };
 
         let delay = calculate_retry_delay(10, &config);
@@ -279,9 +304,14 @@ mod retry_delay_tests {
     fn test_calculate_retry_delay_respects_max() {
         let config = ImportConfig {
             workers: 2,
+            indexing_batch_size: 4,
+            max_concurrent_documents: 32,
+            entity_extraction_batches: 16,
+            chunk_size_tokens: 4096,
             max_retries: 3,
             retry_base_delay_ms: 1000,
             retry_max_delay_ms: 10000,
+            cleanup: crate::config::JobCleanupConfig::default(),
         };
 
         for attempt in 0..20 {
@@ -294,9 +324,14 @@ mod retry_delay_tests {
     fn test_calculate_retry_delay_jitter_variance() {
         let config = ImportConfig {
             workers: 2,
+            indexing_batch_size: 4,
+            max_concurrent_documents: 32,
+            entity_extraction_batches: 16,
+            chunk_size_tokens: 512,
             max_retries: 3,
             retry_base_delay_ms: 1000,
             retry_max_delay_ms: 30000,
+            cleanup: crate::config::JobCleanupConfig::default(),
         };
 
         // Calculate multiple times to see variance from jitter
@@ -315,9 +350,14 @@ mod retry_delay_tests {
     fn test_calculate_retry_delay_zero_base() {
         let config = ImportConfig {
             workers: 2,
+            indexing_batch_size: 4,
+            max_concurrent_documents: 32,
+            entity_extraction_batches: 16,
+            chunk_size_tokens: 512,
             max_retries: 3,
             retry_base_delay_ms: 0,
             retry_max_delay_ms: 30000,
+            cleanup: crate::config::JobCleanupConfig::default(),
         };
 
         let delay = calculate_retry_delay(0, &config);

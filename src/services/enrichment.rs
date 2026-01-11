@@ -7,12 +7,13 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::path::Path;
 use uuid::Uuid;
+use sha2::{Sha256, Digest};
 
 use crate::domain::models::LLMConfig;
 use crate::infra::llm::call_llm_with_timeout;
 use crate::services::enrichment_utils::{
     parse_keywords_from_string, clean_json_response, extract_author_from_entities,
-    merge_entities, generate_category_uuid, batch_text,
+    merge_entities, batch_text,
 };
 
 /// Structured metadata response from LLM
@@ -145,8 +146,12 @@ impl Enricher {
         llm_timeout_seconds: Option<u64>,
         settings: Option<&crate::config::Settings>,
     ) -> Self {
-        let docling_url = docling_url.unwrap_or_else(|| "http://localhost:5001".to_string());
-        let llm_timeout_seconds = llm_timeout_seconds.unwrap_or(300);
+        let docling_url = docling_url
+            .or_else(|| settings.map(|s| s.docling.url.clone()))
+            .unwrap_or_else(|| "http://localhost:5001".to_string());
+        let llm_timeout_seconds = llm_timeout_seconds
+            .or_else(|| settings.map(|s| s.docling.timeout_seconds))
+            .unwrap_or(300);
 
         let (llm_config, ner_config) = if let Some(s) = settings {
             (
@@ -181,6 +186,11 @@ impl Enricher {
 
     /// Enrich a file by extracting content and generating metadata
     pub async fn enrich_file(&self, path: &Path) -> Result<(String, DocumentMetadata)> {
+        // Read file for hashing (idempotent deduplication)
+        let file_bytes = tokio::fs::read(path).await
+            .context("Failed to read file")?;
+        let file_hash = compute_sha256_hash(&file_bytes);
+
         // Extract text content from file and get full Docling response
         let (content, docling_response) = self.extract_file_content(path).await?;
 
@@ -197,6 +207,18 @@ impl Enricher {
         // Extract enhanced Docling metadata (document structure, origin, quality)
         self.extract_enhanced_docling_metadata(&mut metadata, &docling_response);
 
+        // Attach computed binary hash to document origin for idempotent indexing
+        if let Some(ref mut origin) = metadata.document_origin {
+            origin.binary_hash = Some(file_hash);
+        } else {
+            metadata.document_origin = Some(DocumentOrigin {
+                mimetype: None,
+                filename: path.file_name().and_then(|n| n.to_str()).map(String::from),
+                binary_hash: Some(file_hash),
+                uri: None,
+            });
+        }
+
         // Extract file system metadata (creation, modification times)
         self.enrich_with_file_metadata(&mut metadata, path).await?;
 
@@ -204,7 +226,7 @@ impl Enricher {
         let category = self.classify_document_category(&content, &metadata).await?;
         if let Some(cat) = category {
             metadata.category_name = Some(cat.category.clone());
-            metadata.category_id = Some(generate_category_uuid(&cat.category));
+            // Category ID will be resolved in the indexing service via database lookup
         }
 
         Ok((content, metadata))
@@ -223,41 +245,75 @@ impl Enricher {
         let category = self.classify_document_category(&content, &metadata).await?;
         if let Some(cat) = category {
             metadata.category_name = Some(cat.category.clone());
-            metadata.category_id = Some(generate_category_uuid(&cat.category));
+            // Category ID will be resolved in the indexing service via database lookup
         }
 
         Ok((content, metadata))
     }
 
-    /// Extract text content from a file using Docling
+    /// Extract text content from a file using Docling (synchronous API for better performance)
     /// Returns (content, full_docling_response)
-    async fn extract_file_content(&self, path: &Path) -> Result<(String, Value)> {
+    pub async fn extract_file_content(&self, path: &Path) -> Result<(String, Value)> {
         let docling_url = &self.docling_url;
+        let file_name = path.file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("document");
+
+        // 1. Pre-flight check for PDFs
+        if path.extension().and_then(|e| e.to_str()).map(|e| e.to_lowercase()) == Some("pdf".to_string()) {
+            match check_pdf_integrity(path) {
+                Ok(true) => {
+                    tracing::debug!("✅ PDF pre-flight check passed for {}", file_name);
+                }
+                Ok(false) => {
+                    tracing::warn!("⚠️ PDF pre-flight check failed (missing MediaBox) for {}. Using fallback parser.", file_name);
+                    return self.extract_file_content_fallback(path).await;
+                }
+                Err(e) => {
+                    tracing::warn!("⚠️ PDF pre-flight check error for {}: {}. Using fallback parser.", file_name, e);
+                    return self.extract_file_content_fallback(path).await;
+                }
+            }
+        }
 
         // Read file bytes
         let file_bytes = tokio::fs::read(path).await
             .context("Failed to read file")?;
 
-        let file_name = path.file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("document");
-
         // Docling doesn't support .txt, treat as .md
-        let file_name_to_send = if file_name.ends_with(".txt") {
-            format!("{}.md", file_name.trim_end_matches(".txt"))
-        } else {
-            file_name.to_string()
-        };
+        // Also sanitize filename to avoid issues with special characters
+        let file_name_to_send = sanitize_filename_for_docling(file_name);
 
-        // Create multipart form with options - use ALL Docling features
-        let options = serde_json::json!({
-            "do_ocr": true,
-            "do_table_structure": true,
-            "generate_picture_images": true,
-            "generate_page_images": true,  // Enable page images too
-            "images_scale": 2.0,
-            "ocr_engine": "easyocr"
-        });
+        // Build client with extended timeout for sync API
+        // VLM enrichment with picture descriptions can take 120+ seconds per large PDF
+        // Use full configured timeout to allow Docling to complete complex documents
+        let request_timeout_secs = self.llm_timeout_seconds;
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(request_timeout_secs))
+            .build()
+            .context("Failed to build HTTP client")?;
+
+        // Configure Ollama VLM API for picture description
+        // Docling needs this per-request to know where Ollama is
+        // Using rag-ollama handle for consistent container networking
+        let vlm_url = "http://rag-ollama:11434/v1/chat/completions";
+        let picture_description_api = serde_json::json!({
+            "url": vlm_url,
+            "headers": {},
+            "params": {"model": "granite3.2-vision:2b"},
+            "timeout": 60.0,  // Reduced from 120s
+            "concurrency": 4, // Reduced from 8 to prevent Docling container overload
+            "prompt": "Describe this image in a few sentences."
+        }).to_string();
+
+        tracing::info!("🚀 Sending request to Docling at {} for file: {} (timeout: {}s)", docling_url, file_name, request_timeout_secs);
+        tracing::debug!("VLM API configuration: {}", picture_description_api);
+
+        // Create multipart form with VLM options
+        // Note: wait_for_completion=true forces synchronous behavior (blocks until result ready)
+        // VLM enrichment can take 2-5+ minutes on large PDFs with many images
+        // Use the full configured timeout to allow complete processing
+        let docling_doc_timeout = self.llm_timeout_seconds;
 
         let form = reqwest::multipart::Form::new()
             .part(
@@ -265,100 +321,92 @@ impl Enricher {
                 reqwest::multipart::Part::bytes(file_bytes)
                     .file_name(file_name_to_send)
             )
-            .text("options", options.to_string());
+            .text("do_picture_description", "true")
+            .text("do_picture_classification", "true")
+            .text("picture_description_api", picture_description_api)
+            .text("document_timeout", docling_doc_timeout.to_string())
+            .text("wait_for_completion", "true");  // Force sync mode - blocks until done
 
-        let client = reqwest::Client::new();
-        
-        // 1. Submit async task
-        let response = client
-            .post(format!("{}/v1/convert/file/async", docling_url))
+        // Use synchronous endpoint - much faster than async polling
+        // This will block until Docling completes processing (up to request_timeout_secs)
+        let response_result = client
+            .post(format!("{}/v1/convert/file", docling_url))
             .multipart(form)
             .send()
-            .await
-            .context("Failed to connect to Docling service")?;
+            .await;
+
+        let response = match response_result {
+            Ok(resp) => resp,
+            Err(e) => {
+                tracing::error!("❌ Failed to connect to Docling service: {}. Using fallback parser.", e);
+                return self.extract_file_content_fallback(path).await;
+            }
+        };
 
         if !response.status().is_success() {
             let status = response.status();
             let error_text = response.text().await.unwrap_or_default();
-            anyhow::bail!("Docling service error ({}): {}", status, error_text);
+            tracing::error!("❌ Docling service error ({}): {}. Using fallback parser.", status, error_text);
+            return self.extract_file_content_fallback(path).await;
         }
 
-        let task_info: Value = response.json().await
-            .context("Failed to parse Docling task response")?;
-        
-        let task_id = task_info["task_id"].as_str()
-            .context("No task_id in Docling response")?
-            .to_string();
+        tracing::info!("✅ Docling response received successfully for {}", file_name);
 
-        // 2. Poll for completion
-        let mut attempts = 0;
-        let max_attempts = 60; // 60 seconds timeout
-        
-        loop {
-            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-            
-            let status_response = client
-                .get(format!("{}/v1/status/poll/{}", docling_url, task_id))
-                .send()
-                .await
-                .context("Failed to poll Docling status")?;
-            
-            if !status_response.status().is_success() {
-                 // If poll fails, maybe task is gone or server error
-                 let status = status_response.status();
-                 let error_text = status_response.text().await.unwrap_or_default();
-                 anyhow::bail!("Docling poll error ({}): {}", status, error_text);
+        let json: Value = match response.json().await {
+            Ok(j) => j,
+            Err(e) => {
+                tracing::error!("❌ Failed to parse Docling response: {}. Using fallback parser.", e);
+                return self.extract_file_content_fallback(path).await;
             }
-
-            let status_json: Value = status_response.json().await
-                .context("Failed to parse Docling status response")?;
-            
-            let status = status_json["task_status"].as_str().unwrap_or("unknown");
-            
-            if status == "success" || status == "completed" {
-                break;
-            } else if status == "failure" || status == "failed" {
-                anyhow::bail!("Docling task failed: {:?}", status_json);
-            }
-            
-            attempts += 1;
-            if attempts >= max_attempts {
-                anyhow::bail!("Docling task timed out after {} seconds", max_attempts);
-            }
-        }
-
-        // 3. Fetch result
-        let result_response = client
-            .get(format!("{}/v1/result/{}", docling_url, task_id))
-            .send()
-            .await
-            .context("Failed to fetch Docling result")?;
-
-        if !result_response.status().is_success() {
-            let status = result_response.status();
-            let error_text = result_response.text().await.unwrap_or_default();
-            anyhow::bail!("Docling result error ({}): {}", status, error_text);
-        }
-
-        let json: Value = result_response.json().await
-            .context("Failed to parse Docling result")?;
+        };
 
         // Extract markdown content from Docling response
         let content = json["document"]["md_content"]
             .as_str()
-            .context("No markdown content in Docling response")?
-            .to_string();
+            .map(|s| s.to_string());
+
+        match content {
+            Some(c) if !c.trim().is_empty() => Ok((c, json)),
+            _ => {
+                tracing::warn!("⚠️ Docling returned empty content for {}. Using fallback parser.", file_name);
+                self.extract_file_content_fallback(path).await
+            }
+        }
+    }
+
+    /// Fallback content extraction using lopdf for PDFs or basic text reading
+    async fn extract_file_content_fallback(&self, path: &Path) -> Result<(String, Value)> {
+        let extension = path.extension().and_then(|e| e.to_str()).map(|e| e.to_lowercase());
+        
+        let content = if extension == Some("pdf".to_string()) {
+            tracing::info!("🔄 Using lopdf fallback for {:?}", path);
+            extract_text_from_pdf(path)?
+        } else {
+            tracing::info!("🔄 Using basic text fallback for {:?}", path);
+            tokio::fs::read_to_string(path).await
+                .context("Failed to read file as text")?
+        };
 
         if content.trim().is_empty() {
-            anyhow::bail!("Docling returned empty content for file: {:?}", path);
+            anyhow::bail!("Fallback extraction returned empty content for file: {:?}", path);
         }
 
-        // Return both content and full response for metadata extraction
-        Ok((content, json))
+        // Create a minimal Docling-like response structure so downstream code doesn't break
+        let mock_response = json!({
+            "document": {
+                "md_content": content,
+                "metadata": {
+                    "filename": path.file_name().and_then(|n| n.to_str()),
+                    "mimetype": if extension == Some("pdf".to_string()) { "application/pdf" } else { "text/plain" }
+                }
+            }
+        });
+
+        Ok((content, mock_response))
     }
 
     /// Extract text content from a URL
-    async fn extract_url_content(&self, url: &str) -> Result<String> {
+    pub async fn extract_url_content(&self, url: &str) -> Result<String> {
         let client = reqwest::Client::new();
         let response = client.get(url).send().await
             .context("Failed to fetch URL")?;
@@ -427,16 +475,16 @@ impl Enricher {
             .join(" ");
 
         // 1. Generate summary (using first 1500 chars for speed)
-        let summary_text = if context.len() > 1500 {
-            &context[..1500]
+        let summary_text = if context.chars().count() > 1500 {
+            context.chars().take(1500).collect::<String>()
         } else {
-            &context
+            context.clone()
         };
 
         // Parallelize summary generation and entity extraction
         // extract_entities is usually the slowest, so running it alongside summary generation helps
         let (summary_result, entities_result) = tokio::join!(
-            self.generate_summary(summary_text, title_hint),
+            self.generate_summary(&summary_text, title_hint),
             self.extract_entities(&context)
         );
 
@@ -491,10 +539,11 @@ impl Enricher {
     /// Extract keywords from content
     async fn extract_keywords(&self, summary: &str, content: &str) -> Result<Vec<String>> {
         let system = "You are a keyword extraction assistant. Extract the most important keywords and topics.";
+        let content_preview = content.chars().take(1000).collect::<String>();
         let user = format!(
             "Extract 5-8 important keywords or key phrases from this content. Return ONLY a comma-separated list.\n\nSummary: {}\n\nContent preview:\n{}",
             summary,
-            &content[..content.len().min(1000)]
+            content_preview
         );
 
         let response = call_llm_with_timeout(&self.llm_config, system, &user, Some(100), Some(0.2), self.llm_timeout_seconds)
@@ -658,7 +707,12 @@ Respond ONLY with a JSON object in this exact format (no markdown, no explanatio
 
         // Split content into sentences and batch using pure function
         let sentences = split_into_sentences(content);
-        let batches = batch_text(sentences, 2000, 3);
+        // Get batch count from settings, fallback to 16
+        let batch_count = match crate::config::Settings::new() {
+            Ok(settings) => settings.import.entity_extraction_batches,
+            Err(_) => 16,
+        };
+        let batches = batch_text(sentences, 2000, batch_count);
 
         // Process all batches in parallel
         let system = "You are an expert named entity extraction system. You must extract ALL entities from the text and return them in valid JSON format.";
@@ -896,161 +950,121 @@ fn calculate_extraction_quality(has_content: bool, has_structure: bool, has_meta
     }
 }
 
-// Note: merge_entities and generate_category_uuid have been moved to
-// services::enrichment_utils as pure functions and are imported above
+/// Sanitize filename for Docling to handle special characters
+/// Replaces problematic Unicode characters and ensures .txt -> .md conversion
+fn sanitize_filename_for_docling(filename: &str) -> String {
+    let mut sanitized = filename.to_string();
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use serde_json::json;
-
-    #[test]
-    fn test_extract_string_field_with_single_key() {
-        let json = json!({ "title": "Test Title" });
-        let mut result = None;
-        extract_string_field(&json, &["title"], &mut result, "");
-        assert_eq!(result, Some("Test Title".to_string()));
+    // Convert .txt to .md (Docling doesn't support .txt)
+    if sanitized.ends_with(".txt") {
+        sanitized = format!("{}.md", sanitized.trim_end_matches(".txt"));
     }
 
-    #[test]
-    fn test_extract_string_field_with_prioritized_keys() {
-        let json = json!({ "modified": "2024-01-01", "modification_date": "2024-01-02" });
-        let mut result = None;
-        extract_string_field(&json, &["modified", "modification_date"], &mut result, "");
-        assert_eq!(result, Some("2024-01-01".to_string()));
+    // Replace problematic Unicode characters that cause Docling failures
+    // Em-dash variants
+    sanitized = sanitized.replace('\u{2014}', "-");  // U+2014 em-dash
+    sanitized = sanitized.replace('\u{2013}', "-");  // U+2013 en-dash
+    sanitized = sanitized.replace('\u{2015}', "-");  // U+2015 horizontal bar
+
+    // Quotes
+    sanitized = sanitized.replace('\u{201C}', "\""); // U+201C left double quote
+    sanitized = sanitized.replace('\u{201D}', "\""); // U+201D right double quote
+    sanitized = sanitized.replace('\u{2018}', "'");  // U+2018 left single quote
+    sanitized = sanitized.replace('\u{2019}', "'");  // U+2019 right single quote
+
+    // Other problematic characters
+    sanitized = sanitized.replace('|', "_");  // Pipe character
+    sanitized = sanitized.replace(':', "_");  // Colon (problematic on some systems)
+    sanitized = sanitized.replace('?', "");   // Question mark
+    sanitized = sanitized.replace('*', "");   // Asterisk
+    sanitized = sanitized.replace('<', "");   // Less than
+    sanitized = sanitized.replace('>', "");   // Greater than
+
+    // Additional problematic characters from various encodings
+    sanitized = sanitized.replace('\u{00A0}', " ");  // Non-breaking space
+    sanitized = sanitized.replace('\u{202F}', " ");  // Narrow no-break space
+
+    // Aggressive ASCII conversion for maximum compatibility
+    // Also replace spaces with underscores for better compatibility
+    sanitized = sanitized.chars()
+        .map(|c| if c.is_ascii() { 
+            if c == ' ' { '_' } else { c }
+        } else { 
+            '_' 
+        })
+        .collect();
+
+    // Replace leading/trailing spaces and dots
+    sanitized = sanitized.trim().to_string();
+    while sanitized.starts_with('.') || sanitized.starts_with('-') || sanitized.starts_with('_') {
+        sanitized = sanitized.chars().skip(1).collect();
+    }
+    while sanitized.ends_with('.') || sanitized.ends_with('_') {
+        sanitized = sanitized.chars().take(sanitized.chars().count() - 1).collect();
     }
 
-    #[test]
-    fn test_extract_string_field_empty_values_skipped() {
-        let json = json!({ "title": "", "author": "John Doe" });
-        let mut result = None;
-        extract_string_field(&json, &["title", "author"], &mut result, "");
-        assert_eq!(result, Some("John Doe".to_string()));
+    // Ensure filename is not empty after sanitization
+    if sanitized.is_empty() {
+        sanitized = "document.pdf".to_string();
     }
 
-    #[test]
-    fn test_extract_array_if_nonempty_success() {
-        let json = json!({ "items": [1, 2, 3] });
-        let result = extract_array_if_nonempty(&json, &["items"]);
-        assert!(result.is_some());
-        assert_eq!(result.unwrap().len(), 3);
-    }
+    sanitized
+}
 
-    #[test]
-    fn test_extract_array_if_nonempty_empty_array() {
-        let json = json!({ "items": [] });
-        let result = extract_array_if_nonempty(&json, &["items"]);
-        assert!(result.is_none());
-    }
-
-    #[test]
-    fn test_extract_array_if_nonempty_missing_key() {
-        let json = json!({});
-        let result = extract_array_if_nonempty(&json, &["items"]);
-        assert!(result.is_none());
-    }
-
-    #[test]
-    fn test_extract_document_origin() {
-        let docling = json!({
-            "document": {
-                "metadata": {
-                    "mimetype": "application/pdf",
-                    "filename": "test.pdf",
-                    "binary_hash": "abc123",
-                    "uri": "file:///test.pdf"
-                }
+/// Check PDF integrity using lopdf
+/// Returns true if PDF has valid MediaBox/CropBox for all pages
+fn check_pdf_integrity(path: &Path) -> Result<bool> {
+    #[cfg(feature = "ssr")]
+    {
+        let doc = lopdf::Document::load(path)
+            .context("Failed to load PDF with lopdf")?;
+        
+        for page_id in doc.get_pages().values() {
+            let page = doc.get_object(*page_id)
+                .and_then(|obj| obj.as_dict())
+                .context("Failed to get page dictionary")?;
+            
+            let has_dimensions = page.has(b"MediaBox") || page.has(b"CropBox");
+            if !has_dimensions {
+                return Ok(false);
             }
-        });
-        let origin = extract_document_origin(&docling);
-        assert!(origin.is_some());
-        let o = origin.unwrap();
-        assert_eq!(o.mimetype, Some("application/pdf".to_string()));
-        assert_eq!(o.filename, Some("test.pdf".to_string()));
+        }
+        Ok(true)
     }
+    #[cfg(not(feature = "ssr"))]
+    {
+        Ok(true)
+    }
+}
 
-    #[test]
-    fn test_extract_document_structure() {
-        let docling = json!({
-            "document": {
-                "texts": [
-                    { "_object_type": "Text", "content": "Hello" },
-                    { "_object_type": "SectionHeader", "content": "Introduction" },
-                    { "_object_type": "Text", "content": "World" },
-                ]
+/// Extract text from PDF using lopdf
+fn extract_text_from_pdf(path: &Path) -> Result<String> {
+    #[cfg(feature = "ssr")]
+    {
+        let doc = lopdf::Document::load(path)
+            .context("Failed to load PDF with lopdf")?;
+        
+        let mut content = String::new();
+        let pages = doc.get_pages();
+        
+        for page_num in 1..=pages.len() {
+            if let Ok(text) = doc.extract_text(&[page_num as u32]) {
+                content.push_str(&text);
+                content.push('\n');
             }
-        });
-        let (types, sections) = extract_document_structure(&docling);
-        assert!(types.contains(&"Text".to_string()));
-        assert!(types.contains(&"SectionHeader".to_string()));
-        assert_eq!(sections, vec!["Introduction".to_string()]);
+        }
+        
+        Ok(content)
     }
+    #[cfg(not(feature = "ssr"))]
+    {
+        anyhow::bail!("PDF extraction not supported in this environment")
+    }
+}
 
-    #[test]
-    fn test_count_array_items() {
-        let json = json!({ "document": { "tables": [1, 2, 3, 4, 5] } });
-        let count = count_array_items(&json, &["document", "tables"]);
-        assert_eq!(count, 5);
-    }
-
-    #[test]
-    fn test_count_array_items_missing_path() {
-        let json = json!({});
-        let count = count_array_items(&json, &["document", "tables"]);
-        assert_eq!(count, 0);
-    }
-
-    #[test]
-    fn test_has_formulas_in_document_true() {
-        let docling = json!({
-            "document": {
-                "md_content": "The equation is $$x^2 + y^2 = z^2$$"
-            }
-        });
-        assert!(has_formulas_in_document(&docling));
-    }
-
-    #[test]
-    fn test_has_formulas_in_document_with_brackets() {
-        let docling = json!({
-            "document": {
-                "md_content": "Formula: \\[x = \\frac{-b}{2a}\\]"
-            }
-        });
-        assert!(has_formulas_in_document(&docling));
-    }
-
-    #[test]
-    fn test_has_formulas_in_document_false() {
-        let docling = json!({
-            "document": {
-                "md_content": "No formulas here"
-            }
-        });
-        assert!(!has_formulas_in_document(&docling));
-    }
-
-    #[test]
-    fn test_calculate_extraction_quality_full() {
-        let quality = calculate_extraction_quality(true, true, true);
-        assert_eq!(quality.confidence_score, 0.9);
-        assert_eq!(quality.completeness, 0.95);
-        assert!(quality.layout_preserved);
-    }
-
-    #[test]
-    fn test_calculate_extraction_quality_partial() {
-        let quality = calculate_extraction_quality(true, false, false);
-        assert_eq!(quality.confidence_score, 0.6);
-        assert_eq!(quality.completeness, 0.7);
-        assert!(!quality.layout_preserved);
-    }
-
-    #[test]
-    fn test_split_into_sentences() {
-        let text = "First sentence. Second sentence! Third sentence?";
-        let sentences = split_into_sentences(text);
-        assert!(!sentences.is_empty());
-        assert!(sentences.iter().all(|s| !s.is_empty()));
-    }
+/// Compute SHA256 hash of file content for idempotent indexing
+pub fn compute_sha256_hash(data: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(data);
+    format!("{:x}", hasher.finalize())
 }

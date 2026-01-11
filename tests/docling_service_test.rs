@@ -4,7 +4,7 @@ use rag_chat::config::Settings;
 
 #[tokio::test]
 async fn test_docling_parsing_speed() -> Result<()> {
-    std::env::set_var("RUN_ENV", "test");
+    if std::env::var("RUN_ENV").is_err() { if std::env::var("RUN_ENV").is_err() { std::env::set_var("RUN_ENV", "test"); } }
 
     let settings = Settings::new()?;
     let docling_url = settings.docling.url.clone();
@@ -40,8 +40,10 @@ async fn test_docling_parsing_speed() -> Result<()> {
     println!("📊 Content preview (first 200 chars):");
     println!("{}", &content.chars().take(200).collect::<String>());
 
-    // Verify parsing was reasonably fast (allow up to 30 seconds for CI/slower systems)
-    assert!(elapsed.as_secs() < 30, "Docling parsing too slow: {:?}", elapsed);
+    // Verify parsing was reasonably fast
+    // Note: First request on GPU may take 60-90s (model warmup + batch loading)
+    // Subsequent requests should be 5-15s. Allow generous limit for CI/GPU warmup.
+    assert!(elapsed.as_secs() < 120, "Docling parsing too slow: {:?}", elapsed);
     assert!(!content.is_empty(), "Content should not be empty");
 
     Ok(())
@@ -49,7 +51,7 @@ async fn test_docling_parsing_speed() -> Result<()> {
 
 #[tokio::test]
 async fn test_docling_table_detection() -> Result<()> {
-    std::env::set_var("RUN_ENV", "test");
+    if std::env::var("RUN_ENV").is_err() { if std::env::var("RUN_ENV").is_err() { std::env::set_var("RUN_ENV", "test"); } }
 
     let settings = Settings::new()?;
     let docling_url = settings.docling.url.clone();
@@ -96,7 +98,7 @@ async fn test_docling_table_detection() -> Result<()> {
 
 #[tokio::test]
 async fn test_docling_metadata_extraction() -> Result<()> {
-    std::env::set_var("RUN_ENV", "test");
+    if std::env::var("RUN_ENV").is_err() { if std::env::var("RUN_ENV").is_err() { std::env::set_var("RUN_ENV", "test"); } }
 
     let settings = Settings::new()?;
     let docling_url = settings.docling.url.clone();

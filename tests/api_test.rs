@@ -11,7 +11,9 @@ use std::sync::Arc;
 #[tokio::test]
 async fn test_search_api_with_db() {
     // 1. Setup
-    std::env::set_var("RUN_ENV", "test");
+    if std::env::var("RUN_ENV").is_err() {
+        if std::env::var("RUN_ENV").is_err() { if std::env::var("RUN_ENV").is_err() { std::env::set_var("RUN_ENV", "test"); } }
+    }
 
     let settings = Settings::new().expect("Failed to load settings");
 
@@ -46,7 +48,7 @@ async fn test_search_api_with_db() {
     // Create dummy import job queue (tests don't need it)
     let (import_job_tx, _import_job_rx) = tokio::sync::mpsc::channel(100);
 
-    let state = AppState::new(pool.clone(), embedder, Arc::new(std::sync::Mutex::new(Vec::new())), leptos_options, import_job_tx, Arc::new(settings.clone()));
+    let state = AppState::new(pool.clone(), embedder, Arc::new(std::sync::Mutex::new(Vec::new())), leptos_options, import_job_tx, Arc::new(settings.clone()), None);
 
     // 2. Index PDF
     let pdf_path = "/Users/hagentonnies/Workspace/irdb-rag/documents/HumanPrincipals.pdf";
@@ -137,7 +139,9 @@ async fn test_search_api_with_db() {
 #[tokio::test]
 async fn test_search_api_syntax_edge_cases() {
     // 1. Setup
-    std::env::set_var("RUN_ENV", "test");
+    if std::env::var("RUN_ENV").is_err() {
+        if std::env::var("RUN_ENV").is_err() { if std::env::var("RUN_ENV").is_err() { std::env::set_var("RUN_ENV", "test"); } }
+    }
 
     let settings = Settings::new().expect("Failed to load settings");
 
@@ -155,7 +159,7 @@ async fn test_search_api_syntax_edge_cases() {
     // Create dummy import job queue (tests don't need it)
     let (import_job_tx, _import_job_rx) = tokio::sync::mpsc::channel(100);
 
-    let state = AppState::new(pool.clone(), embedder, Arc::new(std::sync::Mutex::new(Vec::new())), leptos_options, import_job_tx, Arc::new(settings.clone()));
+    let state = AppState::new(pool.clone(), embedder, Arc::new(std::sync::Mutex::new(Vec::new())), leptos_options, import_job_tx, Arc::new(settings.clone()), None);
 
     // 2. Test Cases
     let test_queries = vec![
@@ -214,7 +218,9 @@ async fn test_search_api_syntax_edge_cases() {
 #[tokio::test]
 async fn test_chat_stream_api_with_documents() {
     // 1. Setup
-    std::env::set_var("RUN_ENV", "test");
+    if std::env::var("RUN_ENV").is_err() {
+        if std::env::var("RUN_ENV").is_err() { if std::env::var("RUN_ENV").is_err() { std::env::set_var("RUN_ENV", "test"); } }
+    }
 
     let settings = Settings::new().expect("Failed to load settings");
 
@@ -232,7 +238,7 @@ async fn test_chat_stream_api_with_documents() {
     // Create dummy import job queue (tests don't need it)
     let (import_job_tx, _import_job_rx) = tokio::sync::mpsc::channel(100);
 
-    let state = AppState::new(pool.clone(), embedder, Arc::new(std::sync::Mutex::new(Vec::new())), leptos_options, import_job_tx, Arc::new(settings.clone()));
+    let state = AppState::new(pool.clone(), embedder, Arc::new(std::sync::Mutex::new(Vec::new())), leptos_options, import_job_tx, Arc::new(settings.clone()), None);
 
     // 2. Index PDF
     let pdf_path = "/Users/hagentonnies/Workspace/irdb-rag/documents/HumanPrincipals.pdf";
@@ -295,7 +301,9 @@ async fn test_chat_stream_api_with_documents() {
 #[tokio::test]
 async fn test_chat_api_with_documents() {
     // 1. Setup
-    std::env::set_var("RUN_ENV", "test");
+    if std::env::var("RUN_ENV").is_err() {
+        if std::env::var("RUN_ENV").is_err() { if std::env::var("RUN_ENV").is_err() { std::env::set_var("RUN_ENV", "test"); } }
+    }
 
     let settings = Settings::new().expect("Failed to load settings");
 
@@ -313,7 +321,7 @@ async fn test_chat_api_with_documents() {
     // Create dummy import job queue (tests don't need it)
     let (import_job_tx, _import_job_rx) = tokio::sync::mpsc::channel(100);
 
-    let state = AppState::new(pool.clone(), embedder, Arc::new(std::sync::Mutex::new(Vec::new())), leptos_options, import_job_tx, Arc::new(settings.clone()));
+    let state = AppState::new(pool.clone(), embedder, Arc::new(std::sync::Mutex::new(Vec::new())), leptos_options, import_job_tx, Arc::new(settings.clone()), None);
 
     // 2. Index PDF
     let pdf_path = "/Users/hagentonnies/Workspace/irdb-rag/documents/HumanPrincipals.pdf";

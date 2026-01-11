@@ -50,10 +50,8 @@ pub fn SearchPage() -> impl IntoView {
     // ============ SEARCH FUNCTION ============
     let execute_search = move |_| {
         let query = search_query.get();
+        let query_trimmed = query.trim();
         leptos::logging::log!("SearchPage: executing search for '{}'", query);
-        if query.trim().is_empty() {
-            return;
-        }
 
         // Collect filter values
         let keywords = selected_keywords.get();
@@ -62,16 +60,39 @@ pub fn SearchPage() -> impl IntoView {
         let persons = selected_persons.get();
         let organizations = selected_organizations.get();
         let authors = selected_authors.get();
+        let category = selected_category.get();
+
+        // Check if we have any search criteria
+        let has_query = !query_trimmed.is_empty();
+        let has_filters = category.is_some() || !keywords.is_empty() || !concepts.is_empty()
+            || !locations.is_empty() || !persons.is_empty() || !organizations.is_empty()
+            || !authors.is_empty();
+
+        // Require either a query OR filters to proceed
+        if !has_query && !has_filters {
+            leptos::logging::log!("SearchPage: skipping search - no query and no filters");
+            return;
+        }
+
+        // If we have filters but NO query, use wildcard to match all documents
+        // This enables filter-only search (e.g., "show me all documents from Germany")
+        let final_query = if !has_query && has_filters {
+            leptos::logging::log!("SearchPage: using wildcard search with filters (filter-only mode)");
+            "*".to_string()
+        } else {
+            // User has typed something - use their exact query, even with filters
+            query.to_string()
+        };
 
         use crate::web_app::components::search::SearchRequest;
 
         search_action.dispatch(SearchDocuments {
             request: SearchRequest {
-                query,
+                query: final_query,
                 limit: 20,
                 bm25_weight: bm25_weight.get(),
                 vector_weight: vector_weight.get(),
-                category_id: selected_category.get(),
+                category_id: category,
                 keywords: if keywords.is_empty() { None } else { Some(keywords) },
                 concepts: if concepts.is_empty() { None } else { Some(concepts) },
                 locations: if locations.is_empty() { None } else { Some(locations) },

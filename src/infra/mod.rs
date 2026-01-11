@@ -6,3 +6,5 @@ pub mod db_utils;
 pub mod llm;
 #[cfg(feature = "ssr")]
 pub mod embedder;
+#[cfg(feature = "ssr")]
+pub mod reranker;

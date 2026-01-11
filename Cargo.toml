@@ -63,6 +63,7 @@ uuid = { version = "1.11", features = ["v4", "serde", "js"] }
 chrono = { version = "0.4", features = ["serde"] }
 anyhow = "1.0"
 thiserror = "2.0"
+sha2 = { version = "0.10", optional = true }
 tracing = { version = "0.1", optional = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter"], optional = true }
 notify = { version = "7", optional = true }
@@ -81,6 +82,7 @@ js-sys = { version = "0.3.83", optional = true }
 [dev-dependencies]
 tokio = { version = "1.42", features = ["full"] }
 sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "uuid"] }
+tempfile = "3.14"
 
 [features]
 default = ["ssr"]
@@ -108,6 +110,7 @@ ssr = [
     "walkdir",
     "html2text",
     "clap",
+    "sha2",
     "reqwest/default-tls",
     "reqwest/stream",
 ]

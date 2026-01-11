@@ -230,3 +230,26 @@ pub struct DeleteResponse {
     pub status: String,
     pub deleted_count: u64,
 }
+
+// ============================================
+// Knowledge Base DTOs
+// ============================================
+
+#[derive(Debug, Deserialize)]
+pub struct AddKnowledgeBasePathsRequest {
+    pub local_paths: Option<Vec<String>>,
+    pub urls: Option<Vec<String>>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct AddKnowledgeBasePathsResponse {
+    pub job_id: Uuid,
+    pub paths_queued: usize,
+    pub paths_skipped: usize,
+    pub message: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ImportBookmarksRequest {
+    pub path: String,
+}

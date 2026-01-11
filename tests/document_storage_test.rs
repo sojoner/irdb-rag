@@ -7,7 +7,7 @@ use sqlx::{PgPool, Row};
 use uuid::Uuid;
 
 async fn setup_db() -> Result<PgPool> {
-    std::env::set_var("RUN_ENV", "test");
+    if std::env::var("RUN_ENV").is_err() { if std::env::var("RUN_ENV").is_err() { std::env::set_var("RUN_ENV", "test"); } }
     let settings = Settings::new()?;
 
     // Use the shared pool creation logic which handles config properly
@@ -189,7 +189,8 @@ async fn test_hybrid_search_syntax() -> Result<()> {
             &filters,
             5,
             0.5,
-            0.5
+            0.5,
+            None,
         ).await;
 
         match result {

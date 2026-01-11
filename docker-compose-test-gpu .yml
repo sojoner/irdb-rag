@@ -371,7 +371,6 @@ services:
       "
     restart: "no"
 
-
   # Rust Web Container - Leptos UI + Import Workers
   # Runs web server on port 3000 with 2 import workers processing the queue
   web:
@@ -426,8 +425,7 @@ services:
         reservations:
           cpus: '8'
           memory: 16G
-    command: cargo leptos watch
-    #command: cargo leptos serve
+    command: cargo leptos serve
     # Keep container running for interactive development
     stdin_open: true
     tty: true

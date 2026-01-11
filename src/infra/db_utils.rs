@@ -71,6 +71,8 @@ pub fn has_entity_or_wordcount_filters(filters: &SearchFilters) -> bool {
         || filters.organizations.is_some()
         || filters.persons.is_some()
         || filters.products.is_some()
+        || filters.locations.is_some()
+        || filters.keywords.is_some()
         || filters.word_count_min.is_some()
         || filters.word_count_max.is_some()
 }

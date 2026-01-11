@@ -8,3 +8,9 @@ pub mod enrichment_utils;
 pub mod import;
 #[cfg(feature = "ssr")]
 pub mod utils;
+#[cfg(feature = "ssr")]
+pub mod bookmark_parser;
+#[cfg(feature = "ssr")]
+pub mod job_cleanup;
+#[cfg(feature = "ssr")]
+pub mod startup_scan;

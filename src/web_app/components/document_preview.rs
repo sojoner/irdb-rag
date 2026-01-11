@@ -87,10 +87,6 @@ fn DocumentDetails(doc: Document) -> impl IntoView {
                     <span>{doc.source_type}</span>
                 </div>
                 <div>
-                    <span class="block font-semibold text-gray-500">"Words"</span>
-                    <span>{doc.word_count.unwrap_or(0)}</span>
-                </div>
-                <div>
                     <span class="block font-semibold text-gray-500">"Created"</span>
                     <span>{doc.created_at.format("%Y-%m-%d").to_string()}</span>
                 </div>

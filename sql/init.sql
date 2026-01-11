@@ -10,9 +10,18 @@ DROP FUNCTION IF EXISTS hybrid_search(text,vector,integer,double precision,doubl
 DROP TABLE IF EXISTS document_chunks CASCADE;
 DROP TABLE IF EXISTS document_assets CASCADE;
 DROP TABLE IF EXISTS documents CASCADE;
+DROP TABLE IF EXISTS categories CASCADE;
+
+-- Categories table (created first, referenced by documents)
+CREATE TABLE IF NOT EXISTS categories (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    name TEXT NOT NULL UNIQUE,
+    description TEXT,
+    parent_id UUID REFERENCES categories(id)
+);
 
 -- Documents table
--- Note: embedding vector will store embeddings of configured dimension (default 4096 for Qwen3-Embedding-8B)
+-- Note: embedding vector will store embeddings of configured dimension (768 for nomic-embed-text-v2-moe)
 CREATE TABLE IF NOT EXISTS documents (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     title TEXT NOT NULL,
@@ -21,18 +30,15 @@ CREATE TABLE IF NOT EXISTS documents (
     source_type TEXT NOT NULL,
     summary TEXT,
     author TEXT,
-    category_id UUID,
+    category_id UUID REFERENCES categories(id) ON DELETE SET NULL,
     keywords TEXT[],
     locations TEXT[],
     created_at TIMESTAMPTZ DEFAULT NOW(),
-    updated_at TIMESTAMPTZ DEFAULT NOW(),
-    indexed_at TIMESTAMPTZ,
-    word_count INTEGER,
     status TEXT DEFAULT 'pending',
     entities JSONB,
     metadata JSONB,
     content_hash TEXT,
-    embedding VECTOR
+    embedding VECTOR(768) NULL
 );
 
 -- Document chunks
@@ -44,7 +50,7 @@ CREATE TABLE IF NOT EXISTS document_chunks (
     page_number INTEGER,
     section_title TEXT,
     token_count INTEGER,
-    embedding VECTOR,
+    embedding VECTOR(768) NULL,
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
@@ -62,13 +68,6 @@ CREATE TABLE IF NOT EXISTS document_assets (
 );
 
 -- Categories
-CREATE TABLE IF NOT EXISTS categories (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    name TEXT NOT NULL UNIQUE,
-    description TEXT,
-    parent_id UUID REFERENCES categories(id)
-);
-
 -- Conversations (for chat history)
 CREATE TABLE IF NOT EXISTS conversations (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -112,6 +111,7 @@ CREATE TABLE IF NOT EXISTS import_items (
     error_message TEXT,
     error_type TEXT,                         -- transient, permanent
     document_id UUID REFERENCES documents(id) ON DELETE SET NULL,
+    file_size_bytes BIGINT DEFAULT 0,        -- for prioritizing processing (smallest first)
     created_at TIMESTAMPTZ DEFAULT NOW(),
     processed_at TIMESTAMPTZ
 );
@@ -134,6 +134,7 @@ WHERE source_path IS NOT NULL AND content_hash IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_import_jobs_status ON import_jobs(status);
 CREATE INDEX IF NOT EXISTS idx_import_items_job_id ON import_items(job_id);
 CREATE INDEX IF NOT EXISTS idx_import_items_status ON import_items(status);
+CREATE INDEX IF NOT EXISTS idx_import_items_job_status_size ON import_items(job_id, status, file_size_bytes);
 
 -- Hybrid Search Function
 CREATE OR REPLACE FUNCTION hybrid_search(
@@ -155,7 +156,8 @@ CREATE OR REPLACE FUNCTION hybrid_search(
   category_name TEXT,
   bm25_score FLOAT,
   vector_score FLOAT,
-  combined_score FLOAT
+  combined_score FLOAT,
+  reranker_score FLOAT
 ) AS $$
 BEGIN
   RETURN QUERY
@@ -187,7 +189,8 @@ BEGIN
     (
       COALESCE(bm25_weight * (1.0 / (60 + b.rank)), 0.0) +
       COALESCE(vector_weight * (1.0 / (60 + v.rank)), 0.0)
-    )::FLOAT as combined_score
+    )::FLOAT as combined_score,
+    NULL::FLOAT as reranker_score
   FROM documents d
   LEFT JOIN categories c ON d.category_id = c.id
   LEFT JOIN bm25_results b ON d.id = b.id

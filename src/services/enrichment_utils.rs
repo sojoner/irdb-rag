@@ -327,6 +327,78 @@ pub fn ensure_entity_fields(json: &Value) -> Value {
     entities
 }
 
+/// Sanitize filename for Docling to handle special characters
+/// Replaces problematic Unicode characters and ensures .txt -> .md conversion
+/// Converts to ASCII where possible for maximum compatibility.
+pub fn sanitize_filename_for_docling(filename: &str) -> String {
+    let mut sanitized = filename.to_string();
+
+    // Convert .txt to .md (Docling doesn't support .txt)
+    if sanitized.ends_with(".txt") {
+        sanitized = format!("{}.md", sanitized.trim_end_matches(".txt"));
+    }
+
+    // Replace problematic Unicode characters that cause Docling failures
+    // Em-dash variants
+    sanitized = sanitized.replace('\u{2014}', "-");  // U+2014 em-dash
+    sanitized = sanitized.replace('\u{2013}', "-");  // U+2013 en-dash
+    sanitized = sanitized.replace('\u{2015}', "-");  // U+2015 horizontal bar
+
+    // Quotes
+    sanitized = sanitized.replace('\u{201C}', "\""); // U+201C left double quote
+    sanitized = sanitized.replace('\u{201D}', "\""); // U+201D right double quote
+    sanitized = sanitized.replace('\u{2018}', "'");  // U+2018 left single quote
+    sanitized = sanitized.replace('\u{2019}', "'");  // U+2019 right single quote
+
+    // Other problematic characters
+    sanitized = sanitized.replace('|', "_");  // Pipe character
+    sanitized = sanitized.replace(':', "_");  // Colon (problematic on some systems)
+    sanitized = sanitized.replace('?', "");   // Question mark
+    sanitized = sanitized.replace('*', "");   // Asterisk
+    sanitized = sanitized.replace('<', "");   // Less than
+    sanitized = sanitized.replace('>', "");   // Greater than
+    sanitized = sanitized.replace('/', "_");  // Forward slash
+    sanitized = sanitized.replace('\\', "_"); // Backslash
+
+    // Additional problematic characters from various encodings
+    sanitized = sanitized.replace('\u{00A0}', " ");  // Non-breaking space
+    sanitized = sanitized.replace('\u{202F}', " ");  // Narrow no-break space
+
+    // Aggressive ASCII conversion: keep only alphanumeric, dots, dashes, and underscores
+    let mut final_sanitized = String::with_capacity(sanitized.len());
+    for c in sanitized.chars() {
+        if c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_' {
+            final_sanitized.push(c);
+        } else if c.is_whitespace() {
+            final_sanitized.push('_');
+        } else {
+            // Skip other characters or replace with underscore
+            final_sanitized.push('_');
+        }
+    }
+    sanitized = final_sanitized;
+
+    // Replace multiple underscores with a single one
+    while sanitized.contains("__") {
+        sanitized = sanitized.replace("__", "_");
+    }
+
+    // Replace leading/trailing spaces and dots
+    sanitized = sanitized.trim_matches(|c: char| c == '.' || c == '-' || c == '_').to_string();
+
+    // Ensure filename is not empty after sanitization
+    if sanitized.is_empty() {
+        sanitized = "document.pdf".to_string();
+    } else {
+        // Restore extension if it was lost or mangled
+        if !sanitized.contains('.') {
+            sanitized.push_str(".pdf");
+        }
+    }
+
+    sanitized
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -507,5 +579,33 @@ mod tests {
         assert!(result["persons"].is_array());
         assert!(result["organizations"].is_array());
         assert!(result["concepts"].is_array());
+    }
+
+    #[test]
+    fn test_sanitize_filename_for_docling_em_dash() {
+        let input = "Edler achtfacher Pfad – Wikipedia.pdf";
+        let result = sanitize_filename_for_docling(input);
+        assert_eq!(result, "Edler_achtfacher_Pfad_Wikipedia.pdf");
+    }
+
+    #[test]
+    fn test_sanitize_filename_for_docling_pipe() {
+        let input = "The Work You Do | The New Yorker.pdf";
+        let result = sanitize_filename_for_docling(input);
+        assert_eq!(result, "The_Work_You_Do_The_New_Yorker.pdf");
+    }
+
+    #[test]
+    fn test_sanitize_filename_for_docling_txt_to_md() {
+        let input = "document.txt";
+        let result = sanitize_filename_for_docling(input);
+        assert_eq!(result, "document.md");
+    }
+
+    #[test]
+    fn test_sanitize_filename_for_docling_unicode_quotes() {
+        let input = "I Love My Wife — Bingqian G.pdf";
+        let result = sanitize_filename_for_docling(input);
+        assert_eq!(result, "I_Love_My_Wife_Bingqian_G.pdf");
     }
 }

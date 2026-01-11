@@ -7,7 +7,7 @@ use rag_chat::config::Settings;
 #[tokio::test]
 
 async fn test_docling_url_processing() -> Result<()> {
-    std::env::set_var("RUN_ENV", "test");
+    if std::env::var("RUN_ENV").is_err() { if std::env::var("RUN_ENV").is_err() { std::env::set_var("RUN_ENV", "test"); } }
 
     let settings = Settings::new()?;
     let docling_url = settings.docling.url.clone();
@@ -110,7 +110,7 @@ async fn test_docling_url_processing() -> Result<()> {
 #[tokio::test]
 
 async fn test_docling_html_url() -> Result<()> {
-    std::env::set_var("RUN_ENV", "test");
+    if std::env::var("RUN_ENV").is_err() { if std::env::var("RUN_ENV").is_err() { std::env::set_var("RUN_ENV", "test"); } }
 
     let settings = Settings::new()?;
     let docling_url = settings.docling.url.clone();
@@ -172,7 +172,7 @@ async fn test_docling_html_url() -> Result<()> {
 #[tokio::test]
 
 async fn test_docling_structure_consistency() -> Result<()> {
-    std::env::set_var("RUN_ENV", "test");
+    if std::env::var("RUN_ENV").is_err() { if std::env::var("RUN_ENV").is_err() { std::env::set_var("RUN_ENV", "test"); } }
 
     let settings = Settings::new()?;
     let docling_url = settings.docling.url.clone();

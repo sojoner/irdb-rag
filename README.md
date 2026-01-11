@@ -195,7 +195,51 @@ cargo test
 cargo test search_syntax_test
 ```
 
+### GPU-Enabled Testing
+
+For environments with NVIDIA GPUs, you can run the full test suite using local Ollama and Docling services:
+
+```bash
+# Run all tests using the GPU-enabled stack
+make test-all RUN_ENV=test-gpu COMPOSE_FILE=docker-compose-gpu.yml
+```
+
+This will:
+1. Start the GPU-enabled database, Ollama, and Docling services.
+2. Initialize the test database with the correct embedding dimensions.
+3. Run all tests against these local services.
+
 ## 🛠 Development
+
+### GPU Development Environment
+
+For high-performance development with local LLMs and document processing, use the GPU-optimized setup:
+
+```bash
+# Start the full GPU stack
+make gpu-up
+
+# Run tests inside the development container
+make gpu-test
+
+# View logs for all services
+make gpu-logs
+
+# Stop the environment
+make gpu-down
+```
+
+The GPU environment provides:
+- **Ollama**: Local LLM and Embedding server (RTX 3090 optimized).
+- **Docling**: GPU-accelerated document processing with VLM support.
+- **PostgreSQL**: Database with `pgvector` and `pg_search`.
+- **Dev Container**: Pre-configured Rust environment for development.
+
+Access the services at:
+- **App**: http://localhost:3000
+- **Docling UI**: http://localhost:5001
+- **Ollama API**: http://localhost:11434
+- **Database**: localhost:15432
 
 - **Database Migrations**: Managed via `sqlx`.
   ```bash
@@ -208,4 +252,4 @@ cargo test search_syntax_test
 
 ## License
 
-© 2026 build by sojoner with AI   
+© 2026 build by sojoner with AI
