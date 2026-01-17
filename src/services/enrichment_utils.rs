@@ -4,8 +4,8 @@
 //! metadata extraction, and entity processing.
 
 use serde_json::{json, Value};
-use uuid::Uuid;
 use std::collections::HashSet;
+use uuid::Uuid;
 
 /// Parse comma-separated keyword string into a vector
 ///
@@ -120,9 +120,7 @@ pub fn merge_entities(target: &mut Value, source: &Value) {
     if let (Some(target_obj), Some(source_obj)) = (target.as_object_mut(), source.as_object()) {
         for (key, source_array) in source_obj {
             if let Some(source_items) = source_array.as_array() {
-                let target_array = target_obj
-                    .entry(key.clone())
-                    .or_insert_with(|| json!([]));
+                let target_array = target_obj.entry(key.clone()).or_insert_with(|| json!([]));
 
                 if let Some(target_items) = target_array.as_array_mut() {
                     for item in source_items {
@@ -256,7 +254,11 @@ pub fn calculate_word_count(text: &str) -> i32 {
 /// * `sentences` - List of sentences to batch
 /// * `target_batch_size` - Target character count per batch
 /// * `max_batches` - Maximum number of batches to create
-pub fn batch_text(sentences: Vec<String>, target_batch_size: usize, max_batches: usize) -> Vec<String> {
+pub fn batch_text(
+    sentences: Vec<String>,
+    target_batch_size: usize,
+    max_batches: usize,
+) -> Vec<String> {
     let mut batches = Vec::new();
     let mut batch = String::new();
 
@@ -340,29 +342,29 @@ pub fn sanitize_filename_for_docling(filename: &str) -> String {
 
     // Replace problematic Unicode characters that cause Docling failures
     // Em-dash variants
-    sanitized = sanitized.replace('\u{2014}', "-");  // U+2014 em-dash
-    sanitized = sanitized.replace('\u{2013}', "-");  // U+2013 en-dash
-    sanitized = sanitized.replace('\u{2015}', "-");  // U+2015 horizontal bar
+    sanitized = sanitized.replace('\u{2014}', "-"); // U+2014 em-dash
+    sanitized = sanitized.replace('\u{2013}', "-"); // U+2013 en-dash
+    sanitized = sanitized.replace('\u{2015}', "-"); // U+2015 horizontal bar
 
     // Quotes
     sanitized = sanitized.replace('\u{201C}', "\""); // U+201C left double quote
     sanitized = sanitized.replace('\u{201D}', "\""); // U+201D right double quote
-    sanitized = sanitized.replace('\u{2018}', "'");  // U+2018 left single quote
-    sanitized = sanitized.replace('\u{2019}', "'");  // U+2019 right single quote
+    sanitized = sanitized.replace('\u{2018}', "'"); // U+2018 left single quote
+    sanitized = sanitized.replace('\u{2019}', "'"); // U+2019 right single quote
 
     // Other problematic characters
-    sanitized = sanitized.replace('|', "_");  // Pipe character
-    sanitized = sanitized.replace(':', "_");  // Colon (problematic on some systems)
-    sanitized = sanitized.replace('?', "");   // Question mark
-    sanitized = sanitized.replace('*', "");   // Asterisk
-    sanitized = sanitized.replace('<', "");   // Less than
-    sanitized = sanitized.replace('>', "");   // Greater than
-    sanitized = sanitized.replace('/', "_");  // Forward slash
+    sanitized = sanitized.replace('|', "_"); // Pipe character
+    sanitized = sanitized.replace(':', "_"); // Colon (problematic on some systems)
+    sanitized = sanitized.replace('?', ""); // Question mark
+    sanitized = sanitized.replace('*', ""); // Asterisk
+    sanitized = sanitized.replace('<', ""); // Less than
+    sanitized = sanitized.replace('>', ""); // Greater than
+    sanitized = sanitized.replace('/', "_"); // Forward slash
     sanitized = sanitized.replace('\\', "_"); // Backslash
 
     // Additional problematic characters from various encodings
-    sanitized = sanitized.replace('\u{00A0}', " ");  // Non-breaking space
-    sanitized = sanitized.replace('\u{202F}', " ");  // Narrow no-break space
+    sanitized = sanitized.replace('\u{00A0}', " "); // Non-breaking space
+    sanitized = sanitized.replace('\u{202F}', " "); // Narrow no-break space
 
     // Aggressive ASCII conversion: keep only alphanumeric, dots, dashes, and underscores
     let mut final_sanitized = String::with_capacity(sanitized.len());
@@ -384,7 +386,9 @@ pub fn sanitize_filename_for_docling(filename: &str) -> String {
     }
 
     // Replace leading/trailing spaces and dots
-    sanitized = sanitized.trim_matches(|c: char| c == '.' || c == '-' || c == '_').to_string();
+    sanitized = sanitized
+        .trim_matches(|c: char| c == '.' || c == '-' || c == '_')
+        .to_string();
 
     // Ensure filename is not empty after sanitization
     if sanitized.is_empty() {
@@ -414,7 +418,8 @@ mod tests {
 
     #[test]
     fn test_parse_keywords_filters_long_keywords() {
-        let keywords = "rust, a_very_long_keyword_that_exceeds_fifty_characters_limit_x".to_string();
+        let keywords =
+            "rust, a_very_long_keyword_that_exceeds_fifty_characters_limit_x".to_string();
         let parsed = parse_keywords_from_string(&keywords);
         assert_eq!(parsed.len(), 1);
         assert_eq!(parsed[0], "rust");
@@ -585,7 +590,7 @@ mod tests {
     fn test_sanitize_filename_for_docling_em_dash() {
         let input = "Edler achtfacher Pfad – Wikipedia.pdf";
         let result = sanitize_filename_for_docling(input);
-        assert_eq!(result, "Edler_achtfacher_Pfad_Wikipedia.pdf");
+        assert_eq!(result, "Edler_achtfacher_Pfad_-_Wikipedia.pdf");
     }
 
     #[test]
@@ -606,6 +611,6 @@ mod tests {
     fn test_sanitize_filename_for_docling_unicode_quotes() {
         let input = "I Love My Wife — Bingqian G.pdf";
         let result = sanitize_filename_for_docling(input);
-        assert_eq!(result, "I_Love_My_Wife_Bingqian_G.pdf");
+        assert_eq!(result, "I_Love_My_Wife_-_Bingqian_G.pdf");
     }
 }

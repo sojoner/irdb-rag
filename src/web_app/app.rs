@@ -1,11 +1,11 @@
+use crate::web_app::pages::import::ImportPage;
+use crate::web_app::pages::search::SearchPage;
 use leptos::prelude::*;
 use leptos_meta::*;
 use leptos_router::{
     components::{Route, Router, Routes},
     StaticSegment,
 };
-use crate::web_app::pages::search::SearchPage;
-use crate::web_app::pages::import::ImportPage;
 
 #[component]
 pub fn App() -> impl IntoView {
@@ -13,6 +13,10 @@ pub fn App() -> impl IntoView {
 
     view! {
         <Stylesheet id="tailwind" href="/tailwind.css" />
+
+        <style>
+            "mark { background-color: #fef3c7; color: #78350f; font-weight: 500; padding: 0 2px; border-radius: 2px; }"
+        </style>
 
         <Router>
             <main class="h-screen w-screen overflow-hidden bg-gray-100 text-gray-800">

@@ -1,8 +1,8 @@
+use axum::extract::FromRef;
+use leptos::prelude::LeptosOptions;
 use sqlx::PgPool;
 use std::sync::{Arc, Mutex};
-use tokio::sync::{RwLock, mpsc};
-use leptos::prelude::LeptosOptions;
-use axum::extract::FromRef;
+use tokio::sync::{mpsc, RwLock};
 use uuid::Uuid;
 
 use crate::config::Settings;

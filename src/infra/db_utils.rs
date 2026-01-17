@@ -9,17 +9,17 @@ use uuid::Uuid;
 /// Sanitize BM25 query to handle empty or problematic inputs
 ///
 /// ParadeDB's pg_search has edge cases with empty/wildcard queries that cause parsing errors.
-/// This function ensures only valid queries are sent.
+/// Also converts plain queries to field-qualified format for multi-field search.
+/// Searches across all indexed fields: content, title, summary, author, and source_path.
 ///
 /// # Examples
 /// ```
 /// use rag_chat::infra::db_utils::sanitize_bm25_query;
 /// assert_eq!(sanitize_bm25_query(""), "id:__no_match__");
 /// assert_eq!(sanitize_bm25_query("*"), "id:__no_match__");
-/// assert_eq!(sanitize_bm25_query("id:()"), "id:__no_match__");
-/// assert_eq!(sanitize_bm25_query("hello"), "hello");
+/// assert_eq!(sanitize_bm25_query("hello"), "(content:(hello) OR title:(hello) OR summary:(hello) OR author:(hello) OR source_path:(hello))");
 /// ```
-pub fn sanitize_bm25_query(query: &str) -> &str {
+pub fn sanitize_bm25_query(query: &str) -> String {
     let trimmed = query.trim();
 
     // Check for empty ID queries like "id:()", "id: ()", "id:(*)"
@@ -36,9 +36,105 @@ pub fn sanitize_bm25_query(query: &str) -> &str {
     };
 
     if trimmed.is_empty() || trimmed == "*" || is_empty_id {
-        "id:__no_match__"
+        "id:__no_match__".to_string()
     } else {
-        query
+        // Add field qualification for multi-field search across all indexed fields
+        // Searches: content, title, summary, author, and source_path
+        format!(
+            "(content:({}) OR title:({}) OR summary:({}) OR author:({}) OR source_path:({}))",
+            trimmed, trimmed, trimmed, trimmed, trimmed
+        )
+    }
+}
+
+/// Tokenize query string into normalized tokens
+///
+/// - Converts to lowercase
+/// - Removes extra whitespace
+/// - Filters single-character noise
+/// - Preserves hyphenated terms
+///
+/// # Examples
+/// ```
+/// use rag_chat::infra::db_utils::tokenize_query;
+/// let tokens = tokenize_query("Hello-World test  case");
+/// assert_eq!(tokens.len(), 3);
+/// assert_eq!(tokens[0], "hello-world");
+/// ```
+pub fn tokenize_query(query: &str) -> Vec<String> {
+    query
+        .trim()
+        .to_lowercase()
+        // Normalize whitespace
+        .split_whitespace()
+        // Filter empty and single-char tokens
+        .filter(|token| token.len() > 1)
+        .map(|token| token.to_string())
+        .collect()
+}
+
+/// Build a phrase query for exact phrase matching
+///
+/// Expects tokens to match in exact order and adjacent positions.
+/// Searches across all indexed fields: content, title, summary, author, and source_path.
+///
+/// Note: ParadeDB requires field-qualified queries when using multiple fields.
+pub fn build_phrase_query(tokens: &[String]) -> String {
+    if tokens.is_empty() {
+        "id:__no_match__".to_string()
+    } else {
+        // Create a phrase from tokens and search multiple fields
+        let quoted = tokens
+            .iter()
+            .map(|t| format!("\"{}\"", t))
+            .collect::<Vec<_>>()
+            .join(" ");
+        // Search phrase in all indexed fields for comprehensive matching
+        format!(
+            "(content:({}) OR title:({}) OR summary:({}) OR author:({}) OR source_path:({}))",
+            quoted, quoted, quoted, quoted, quoted
+        )
+    }
+}
+
+/// Build a prefix query for fuzzy matching
+///
+/// Appends * to each token for prefix matching with OR semantics.
+/// Searches across all indexed fields: content, title, summary, author, and source_path.
+pub fn build_prefix_query(query: &str) -> String {
+    let tokens = tokenize_query(query);
+    if tokens.is_empty() {
+        "id:__no_match__".to_string()
+    } else {
+        // Create prefix search terms and search multiple fields
+        let prefix_terms = tokens
+            .iter()
+            .map(|t| format!("{}*", t))
+            .collect::<Vec<_>>()
+            .join(" ||| ");
+        // Search across all indexed fields for typo tolerance and partial matches
+        format!(
+            "(content:({}) OR title:({}) OR summary:({}) OR author:({}) OR source_path:({}))",
+            prefix_terms, prefix_terms, prefix_terms, prefix_terms, prefix_terms
+        )
+    }
+}
+
+/// Build a boolean query with AND semantics
+///
+/// All tokens must be present for a match across all indexed fields.
+pub fn build_boolean_query(query: &str) -> String {
+    let tokens = tokenize_query(query);
+    if tokens.is_empty() {
+        "id:__no_match__".to_string()
+    } else {
+        // Create AND terms and search multiple fields
+        let and_terms = tokens.join(" &&& ");
+        // Search for all terms in any indexed field with high precision
+        format!(
+            "(content:({}) OR title:({}) OR summary:({}) OR author:({}) OR source_path:({}))",
+            and_terms, and_terms, and_terms, and_terms, and_terms
+        )
     }
 }
 
@@ -109,10 +205,7 @@ pub fn matches_word_count_filter(
 /// Check if entity array contains any of the filter values
 ///
 /// Used for filtering by persons, organizations, products, concepts
-pub fn entity_array_matches(
-    entity_array: Option<&[String]>,
-    filter_values: &[String],
-) -> bool {
+pub fn entity_array_matches(entity_array: Option<&[String]>, filter_values: &[String]) -> bool {
     if let Some(entities) = entity_array {
         filter_values.iter().any(|f| entities.contains(f))
     } else {
@@ -255,9 +348,18 @@ mod tests {
 
     #[test]
     fn test_sanitize_valid_queries() {
-        assert_eq!(sanitize_bm25_query("hello"), "hello");
-        assert_eq!(sanitize_bm25_query("  hello world  "), "  hello world  ");
-        assert_eq!(sanitize_bm25_query("id:(123)"), "id:(123)");
+        assert_eq!(
+            sanitize_bm25_query("hello"),
+            "(content:(hello) OR title:(hello) OR summary:(hello) OR author:(hello) OR source_path:(hello))"
+        );
+        assert_eq!(
+            sanitize_bm25_query("  hello world  "),
+            "(content:(hello world) OR title:(hello world) OR summary:(hello world) OR author:(hello world) OR source_path:(hello world))"
+        );
+        assert_eq!(
+            sanitize_bm25_query("id:(123)"),
+            "(content:(id:(123)) OR title:(id:(123)) OR summary:(id:(123)) OR author:(id:(123)) OR source_path:(id:(123)))"
+        );
     }
 
     #[test]
@@ -336,7 +438,11 @@ mod tests {
     fn test_matches_word_count_filter() {
         assert!(matches_word_count_filter(Some(500), Some(100), Some(1000)));
         assert!(!matches_word_count_filter(Some(50), Some(100), Some(1000)));
-        assert!(!matches_word_count_filter(Some(1500), Some(100), Some(1000)));
+        assert!(!matches_word_count_filter(
+            Some(1500),
+            Some(100),
+            Some(1000)
+        ));
         assert!(matches_word_count_filter(Some(500), None, Some(1000)));
         assert!(matches_word_count_filter(Some(500), Some(100), None));
         assert!(!matches_word_count_filter(None, Some(100), Some(1000)));
@@ -345,8 +451,14 @@ mod tests {
     #[test]
     fn test_entity_array_matches() {
         let entities = vec!["Alice".to_string(), "Bob".to_string()];
-        assert!(entity_array_matches(Some(&entities), &["Alice".to_string()]));
-        assert!(!entity_array_matches(Some(&entities), &["Charlie".to_string()]));
+        assert!(entity_array_matches(
+            Some(&entities),
+            &["Alice".to_string()]
+        ));
+        assert!(!entity_array_matches(
+            Some(&entities),
+            &["Charlie".to_string()]
+        ));
         assert!(!entity_array_matches(None, &["Alice".to_string()]));
     }
 
@@ -380,8 +492,7 @@ mod tests {
             "  database  ".to_string(),
             "".to_string(),
             "rust".to_string(), // duplicate
-            "a_very_long_keyword_that_exceeds_fifty_characters_limit_x"
-                .to_string(),
+            "a_very_long_keyword_that_exceeds_fifty_characters_limit_x".to_string(),
         ];
 
         let normalized = normalize_keywords(keywords);
@@ -421,5 +532,111 @@ mod tests {
         filters_with_multiple.keywords = Some(vec!["test".to_string()]);
         filters_with_multiple.concepts = Some(vec!["concept".to_string()]);
         assert_eq!(count_active_filters(&filters_with_multiple), 3);
+    }
+
+    #[test]
+    fn test_tokenize_query_basic() {
+        let tokens = tokenize_query("hello world");
+        assert_eq!(tokens.len(), 2);
+        assert_eq!(tokens[0], "hello");
+        assert_eq!(tokens[1], "world");
+    }
+
+    #[test]
+    fn test_tokenize_query_lowercase() {
+        let tokens = tokenize_query("Hello WORLD");
+        assert_eq!(tokens[0], "hello");
+        assert_eq!(tokens[1], "world");
+    }
+
+    #[test]
+    fn test_tokenize_query_whitespace() {
+        let tokens = tokenize_query("  hello   world  ");
+        assert_eq!(tokens.len(), 2);
+    }
+
+    #[test]
+    fn test_tokenize_query_filters_single_chars() {
+        let tokens = tokenize_query("a hello b world");
+        assert_eq!(tokens.len(), 2);
+        assert_eq!(tokens[0], "hello");
+        assert_eq!(tokens[1], "world");
+    }
+
+    #[test]
+    fn test_tokenize_query_preserves_hyphens() {
+        let tokens = tokenize_query("hello-world test");
+        assert_eq!(tokens.len(), 2);
+        assert_eq!(tokens[0], "hello-world");
+        assert_eq!(tokens[1], "test");
+    }
+
+    #[test]
+    fn test_build_phrase_query_empty() {
+        let tokens: Vec<String> = vec![];
+        assert_eq!(build_phrase_query(&tokens), "id:__no_match__");
+    }
+
+    #[test]
+    fn test_build_phrase_query_single() {
+        let tokens = vec!["hello".to_string()];
+        assert_eq!(
+            build_phrase_query(&tokens),
+            "(content:(\"hello\") OR title:(\"hello\") OR summary:(\"hello\") OR author:(\"hello\") OR source_path:(\"hello\"))"
+        );
+    }
+
+    #[test]
+    fn test_build_phrase_query_multiple() {
+        let tokens = vec!["hello".to_string(), "world".to_string()];
+        assert_eq!(build_phrase_query(&tokens), "(content:(\"hello\" \"world\") OR title:(\"hello\" \"world\") OR summary:(\"hello\" \"world\") OR author:(\"hello\" \"world\") OR source_path:(\"hello\" \"world\"))");
+    }
+
+    #[test]
+    fn test_build_prefix_query_empty() {
+        assert_eq!(build_prefix_query(""), "id:__no_match__");
+    }
+
+    #[test]
+    fn test_build_prefix_query_single() {
+        let result = build_prefix_query("hello");
+        assert_eq!(
+            result,
+            "(content:(hello*) OR title:(hello*) OR summary:(hello*) OR author:(hello*) OR source_path:(hello*))"
+        );
+    }
+
+    #[test]
+    fn test_build_prefix_query_multiple() {
+        let result = build_prefix_query("hello world");
+        assert!(result.contains("hello*"));
+        assert!(result.contains("world*"));
+        assert!(result.contains("|||"));
+        assert!(result.contains("author:"));
+        assert!(result.contains("source_path:"));
+    }
+
+    #[test]
+    fn test_build_boolean_query_empty() {
+        assert_eq!(build_boolean_query(""), "id:__no_match__");
+    }
+
+    #[test]
+    fn test_build_boolean_query_single() {
+        let result = build_boolean_query("hello");
+        assert_eq!(
+            result,
+            "(content:(hello) OR title:(hello) OR summary:(hello) OR author:(hello) OR source_path:(hello))"
+        );
+    }
+
+    #[test]
+    fn test_build_boolean_query_multiple() {
+        let result = build_boolean_query("hello world");
+        assert!(result.contains("hello"));
+        assert!(result.contains("world"));
+        assert!(result.contains("&&&"));
+        assert!(result.contains("author:"));
+        assert!(result.contains("source_path:"));
     }
 }

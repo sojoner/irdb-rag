@@ -53,6 +53,7 @@ services:
       POSTGRES_USER: rag_user
       POSTGRES_PASSWORD: rag_password
       POSTGRES_DB: rag_chat
+      POSTGRES_INITDB_ARGS: "-c paradedb.enable_aggregate_custom_scan=on -c paradedb.enable_custom_scan_without_operator=on -c paradedb.per_tuple_cost=100 -c paradedb.limit_fetch_multiplier=2"
     ports:
       - "15432:5432"
     volumes:

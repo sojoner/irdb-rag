@@ -1,3 +1,7 @@
+use anyhow::Result;
+use chrono::Utc;
+use sqlx::PgPool;
+use std::path::PathBuf;
 /// Import Service - Document import with retry/skip logic and resilience
 ///
 /// This service handles:
@@ -7,13 +11,9 @@
 /// - Job and item tracking in database
 /// - Integration with existing indexing pipeline
 use std::time::Duration;
-use std::path::PathBuf;
-use anyhow::Result;
-use chrono::Utc;
 use uuid::Uuid;
-use sqlx::PgPool;
 
-use crate::domain::models::{ImportJob, ImportItem, ErrorType};
+use crate::domain::models::{ErrorType, ImportItem, ImportJob};
 
 // ============================================================================
 // Re-export config from config module (TOML-based)
@@ -112,23 +112,16 @@ impl ImportJobRunner {
 
     /// Get job status and progress
     pub async fn get_job(&self, pool: &PgPool, job_id: Uuid) -> Result<ImportJob> {
-        let job = sqlx::query_as::<_, ImportJob>(
-            "SELECT * FROM import_jobs WHERE id = $1"
-        )
-        .bind(job_id)
-        .fetch_one(pool)
-        .await?;
+        let job = sqlx::query_as::<_, ImportJob>("SELECT * FROM import_jobs WHERE id = $1")
+            .bind(job_id)
+            .fetch_one(pool)
+            .await?;
 
         Ok(job)
     }
 
     /// Update job status
-    pub async fn update_job_status(
-        &self,
-        pool: &PgPool,
-        job_id: Uuid,
-        status: &str,
-    ) -> Result<()> {
+    pub async fn update_job_status(&self, pool: &PgPool, job_id: Uuid, status: &str) -> Result<()> {
         let now = Utc::now();
 
         sqlx::query(
@@ -176,7 +169,9 @@ impl ImportJobRunner {
             "Completed job {} with status: {}{}",
             job_id,
             status,
-            error_msg.map(|e| format!(" (error: {})", e)).unwrap_or_default()
+            error_msg
+                .map(|e| format!(" (error: {})", e))
+                .unwrap_or_default()
         );
         Ok(())
     }
@@ -221,7 +216,7 @@ impl ImportJobRunner {
             .await?;
 
         let jobs = sqlx::query_as::<_, ImportJob>(
-            "SELECT * FROM import_jobs ORDER BY created_at DESC LIMIT $1 OFFSET $2"
+            "SELECT * FROM import_jobs ORDER BY created_at DESC LIMIT $1 OFFSET $2",
         )
         .bind(limit)
         .bind(offset)
@@ -334,12 +329,10 @@ impl ImportItemManager {
 
     /// Get item by ID
     pub async fn get_item(&self, pool: &PgPool, item_id: Uuid) -> Result<ImportItem> {
-        let item = sqlx::query_as::<_, ImportItem>(
-            "SELECT * FROM import_items WHERE id = $1"
-        )
-        .bind(item_id)
-        .fetch_one(pool)
-        .await?;
+        let item = sqlx::query_as::<_, ImportItem>("SELECT * FROM import_items WHERE id = $1")
+            .bind(item_id)
+            .fetch_one(pool)
+            .await?;
 
         Ok(item)
     }
@@ -352,12 +345,10 @@ impl ImportItemManager {
         limit: i32,
         offset: i32,
     ) -> Result<(Vec<ImportItem>, i64)> {
-        let total: (i64,) = sqlx::query_as(
-            "SELECT COUNT(*) FROM import_items WHERE job_id = $1"
-        )
-        .bind(job_id)
-        .fetch_one(pool)
-        .await?;
+        let total: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM import_items WHERE job_id = $1")
+            .bind(job_id)
+            .fetch_one(pool)
+            .await?;
 
         let items = sqlx::query_as::<_, ImportItem>(
             r#"
@@ -365,7 +356,7 @@ impl ImportItemManager {
             WHERE job_id = $1
             ORDER BY created_at DESC
             LIMIT $2 OFFSET $3
-            "#
+            "#,
         )
         .bind(job_id)
         .bind(limit)
@@ -384,7 +375,7 @@ impl ImportItemManager {
         status: &str,
     ) -> Result<Vec<ImportItem>> {
         let items = sqlx::query_as::<_, ImportItem>(
-            "SELECT * FROM import_items WHERE job_id = $1 AND status = $2 ORDER BY created_at"
+            "SELECT * FROM import_items WHERE job_id = $1 AND status = $2 ORDER BY created_at",
         )
         .bind(job_id)
         .bind(status)
@@ -444,11 +435,7 @@ impl ImportItemManager {
     }
 
     /// Increment retry count
-    pub async fn increment_retry_count(
-        &self,
-        pool: &PgPool,
-        item_id: Uuid,
-    ) -> Result<i32> {
+    pub async fn increment_retry_count(&self, pool: &PgPool, item_id: Uuid) -> Result<i32> {
         let result: (i32,) = sqlx::query_as(
             r#"
             UPDATE import_items
@@ -515,12 +502,7 @@ impl ImportItemManager {
     }
 
     /// Mark item as skipped
-    pub async fn mark_skipped(
-        &self,
-        pool: &PgPool,
-        item_id: Uuid,
-        reason: &str,
-    ) -> Result<()> {
+    pub async fn mark_skipped(&self, pool: &PgPool, item_id: Uuid, reason: &str) -> Result<()> {
         sqlx::query(
             r#"
             UPDATE import_items
@@ -563,11 +545,7 @@ pub fn discover_files(folder: &str) -> Result<Vec<PathBuf>> {
     }
 
     // Sort by file size (quick wins first)
-    files.sort_by_key(|p| {
-        std::fs::metadata(p)
-            .map(|m| m.len())
-            .unwrap_or(u64::MAX)
-    });
+    files.sort_by_key(|p| std::fs::metadata(p).map(|m| m.len()).unwrap_or(u64::MAX));
 
     tracing::info!("Discovered {} indexable files in {}", files.len(), folder);
     Ok(files)
@@ -576,10 +554,8 @@ pub fn discover_files(folder: &str) -> Result<Vec<PathBuf>> {
 /// Check if file should be indexed based on extension
 fn is_indexable_file(path: &std::path::Path) -> bool {
     const INDEXABLE_EXTENSIONS: &[&str] = &[
-        "pdf", "docx", "pptx", "xlsx",
-        "html", "htm", "md", "txt",
-        "png", "jpg", "jpeg", "tiff", "tif",
-        "c", "cpp", "rs", "py", "js", "ts", "go", "java",
+        "pdf", "docx", "pptx", "xlsx", "html", "htm", "md", "txt", "png", "jpg", "jpeg", "tiff",
+        "tif", "c", "cpp", "rs", "py", "js", "ts", "go", "java",
     ];
 
     path.extension()
@@ -609,9 +585,14 @@ async fn handle_item_error(
                 let delay = calculate_retry_delay(item.retry_count as u32, config);
                 tracing::warn!(
                     "Item {} failed with transient error (attempt {}): {}. Will retry in {:?}",
-                    item.id, item.retry_count + 1, error_msg, delay
+                    item.id,
+                    item.retry_count + 1,
+                    error_msg,
+                    delay
                 );
-                item_mgr.mark_failed(pool, item.id, item.retry_count + 1, error_msg).await?;
+                item_mgr
+                    .mark_failed(pool, item.id, item.retry_count + 1, error_msg)
+                    .await?;
                 tokio::time::sleep(delay).await;
                 sqlx::query("UPDATE import_items SET status = 'pending' WHERE id = $1")
                     .bind(item.id)
@@ -620,14 +601,22 @@ async fn handle_item_error(
             } else {
                 tracing::error!(
                     "Item {} failed after {} retries: {}",
-                    item.id, item.retry_count, error_msg
+                    item.id,
+                    item.retry_count,
+                    error_msg
                 );
-                item_mgr.mark_failed(pool, item.id, item.retry_count + 1, error_msg).await?;
+                item_mgr
+                    .mark_failed(pool, item.id, item.retry_count + 1, error_msg)
+                    .await?;
                 stats.failed += 1;
             }
         }
         crate::domain::models::ErrorType::Permanent => {
-            tracing::warn!("Item {} skipped due to permanent error: {}", item.id, error_msg);
+            tracing::warn!(
+                "Item {} skipped due to permanent error: {}",
+                item.id,
+                error_msg
+            );
             item_mgr.mark_skipped(pool, item.id, error_msg).await?;
             stats.skipped += 1;
         }
@@ -697,17 +686,33 @@ pub async fn process_import_job(
             async move {
                 let mut local_stats = ProcessingStats::default();
                 tracing::info!("Processing item: {} ({})", item.id, item.source_path);
-                
-                if let Err(e) = item_mgr.update_item_status(&pool, item.id, "processing").await {
+
+                if let Err(e) = item_mgr
+                    .update_item_status(&pool, item.id, "processing")
+                    .await
+                {
                     tracing::error!("Failed to update item status: {}", e);
                 }
 
-                let is_url = item.source_path.starts_with("http://") || item.source_path.starts_with("https://");
+                let is_url = item.source_path.starts_with("http://")
+                    || item.source_path.starts_with("https://");
                 let result = if is_url {
-                    indexing::index_url_with_config(&pool, &embedder, &item.source_path, Some(&settings)).await
+                    indexing::index_url_with_config(
+                        &pool,
+                        &embedder,
+                        &item.source_path,
+                        Some(&settings),
+                    )
+                    .await
                 } else {
-                    indexing::index_path_with_config(&pool, &embedder, &item.source_path, Some(&settings)).await
-                        .map(|ids| ids.first().copied())
+                    indexing::index_path_with_config(
+                        &pool,
+                        &embedder,
+                        &item.source_path,
+                        Some(&settings),
+                    )
+                    .await
+                    .map(|ids| ids.first().copied())
                 };
 
                 match result {
@@ -722,15 +727,30 @@ pub async fn process_import_job(
                         let error_msg = e.to_string();
 
                         // Check if this is a duplicate skip (not an error)
-                        if error_msg.contains("already indexed") || error_msg.contains("duplicate content") {
-                            if let Err(e) = item_mgr.mark_skipped(&pool, item.id, "Duplicate document").await {
+                        if error_msg.contains("already indexed")
+                            || error_msg.contains("duplicate content")
+                        {
+                            if let Err(e) = item_mgr
+                                .mark_skipped(&pool, item.id, "Duplicate document")
+                                .await
+                            {
                                 tracing::error!("Failed to mark item skipped: {}", e);
                             }
                             local_stats.skipped += 1;
                             tracing::info!("Skipped duplicate item: {}", item.id);
                         } else {
                             let error_type = classify_error(&error_msg);
-                            if let Err(e) = handle_item_error(&mut local_stats, &pool, &item_mgr, &item, error_type, &error_msg, &config).await {
+                            if let Err(e) = handle_item_error(
+                                &mut local_stats,
+                                &pool,
+                                &item_mgr,
+                                &item,
+                                error_type,
+                                &error_msg,
+                                &config,
+                            )
+                            .await
+                            {
                                 tracing::error!("Failed to handle item error: {}", e);
                                 local_stats.failed += 1;
                             }
@@ -749,7 +769,10 @@ pub async fn process_import_job(
 
         // Update job progress in real-time
         let processed = stats.completed + stats.failed + stats.skipped;
-        if let Err(e) = runner.update_job_progress(pool, job_id, total, processed, stats.failed, stats.skipped).await {
+        if let Err(e) = runner
+            .update_job_progress(pool, job_id, total, processed, stats.failed, stats.skipped)
+            .await
+        {
             tracing::error!("Failed to update job progress: {}", e);
         }
     }
@@ -763,11 +786,16 @@ pub async fn process_import_job(
         "completed_with_errors"
     };
 
-    runner.complete_job(pool, job_id, final_status, None).await?;
+    runner
+        .complete_job(pool, job_id, final_status, None)
+        .await?;
 
     tracing::info!(
         "Job {} processing complete: {} completed, {} failed, {} skipped",
-        job_id, stats.completed, stats.failed, stats.skipped
+        job_id,
+        stats.completed,
+        stats.failed,
+        stats.skipped
     );
 
     Ok(())
@@ -782,13 +810,20 @@ pub fn spawn_import_processor(
 ) {
     tokio::spawn(async move {
         if let Err(e) = process_import_job(&pool, &embedder, job_id).await {
-            tracing::error!("Background import processor failed for job {}: {}", job_id, e);
+            tracing::error!(
+                "Background import processor failed for job {}: {}",
+                job_id,
+                e
+            );
 
             // Try to mark job as failed
             if let Ok(settings) = crate::config::Settings::new() {
                 let config = settings.import;
                 let runner = ImportJobRunner::new(config);
-                if let Err(update_err) = runner.complete_job(&pool, job_id, "failed", Some(&e.to_string())).await {
+                if let Err(update_err) = runner
+                    .complete_job(&pool, job_id, "failed", Some(&e.to_string()))
+                    .await
+                {
                     tracing::error!("Failed to update job status: {}", update_err);
                 }
             } else {
@@ -832,14 +867,26 @@ pub fn spawn_import_workers(
 
                         // Process the job
                         if let Err(e) = process_import_job(&pool, &embedder, job_id).await {
-                            tracing::error!("Worker {} failed to process job {}: {}", worker_id, job_id, e);
+                            tracing::error!(
+                                "Worker {} failed to process job {}: {}",
+                                worker_id,
+                                job_id,
+                                e
+                            );
 
                             // Try to mark job as failed
                             if let Ok(settings) = crate::config::Settings::new() {
                                 let config = settings.import;
                                 let runner = ImportJobRunner::new(config);
-                                if let Err(update_err) = runner.complete_job(&pool, job_id, "failed", Some(&e.to_string())).await {
-                                    tracing::error!("Worker {} failed to update job status: {}", worker_id, update_err);
+                                if let Err(update_err) = runner
+                                    .complete_job(&pool, job_id, "failed", Some(&e.to_string()))
+                                    .await
+                                {
+                                    tracing::error!(
+                                        "Worker {} failed to update job status: {}",
+                                        worker_id,
+                                        update_err
+                                    );
                                 }
                             } else {
                                 tracing::error!("Worker {} failed to load settings", worker_id);

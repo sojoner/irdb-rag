@@ -106,10 +106,7 @@ mod tests {
             }
         });
 
-        fs::write(
-            &bookmarks_path,
-            bookmarks_content.to_string(),
-        ).unwrap();
+        fs::write(&bookmarks_path, bookmarks_content.to_string()).unwrap();
 
         let urls = parse_chrome_bookmarks(bookmarks_path.to_str().unwrap()).unwrap();
 
@@ -148,10 +145,7 @@ mod tests {
             }
         });
 
-        fs::write(
-            &bookmarks_path,
-            bookmarks_content.to_string(),
-        ).unwrap();
+        fs::write(&bookmarks_path, bookmarks_content.to_string()).unwrap();
 
         let urls = parse_chrome_bookmarks(bookmarks_path.to_str().unwrap()).unwrap();
 

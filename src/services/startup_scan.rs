@@ -67,11 +67,7 @@ impl StartupScanner {
         for local_path in &self.config.local_paths {
             match self.discover_local_files(local_path).await {
                 Ok(files) => {
-                    tracing::info!(
-                        "Discovered {} files from {}",
-                        files.len(),
-                        local_path
-                    );
+                    tracing::info!("Discovered {} files from {}", files.len(), local_path);
                     sources.extend(files);
                 }
                 Err(e) => {
@@ -88,10 +84,7 @@ impl StartupScanner {
             if !bookmarks_path.is_empty() {
                 match bookmark_parser::parse_chrome_bookmarks(bookmarks_path) {
                     Ok(urls) => {
-                        tracing::info!(
-                            "Parsed {} URLs from Chrome bookmarks",
-                            urls.len()
-                        );
+                        tracing::info!("Parsed {} URLs from Chrome bookmarks", urls.len());
                         sources.extend(urls);
                     }
                     Err(e) => {
@@ -134,9 +127,11 @@ impl StartupScanner {
     /// Discover indexable files in a local path
     async fn discover_local_files(&self, local_path: &str) -> Result<Vec<String>> {
         let mut files = Vec::new();
-        let extensions = self.config.file_extensions.clone().unwrap_or_else(|| {
-            vec!["md".to_string(), "pdf".to_string()]
-        });
+        let extensions = self
+            .config
+            .file_extensions
+            .clone()
+            .unwrap_or_else(|| vec!["md".to_string(), "pdf".to_string()]);
 
         for entry in WalkDir::new(local_path)
             .into_iter()
@@ -166,12 +161,11 @@ impl StartupScanner {
         }
 
         // Batch query: Get all indexed sources in one query
-        let indexed_docs: Vec<(String,)> = sqlx::query_as(
-            "SELECT source_path FROM documents WHERE source_path = ANY($1)"
-        )
-        .bind(&sources)
-        .fetch_all(&self.pool)
-        .await?;
+        let indexed_docs: Vec<(String,)> =
+            sqlx::query_as("SELECT source_path FROM documents WHERE source_path = ANY($1)")
+                .bind(&sources)
+                .fetch_all(&self.pool)
+                .await?;
 
         let indexed_set: std::collections::HashSet<String> =
             indexed_docs.into_iter().map(|(path,)| path).collect();
@@ -210,11 +204,7 @@ impl StartupScanner {
         let runner = ImportJobRunner::new(settings.import.clone());
 
         // Create job
-        let job_id = runner.create_job(
-            &self.pool,
-            "startup_scan",
-            None,
-        ).await?;
+        let job_id = runner.create_job(&self.pool, "startup_scan", None).await?;
 
         // Create import items for each source
         let source_refs: Vec<&str> = sources.iter().map(|s| s.as_str()).collect();
@@ -240,8 +230,8 @@ impl StartupScanner {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::TempDir;
     use std::fs;
+    use tempfile::TempDir;
 
     #[tokio::test]
     #[ignore]

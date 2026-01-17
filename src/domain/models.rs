@@ -1,17 +1,16 @@
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 #[cfg(feature = "ssr")]
 use sqlx::FromRow;
 use uuid::Uuid;
-use chrono::{DateTime, Utc};
 
 #[cfg(feature = "ssr")]
-use crate::config::{LLMProviderConfig, EmbeddingConfig};
+use crate::config::{EmbeddingConfig, LLMProviderConfig};
 
 // ============================================
 // Core Domain Models
 // ============================================
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[cfg_attr(feature = "ssr", derive(FromRow))]
 pub struct Document {
@@ -36,7 +35,6 @@ pub struct Document {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[allow(dead_code)]
 #[cfg_attr(feature = "ssr", derive(FromRow))]
 pub struct DocumentChunk {
     pub id: Uuid,
@@ -81,6 +79,18 @@ pub struct SearchResult {
     pub combined_score: f64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reranker_score: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub snippet: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SearchMetadata {
+    pub duration_ms: u128,
+    pub total_results: usize,
+    pub unique_documents: usize,
+    pub total_chunks_searched: usize,
+    pub bm25_weight: f64,
+    pub vector_weight: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -88,6 +98,7 @@ pub struct SearchResult {
 pub struct DbStats {
     pub document_count: i64,
     pub chunk_count: i64,
+    pub database_size: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -142,7 +153,7 @@ impl InfraEmbeddingConfig {
 #[cfg_attr(feature = "ssr", derive(FromRow))]
 pub struct ImportJob {
     pub id: Uuid,
-    pub status: String, // pending, running, completed, failed, cancelled
+    pub status: String,      // pending, running, completed, failed, cancelled
     pub source_type: String, // folder, url, file_upload
     pub source_path: Option<String>,
     pub total_items: i32,

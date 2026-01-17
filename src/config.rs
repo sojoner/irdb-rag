@@ -8,9 +8,9 @@
 //! 2. Environment-specific file (test.toml, production.toml)
 //! 3. default.toml
 
-use serde::Deserialize;
 use config as config_crate;
 use config_crate::{Config, ConfigError, Environment, File};
+use serde::Deserialize;
 
 /// Complete application settings
 #[derive(Debug, Deserialize, Clone)]
@@ -261,7 +261,12 @@ fn default_512() -> usize {
 /// RAG system configuration
 #[derive(Debug, Deserialize, Clone)]
 pub struct RagConfig {
+    /// System prompt for RAG-based chat (when document context is provided)
     pub system_prompt: Option<String>,
+
+    /// System prompt for standalone chat (no document context)
+    pub chat_system_prompt: Option<String>,
+
     pub entity_extraction_enabled: bool,
 }
 
@@ -320,19 +325,13 @@ impl Settings {
     /// - Required configuration values are missing
     /// - Validation fails (e.g., invalid dimensions)
     pub fn new() -> Result<Self, ConfigError> {
-        let run_env = std::env::var("RUN_ENV")
-            .unwrap_or_else(|_| "development".into());
+        let run_env = std::env::var("RUN_ENV").unwrap_or_else(|_| "development".into());
 
         let config = Config::builder()
             // Start with defaults
             .add_source(File::with_name("config/default"))
-
             // Layer environment-specific config
-            .add_source(
-                File::with_name(&format!("config/{}", run_env))
-                    .required(false)
-            )
-
+            .add_source(File::with_name(&format!("config/{}", run_env)).required(false))
             // Override with environment variables
             // APP_DATABASE__URL overrides database.url
             // APP_LLM__CHAT__API_KEY overrides llm.chat.api_key
@@ -344,9 +343,8 @@ impl Settings {
                     .separator("__")
                     .list_separator(",")
                     .with_list_parse_key("knowledge_base.local_paths")
-                    .with_list_parse_key("knowledge_base.urls")
+                    .with_list_parse_key("knowledge_base.urls"),
             )
-
             .build()?;
 
         let settings: Self = config.try_deserialize()?;
@@ -361,14 +359,12 @@ impl Settings {
     fn validate(&self) -> Result<(), ConfigError> {
         if self.embedding.dimensions == 0 {
             return Err(ConfigError::Message(
-                "embedding.dimensions must be > 0".into()
+                "embedding.dimensions must be > 0".into(),
             ));
         }
 
         if self.database.url.is_empty() {
-            return Err(ConfigError::Message(
-                "database.url is required".into()
-            ));
+            return Err(ConfigError::Message("database.url is required".into()));
         }
 
         Ok(())

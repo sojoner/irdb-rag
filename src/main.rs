@@ -5,15 +5,15 @@
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use leptos::prelude::get_configuration;
 use std::sync::Arc;
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
-use rag_chat::config::Settings;
 use rag_chat::api::{self, state::AppState};
+use rag_chat::config::Settings;
 use rag_chat::infra::{db, embedder::Embedder, reranker::Reranker};
-use rag_chat::services::indexing;
 use rag_chat::logging;
+use rag_chat::services::indexing;
 
 // SSR features not currently used - serving static files instead
 
@@ -70,15 +70,19 @@ async fn main() -> Result<()> {
         .init();
 
     // Load configuration
-    let settings = Settings::new()
-        .map_err(|e| anyhow::anyhow!("Failed to load configuration: {}", e))?;
+    let settings =
+        Settings::new().map_err(|e| anyhow::anyhow!("Failed to load configuration: {}", e))?;
 
     let cli = Cli::parse();
 
     match cli.command {
         Some(Commands::Serve { port: cli_port }) => {
             // CLI port overrides config if provided
-            let port = if cli_port != 3000 { cli_port } else { settings.server.port };
+            let port = if cli_port != 3000 {
+                cli_port
+            } else {
+                settings.server.port
+            };
             serve(port, log_buffer, settings).await?;
         }
         Some(Commands::Index { path, url }) => {
@@ -127,7 +131,11 @@ async fn main() -> Result<()> {
                 .create_items(&pool, job_id, url_refs)
                 .await?;
 
-            tracing::info!("Created import job {} with {} bookmarks", job_id, urls.len());
+            tracing::info!(
+                "Created import job {} with {} bookmarks",
+                job_id,
+                urls.len()
+            );
             println!("Import job created: {}", job_id);
             println!("Queued {} bookmarks for import", urls.len());
         }
@@ -165,7 +173,12 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-async fn serve(port: u16, log_buffer: std::sync::Arc<std::sync::Mutex<Vec<String>>>, settings: Settings) -> Result<()> {
+
+async fn serve(
+    port: u16,
+    log_buffer: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    settings: Settings,
+) -> Result<()> {
     tracing::info!("Starting RAG Chat server on port {}", port);
 
     // Load Leptos configuration
@@ -208,10 +221,7 @@ async fn serve(port: u16, log_buffer: std::sync::Arc<std::sync::Mutex<Vec<String
     tracing::info!("Spawned {} import job workers", settings.import.workers);
 
     // Spawn job cleanup background task
-    rag_chat::services::job_cleanup::spawn_cleanup_task(
-        pool.clone(),
-        &settings.import.cleanup,
-    );
+    rag_chat::services::job_cleanup::spawn_cleanup_task(pool.clone(), &settings.import.cleanup);
 
     // Recover stuck jobs (jobs that were interrupted during previous run)
     {
@@ -266,7 +276,7 @@ async fn recover_stuck_jobs(
             AND ii.status = 'pending'
         )
         ORDER BY ij.created_at ASC
-        "#
+        "#,
     )
     .fetch_all(pool)
     .await?;
@@ -286,9 +296,10 @@ async fn recover_stuck_jobs(
             .await?;
 
         // Re-queue the job
-        import_queue.send(job_id).await.map_err(|e| {
-            anyhow::anyhow!("Failed to re-queue stuck job {}: {}", job_id, e)
-        })?;
+        import_queue
+            .send(job_id)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to re-queue stuck job {}: {}", job_id, e))?;
 
         tracing::info!("Recovered and re-queued stuck job: {}", job_id);
     }

@@ -1,7 +1,8 @@
-use leptos::*;
-use leptos::prelude::*;
-use uuid::Uuid;
 use crate::domain::models::SearchResult;
+use crate::web_app::utils::format_document_for_chat;
+use leptos::prelude::*;
+use leptos::*;
+use uuid::Uuid;
 
 #[component]
 pub fn ResultsList(
@@ -11,6 +12,7 @@ pub fn ResultsList(
     set_selected_context: WriteSignal<Vec<Uuid>>,
     #[prop(optional)] on_preview: Option<Callback<Uuid>>,
     #[prop(optional)] on_delete: Option<Callback<Uuid>>,
+    #[prop(optional)] set_chat_input: Option<leptos::prelude::WriteSignal<String>>,
 ) -> impl IntoView {
     let toggle_selection = move |id: Uuid| {
         set_selected_context.update(|ids: &mut Vec<Uuid>| {
@@ -31,11 +33,53 @@ pub fn ResultsList(
     let handle_delete_click = move |id: Uuid| {
         if let Some(callback) = on_delete {
             if web_sys::window()
-                .and_then(|w| w.confirm_with_message("Delete this document permanently?").ok())
+                .and_then(|w| {
+                    w.confirm_with_message("Delete this document permanently?")
+                        .ok()
+                })
                 .unwrap_or(false)
             {
                 callback.run(id);
             }
+        }
+    };
+
+    let handle_copy_to_clipboard = move |id: Uuid, content: String| {
+        #[cfg(target_arch = "wasm32")]
+        {
+            let formatted = format_document_for_chat(id, &content);
+            leptos::task::spawn_local(async move {
+                if let Some(window) = web_sys::window() {
+                    let clipboard = window.navigator().clipboard();
+                    let promise = clipboard.write_text(&formatted);
+                    match wasm_bindgen_futures::JsFuture::from(promise).await {
+                        Ok(_) => {
+                            leptos::logging::log!("Copied document {} to clipboard", id);
+                        }
+                        Err(e) => {
+                            leptos::logging::error!("Failed to copy to clipboard: {:?}", e);
+                        }
+                    }
+                }
+            });
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let _ = (id, content);
+        }
+    };
+
+    let handle_send_to_chat = move |id: Uuid, content: String| {
+        if let Some(setter) = set_chat_input {
+            let formatted = format_document_for_chat(id, &content);
+            // Append to existing input, or replace if empty
+            setter.update(|current| {
+                if current.is_empty() {
+                    *current = formatted;
+                } else {
+                    current.push_str(&formatted);
+                }
+            });
         }
     };
 
@@ -68,9 +112,13 @@ pub fn ResultsList(
                         let id = res.id;
                         let is_selected = move || selected_context.get().contains(&id);
                         let category_name = res.category_name.clone();
-                        
+                        let snippet = RwSignal::new(res.snippet.clone());
+                        let snippet_get = move || snippet.get();
+
                         let category_name_clone = category_name.clone();
-                        
+                        let res_content = res.content.clone();
+                        let res_content_send = res.content.clone();
+
                         view! {
                             <div class="group bg-white rounded-lg border border-gray-200 shadow-sm hover:shadow-md transition-all overflow-hidden"
                                  class:ring-2=is_selected
@@ -110,8 +158,20 @@ pub fn ResultsList(
 
                                             <p class="text-xs text-gray-600 mt-1 line-clamp-2 cursor-pointer hover:text-gray-700"
                                                on:click=move |_| handle_preview_click(id)>
-                                                {res.content.chars().take(150).collect::<String>()}
-                                                {if res.content.len() > 150 { "..." } else { "" }}
+                                                <Show when=move || snippet_get().is_some()>
+                                                    {move || {
+                                                        // Strip HTML tags from snippet for display
+                                                        let snippet = snippet_get().unwrap_or_default();
+                                                        let cleaned = snippet
+                                                            .replace("<mark>", "")
+                                                            .replace("</mark>", "");
+                                                        cleaned
+                                                    }}
+                                                </Show>
+                                                <Show when=move || snippet_get().is_none()>
+                                                    {res.content.chars().take(150).collect::<String>()}
+                                                    {if res.content.len() > 150 { "..." } else { "" }}
+                                                </Show>
                                             </p>
 
                                             <div class="flex items-center gap-2 mt-2 text-[10px] text-gray-400">
@@ -149,6 +209,32 @@ pub fn ResultsList(
                                                             </svg>
                                                         </button>
                                                     </Show>
+                                                    <button
+                                                        class="text-gray-400 hover:text-blue-600 transition-colors"
+                                                        on:click=move |e: web_sys::MouseEvent| {
+                                                            e.stop_propagation();
+                                                            handle_copy_to_clipboard(id, res_content.clone());
+                                                        }
+                                                        title="Copy content to clipboard"
+                                                    >
+                                                        <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                                                  d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
+                                                        </svg>
+                                                    </button>
+                                                    <button
+                                                        class="text-gray-400 hover:text-green-600 transition-colors"
+                                                        on:click=move |e: web_sys::MouseEvent| {
+                                                            e.stop_propagation();
+                                                            handle_send_to_chat(id, res_content_send.clone());
+                                                        }
+                                                        title="Paste to chat input"
+                                                    >
+                                                        <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                                                  d="M13 7l5 5m0 0l-5 5m5-5H6" />
+                                                        </svg>
+                                                    </button>
                                                 </div>
                                             </div>
                                         </div>

@@ -1,8 +1,7 @@
-use leptos::*;
+use crate::domain::dtos::AggregationStats;
+use crate::domain::models::Category;
 use leptos::prelude::*;
 use uuid::Uuid;
-use crate::domain::models::Category;
-use crate::domain::dtos::AggregationStats;
 
 #[server(GetAggregationStats, "/api")]
 pub async fn get_aggregation_stats() -> Result<AggregationStats, ServerFnError> {
@@ -12,7 +11,8 @@ pub async fn get_aggregation_stats() -> Result<AggregationStats, ServerFnError> 
     let state = use_context::<AppState>()
         .ok_or_else(|| ServerFnError::new("AppState not found in context"))?;
 
-    let stats = db::get_aggregation_stats(&state.pool).await
+    let stats = db::get_aggregation_stats(&state.pool)
+        .await
         .map_err(|e| ServerFnError::new(format!("Failed to get aggregation stats: {}", e)))?;
 
     Ok(stats)
@@ -26,7 +26,8 @@ pub async fn get_categories() -> Result<Vec<Category>, ServerFnError> {
     let state = use_context::<AppState>()
         .ok_or_else(|| ServerFnError::new("AppState not found in context"))?;
 
-    let categories = db::list_categories(&state.pool).await
+    let categories = db::list_categories(&state.pool)
+        .await
         .map_err(|e| ServerFnError::new(format!("Failed to get categories: {}", e)))?;
 
     Ok(categories)
@@ -60,11 +61,9 @@ pub fn FacetedFilters(
 
     // Load aggregation stats using server function
     let stats_resource = Resource::new_blocking(|| (), |_| async { get_aggregation_stats().await });
-    let stats = move || {
-        match stats_resource.get() {
-            Some(Ok(data)) => Some(data),
-            _ => None,
-        }
+    let stats = move || match stats_resource.get() {
+        Some(Ok(data)) => Some(data),
+        _ => None,
     };
 
     let toggle_keyword = move |keyword: String| {
@@ -163,7 +162,7 @@ pub fn FacetedFilters(
 
                                 view! {
                                     <Show when=move || cat_id.is_some()>
-                                        <label class="flex items-center gap-2 cursor-pointer hover:bg-white px-2 py-1.5 rounded text-sm">
+                                        <label class="flex items-center gap-2 cursor-pointer hover:bg-white px-2 py-1.5 rounded text-sm relative">
                                             <input type="radio"
                                                    name="category"
                                                    prop:checked=move || selected_category.get() == cat_id
@@ -173,7 +172,7 @@ pub fn FacetedFilters(
                                                            on_change.run(());
                                                        }
                                                    }
-                                                   class="rounded flex-shrink-0" />
+                                                   class="rounded flex-shrink-0 relative z-10" />
                                             <span class="text-gray-700 min-w-0 break-all text-xs">{cat_name.clone()}</span>
                                             <span class="ml-auto text-xs text-gray-500 flex-shrink-0">"(" {count} ")"</span>
                                         </label>
@@ -217,11 +216,11 @@ pub fn FacetedFilters(
                                 let keyword_copy = keyword.clone();
                                 let keyword_copy2 = keyword.clone();
                                 view! {
-                                    <label class="flex items-center gap-2 cursor-pointer hover:bg-white px-2 py-1.5 rounded text-sm">
+                                    <label class="flex items-center gap-2 cursor-pointer hover:bg-white px-2 py-1.5 rounded text-sm relative">
                                         <input type="checkbox"
                                                prop:checked=move || selected_keywords.get().contains(&keyword_copy)
                                                on:change=move |_| toggle_keyword(keyword_copy2.clone())
-                                               class="rounded flex-shrink-0" />
+                                               class="rounded flex-shrink-0 relative z-10" />
                                         <span class="text-gray-700 min-w-0 break-all text-xs">{keyword.clone()}</span>
                                         <span class="ml-auto text-xs text-gray-500 flex-shrink-0">"(" {count} ")"</span>
                                     </label>
@@ -272,11 +271,11 @@ pub fn FacetedFilters(
                                 let concept_copy = concept.clone();
                                 let concept_copy2 = concept.clone();
                                 view! {
-                                    <label class="flex items-center gap-2 cursor-pointer hover:bg-white px-2 py-1.5 rounded text-sm">
+                                    <label class="flex items-center gap-2 cursor-pointer hover:bg-white px-2 py-1.5 rounded text-sm relative">
                                         <input type="checkbox"
                                                prop:checked=move || selected_concepts.get().contains(&concept_copy)
                                                on:change=move |_| toggle_concept(concept_copy2.clone())
-                                               class="rounded flex-shrink-0" />
+                                               class="rounded flex-shrink-0 relative z-10" />
                                         <span class="text-gray-700 min-w-0 break-all text-xs">{concept.clone()}</span>
                                         <span class="ml-auto text-xs text-gray-500 flex-shrink-0">"(" {count} ")"</span>
                                     </label>
@@ -328,11 +327,11 @@ pub fn FacetedFilters(
                                 let location_copy = location.clone();
                                 let location_copy2 = location.clone();
                                 view! {
-                                    <label class="flex items-center gap-2 cursor-pointer hover:bg-white px-2 py-1.5 rounded text-sm">
+                                    <label class="flex items-center gap-2 cursor-pointer hover:bg-white px-2 py-1.5 rounded text-sm relative">
                                         <input type="checkbox"
                                                prop:checked=move || selected_locations.get().contains(&location_copy)
                                                on:change=move |_| toggle_location(location_copy2.clone())
-                                               class="rounded flex-shrink-0" />
+                                               class="rounded flex-shrink-0 relative z-10" />
                                         <span class="text-gray-700 min-w-0 break-all text-xs">{location.clone()}</span>
                                         <span class="ml-auto text-xs text-gray-500 flex-shrink-0">"(" {count} ")"</span>
                                     </label>
@@ -383,11 +382,11 @@ pub fn FacetedFilters(
                                 let person_copy = person.clone();
                                 let person_copy2 = person.clone();
                                 view! {
-                                    <label class="flex items-center gap-2 cursor-pointer hover:bg-white px-2 py-1.5 rounded text-sm">
+                                    <label class="flex items-center gap-2 cursor-pointer hover:bg-white px-2 py-1.5 rounded text-sm relative">
                                         <input type="checkbox"
                                                prop:checked=move || selected_persons.get().contains(&person_copy)
                                                on:change=move |_| toggle_person(person_copy2.clone())
-                                               class="rounded flex-shrink-0" />
+                                               class="rounded flex-shrink-0 relative z-10" />
                                         <span class="text-gray-700 min-w-0 break-all text-xs">{person.clone()}</span>
                                         <span class="ml-auto text-xs text-gray-500 flex-shrink-0">"(" {count} ")"</span>
                                     </label>
@@ -438,11 +437,11 @@ pub fn FacetedFilters(
                                 let org_copy = org.clone();
                                 let org_copy2 = org.clone();
                                 view! {
-                                    <label class="flex items-center gap-2 cursor-pointer hover:bg-white px-2 py-1.5 rounded text-sm">
+                                    <label class="flex items-center gap-2 cursor-pointer hover:bg-white px-2 py-1.5 rounded text-sm relative">
                                         <input type="checkbox"
                                                prop:checked=move || selected_organizations.get().contains(&org_copy)
                                                on:change=move |_| toggle_organization(org_copy2.clone())
-                                               class="rounded flex-shrink-0" />
+                                               class="rounded flex-shrink-0 relative z-10" />
                                         <span class="text-gray-700 min-w-0 break-all text-xs">{org.clone()}</span>
                                         <span class="ml-auto text-xs text-gray-500 flex-shrink-0">"(" {count} ")"</span>
                                     </label>
@@ -493,11 +492,11 @@ pub fn FacetedFilters(
                                 let author_copy = author.clone();
                                 let author_copy2 = author.clone();
                                 view! {
-                                    <label class="flex items-center gap-2 cursor-pointer hover:bg-white px-2 py-1.5 rounded text-sm">
+                                    <label class="flex items-center gap-2 cursor-pointer hover:bg-white px-2 py-1.5 rounded text-sm relative">
                                         <input type="checkbox"
                                                prop:checked=move || selected_authors.get().contains(&author_copy)
                                                on:change=move |_| toggle_author(author_copy2.clone())
-                                               class="rounded flex-shrink-0" />
+                                               class="rounded flex-shrink-0 relative z-10" />
                                         <span class="text-gray-700 min-w-0 break-all text-xs">{author.clone()}</span>
                                         <span class="ml-auto text-xs text-gray-500 flex-shrink-0">"(" {count} ")"</span>
                                     </label>

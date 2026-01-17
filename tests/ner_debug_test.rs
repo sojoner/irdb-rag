@@ -22,7 +22,10 @@ async fn test_ner_extraction_debug() {
     match result {
         Ok(metadata) => {
             println!("\n=== NER Results ===");
-            println!("Entities: {}", serde_json::to_string_pretty(&metadata.entities).unwrap());
+            println!(
+                "Entities: {}",
+                serde_json::to_string_pretty(&metadata.entities).unwrap()
+            );
             println!("Summary: {:?}", metadata.summary);
             println!("Keywords: {:?}", metadata.keywords);
             println!("Author: {:?}", metadata.author);
@@ -60,8 +63,13 @@ async fn test_ner_extraction_debug() {
                 eprintln!("\n❌ WARNING: No entities extracted at all!");
                 eprintln!("This suggests the NER model is not working properly");
             } else if total_entities < 5 {
-                eprintln!("\n⚠️  WARNING: Only {} entities extracted from obvious text!", total_entities);
-                eprintln!("Expected at least: 2 persons + 3 orgs + 2 locations + 2 products = 9 entities");
+                eprintln!(
+                    "\n⚠️  WARNING: Only {} entities extracted from obvious text!",
+                    total_entities
+                );
+                eprintln!(
+                    "Expected at least: 2 persons + 3 orgs + 2 locations + 2 products = 9 entities"
+                );
             }
         }
         Err(e) => {

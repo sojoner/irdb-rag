@@ -335,9 +335,7 @@ mod retry_delay_tests {
         };
 
         // Calculate multiple times to see variance from jitter
-        let delays: Vec<_> = (0..5)
-            .map(|_| calculate_retry_delay(1, &config))
-            .collect();
+        let delays: Vec<_> = (0..5).map(|_| calculate_retry_delay(1, &config)).collect();
 
         // All should be in reasonable range but not identical
         for delay in &delays {
@@ -369,15 +367,10 @@ mod retry_delay_tests {
 #[cfg(test)]
 mod import_progress_tests {
     use crate::domain::models::{ImportJob, ImportProgress};
-    use uuid::Uuid;
     use chrono::Utc;
+    use uuid::Uuid;
 
-    fn create_test_job(
-        total: i32,
-        processed: i32,
-        failed: i32,
-        skipped: i32,
-    ) -> ImportJob {
+    fn create_test_job(total: i32, processed: i32, failed: i32, skipped: i32) -> ImportJob {
         ImportJob {
             id: Uuid::new_v4(),
             status: "running".to_string(),
@@ -521,7 +514,7 @@ mod import_progress_tests {
 
 #[cfg(test)]
 mod dto_tests {
-    use crate::domain::dtos::{SearchRequest, ChatRequest};
+    use crate::domain::dtos::{ChatRequest, SearchRequest};
     use uuid::Uuid;
 
     #[test]

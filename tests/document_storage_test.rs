@@ -1,13 +1,17 @@
 use anyhow::Result;
+use rag_chat::config::Settings;
 use rag_chat::domain::models::Document;
 use rag_chat::infra::db::SearchFilters;
 use rag_chat::infra::db::{create_pool, hybrid_search};
-use rag_chat::config::Settings;
 use sqlx::{PgPool, Row};
 use uuid::Uuid;
 
 async fn setup_db() -> Result<PgPool> {
-    if std::env::var("RUN_ENV").is_err() { if std::env::var("RUN_ENV").is_err() { std::env::set_var("RUN_ENV", "test"); } }
+    if std::env::var("RUN_ENV").is_err() {
+        if std::env::var("RUN_ENV").is_err() {
+            std::env::set_var("RUN_ENV", "test");
+        }
+    }
     let settings = Settings::new()?;
 
     // Use the shared pool creation logic which handles config properly
@@ -52,12 +56,10 @@ async fn test_store_and_retrieve_document() -> Result<()> {
     println!("✅ Document stored: {}", doc_id);
 
     // Retrieve document
-    let retrieved = sqlx::query_as::<_, Document>(
-        "SELECT * FROM documents WHERE id = $1"
-    )
-    .bind(doc_id)
-    .fetch_one(&pool)
-    .await?;
+    let retrieved = sqlx::query_as::<_, Document>("SELECT * FROM documents WHERE id = $1")
+        .bind(doc_id)
+        .fetch_one(&pool)
+        .await?;
 
     println!("✅ Document retrieved: {}", retrieved.title);
 
@@ -91,7 +93,7 @@ async fn test_document_upsert() -> Result<()> {
         r#"
         INSERT INTO documents (id, title, content, source_path, source_type, indexed_at)
         VALUES ($1, $2, $3, $4, 'pdf', $5)
-        "#
+        "#,
     )
     .bind(doc_id)
     .bind(title)
@@ -110,7 +112,7 @@ async fn test_document_upsert() -> Result<()> {
         VALUES ($1, $2, $3, $4, 'pdf', $5)
         ON CONFLICT (id) DO UPDATE
         SET content = EXCLUDED.content, indexed_at = EXCLUDED.indexed_at
-        "#
+        "#,
     )
     .bind(doc_id)
     .bind(title)
@@ -127,7 +129,7 @@ async fn test_document_upsert() -> Result<()> {
         .bind(doc_id)
         .fetch_one(&pool)
         .await?;
-    
+
     let content: String = row.get("content");
 
     assert_eq!(content, "Updated content");
@@ -182,16 +184,8 @@ async fn test_hybrid_search_syntax() -> Result<()> {
 
     for query in test_queries {
         println!("Testing query: '{}'", query);
-        let result = hybrid_search(
-            &pool,
-            query,
-            &dummy_embedding,
-            &filters,
-            5,
-            0.5,
-            0.5,
-            None,
-        ).await;
+        let result =
+            hybrid_search(&pool, query, &dummy_embedding, &filters, 5, 0.5, 0.5, None).await;
 
         match result {
             Ok(_) => println!("✅ Query '{}' succeeded", query),

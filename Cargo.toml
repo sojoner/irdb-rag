@@ -29,7 +29,7 @@ leptos_axum = { version = "0.8", optional = true }
 wasm-bindgen = { version = "0.2", optional = true }
 wasm-bindgen-futures = { version = "0.4", optional = true }
 console_error_panic_hook = { version = "0.1", optional = true }
-web-sys = { version = "0.3", features = ["Window", "Document", "MouseEvent", "HtmlInputElement", "Request", "RequestInit", "Response", "Headers"], optional = true }
+web-sys = { version = "0.3", features = ["Window", "Document", "MouseEvent", "HtmlInputElement", "Request", "RequestInit", "Response", "Headers", "Navigator", "Clipboard"], optional = true }
 gloo-net = { version = "0.6", optional = true }
 
 # Backend

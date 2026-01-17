@@ -3,11 +3,11 @@
 //! This module contains pure, side-effect-free functions extracted from handlers.
 //! These are easily testable and don't require mocking or database access.
 
-use uuid::Uuid;
+use crate::domain::dtos::SearchRequest;
 use crate::domain::dtos::SourceReference;
 use crate::domain::models::DocumentChunk;
 use crate::infra::db::SearchFilters;
-use crate::domain::dtos::SearchRequest;
+use uuid::Uuid;
 
 // ============================================
 // Filter Construction
@@ -65,11 +65,7 @@ pub fn resolve_system_prompt(env_override: Option<String>) -> String {
 /// Build user prompt from context and message
 /// Pure function - no side effects
 pub fn build_user_prompt(context: &str, message: &str) -> String {
-    format!(
-        "CONTEXT:\n{}\n\nQUESTION:\n{}",
-        context,
-        message
-    )
+    format!("CONTEXT:\n{}\n\nQUESTION:\n{}", context, message)
 }
 
 /// Build complete LLM prompt (system + user)
@@ -91,7 +87,9 @@ pub fn build_source_references(chunks: &[DocumentChunk]) -> Vec<SourceReference>
         .enumerate()
         .map(|(i, c)| SourceReference {
             document_id: c.document_id,
-            title: c.section_title.clone()
+            title: c
+                .section_title
+                .clone()
                 .unwrap_or_else(|| format!("Chunk {}", i + 1)),
             chunk: c.content.chars().take(200).collect::<String>() + "...",
             relevance: 1.0 - (i as f64 * 0.1),
@@ -115,17 +113,27 @@ pub fn resolve_conversation_id(provided_id: Option<Uuid>) -> Uuid {
 
 /// Validate search request parameters
 /// Returns tuple: (is_valid, error_message)
-pub fn validate_search_request(limit: i32, bm25_weight: f64, vector_weight: f64) -> (bool, Option<String>) {
+pub fn validate_search_request(
+    limit: i32,
+    bm25_weight: f64,
+    vector_weight: f64,
+) -> (bool, Option<String>) {
     if limit <= 0 || limit > 100 {
         return (false, Some("limit must be between 1 and 100".to_string()));
     }
 
     if !(0.0..=1.0).contains(&bm25_weight) {
-        return (false, Some("bm25_weight must be between 0.0 and 1.0".to_string()));
+        return (
+            false,
+            Some("bm25_weight must be between 0.0 and 1.0".to_string()),
+        );
     }
 
     if !(0.0..=1.0).contains(&vector_weight) {
-        return (false, Some("vector_weight must be between 0.0 and 1.0".to_string()));
+        return (
+            false,
+            Some("vector_weight must be between 0.0 and 1.0".to_string()),
+        );
     }
 
     (true, None)
@@ -134,7 +142,10 @@ pub fn validate_search_request(limit: i32, bm25_weight: f64, vector_weight: f64)
 /// Validate chat request parameters
 pub fn validate_chat_request(context_chunks: i32, message: &str) -> (bool, Option<String>) {
     if context_chunks <= 0 || context_chunks > 50 {
-        return (false, Some("context_chunks must be between 1 and 50".to_string()));
+        return (
+            false,
+            Some("context_chunks must be between 1 and 50".to_string()),
+        );
     }
 
     if message.trim().is_empty() {
@@ -142,7 +153,10 @@ pub fn validate_chat_request(context_chunks: i32, message: &str) -> (bool, Optio
     }
 
     if message.len() > 10000 {
-        return (false, Some("message too long (max 10000 chars)".to_string()));
+        return (
+            false,
+            Some("message too long (max 10000 chars)".to_string()),
+        );
     }
 
     (true, None)
@@ -161,6 +175,7 @@ mod tests {
         let req = SearchRequest {
             query: "test".to_string(),
             limit: 10,
+            search_fields: vec!["content".to_string()],
             bm25_weight: 0.5,
             vector_weight: 0.5,
             category_id: None,
@@ -188,6 +203,7 @@ mod tests {
         let req = SearchRequest {
             query: "test".to_string(),
             limit: 10,
+            search_fields: vec!["content".to_string()],
             bm25_weight: 0.5,
             vector_weight: 0.5,
             category_id: Some(Uuid::new_v4()),
@@ -217,6 +233,7 @@ mod tests {
         let req = SearchRequest {
             query: "test".to_string(),
             limit: 10,
+            search_fields: vec!["content".to_string()],
             bm25_weight: 0.5,
             vector_weight: 0.5,
             category_id: None,

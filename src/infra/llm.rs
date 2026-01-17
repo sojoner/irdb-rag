@@ -3,19 +3,18 @@
 //! Handles communication with OpenAI-compatible LLM APIs using async-openai.
 
 use anyhow::Result;
-use futures::stream::BoxStream;
-use async_openai::{Client, config::OpenAIConfig};
 use async_openai::types::{
     ChatCompletionRequestMessage, ChatCompletionRequestSystemMessage,
     ChatCompletionRequestUserMessage, CreateChatCompletionRequestArgs,
 };
+use async_openai::{config::OpenAIConfig, Client};
+use futures::stream::BoxStream;
 
-use crate::domain::models::{LLMConfig, InfraEmbeddingConfig};
+use crate::domain::models::{InfraEmbeddingConfig, LLMConfig};
 
 /// Create an OpenAI client from LLM config
 fn create_client(config: &LLMConfig) -> Client<OpenAIConfig> {
-    let mut openai_config = OpenAIConfig::new()
-        .with_api_base(&config.api_url);
+    let mut openai_config = OpenAIConfig::new().with_api_base(&config.api_url);
 
     // Only set API key if it's not empty
     if !config.api_key.is_empty() {
@@ -50,8 +49,7 @@ pub async fn call_llm_with_timeout(
     temperature: Option<f32>,
     timeout_seconds: u64,
 ) -> Result<String> {
-    let mut openai_config = OpenAIConfig::new()
-        .with_api_base(&config.api_url);
+    let mut openai_config = OpenAIConfig::new().with_api_base(&config.api_url);
 
     // Only set API key if it's not empty
     if !config.api_key.is_empty() {
@@ -84,7 +82,8 @@ pub async fn call_llm_with_timeout(
 
     let response = client.chat().create(request).await?;
 
-    let content = response.choices
+    let content = response
+        .choices
         .first()
         .and_then(|choice| choice.message.content.as_ref())
         .map(|s| s.to_string())
@@ -153,7 +152,8 @@ pub async fn stream_llm_with_timeout(
                 }
             }
         }
-    }.boxed();
+    }
+    .boxed();
 
     Ok(content_stream)
 }
@@ -167,7 +167,10 @@ pub async fn get_embedding(config: &InfraEmbeddingConfig, text: &str) -> Result<
 
 /// Generate embeddings for multiple text strings (batch operation)
 #[allow(dead_code)]
-pub async fn get_embeddings_batch(config: &InfraEmbeddingConfig, texts: &[&str]) -> Result<Vec<Vec<f32>>> {
+pub async fn get_embeddings_batch(
+    config: &InfraEmbeddingConfig,
+    texts: &[&str],
+) -> Result<Vec<Vec<f32>>> {
     get_embeddings_batch_with_timeout(config, texts, 120).await
 }
 
@@ -224,7 +227,8 @@ pub async fn get_embeddings_batch_with_timeout(
     for item in data {
         let index = item["index"]
             .as_u64()
-            .ok_or_else(|| anyhow::anyhow!("Missing index in embedding response"))? as usize;
+            .ok_or_else(|| anyhow::anyhow!("Missing index in embedding response"))?
+            as usize;
 
         let embedding = item["embedding"]
             .as_array()

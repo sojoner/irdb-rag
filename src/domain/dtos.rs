@@ -1,14 +1,13 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-
 // We need to handle LLMConfig. For now, let's assume it will be in domain::models or we import it.
 // Since we haven't moved LLMConfig yet, we might have a temporary issue.
 // But we are defining the target state.
 // Let's assume LLMConfig is moved to domain::models or domain::config.
 // I will put LLMConfig in domain::models for now to avoid circular deps.
 
-use crate::domain::models::LLMConfig; 
+use crate::domain::models::LLMConfig;
 
 // ============================================
 // Request/Response Types
@@ -19,6 +18,10 @@ pub struct SearchRequest {
     pub query: String,
     #[serde(default = "default_limit")]
     pub limit: i32,
+    /// Fields to search in: content, title, summary, author, keywords
+    #[serde(default = "default_search_fields")]
+    pub search_fields: Vec<String>,
+    // Deprecated - keeping for backward compatibility
     #[serde(default = "default_bm25_weight")]
     pub bm25_weight: f64,
     #[serde(default = "default_vector_weight")]
@@ -37,10 +40,50 @@ pub struct SearchRequest {
     pub word_count_max: Option<i32>,
 }
 
-fn default_limit() -> i32 { 10 }
-fn default_bm25_weight() -> f64 { 0.5 }
-fn default_vector_weight() -> f64 { 0.5 }
+fn default_limit() -> i32 {
+    10
+}
+fn default_search_fields() -> Vec<String> {
+    vec![
+        "content".to_string(),
+        "title".to_string(),
+        "summary".to_string(),
+    ]
+}
+fn default_bm25_weight() -> f64 {
+    0.5
+}
+fn default_vector_weight() -> f64 {
+    0.5
+}
 
+// Chat message in a conversation
+#[cfg_attr(not(target_arch = "wasm32"), derive(sqlx::FromRow))]
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
+pub struct ChatMessage {
+    pub role: String,    // "user" or "assistant"
+    pub content: String,
+}
+
+// New conversation-based chat request
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct ChatConversationRequest {
+    pub messages: Vec<ChatMessage>,
+    pub conversation_id: Option<Uuid>,
+    #[serde(default = "default_context_chunks")]
+    pub context_chunks: i32,
+    pub document_ids: Option<Vec<Uuid>>,
+}
+
+// New conversation-based chat response
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ChatConversationResponse {
+    pub message: ChatMessage,
+    pub conversation_id: Uuid,
+    pub sources: Vec<SourceReference>,
+}
+
+// Legacy single-message chat request (kept for backward compatibility)
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct ChatRequest {
     pub message: String,
@@ -50,8 +93,11 @@ pub struct ChatRequest {
     pub document_ids: Option<Vec<Uuid>>,
 }
 
-fn default_context_chunks() -> i32 { 5 }
+fn default_context_chunks() -> i32 {
+    5
+}
 
+// Legacy single-message chat response (kept for backward compatibility)
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ChatResponse {
     pub message: String,
@@ -81,7 +127,9 @@ pub struct ListQuery {
     pub offset: i32,
 }
 
-fn default_page_limit() -> i32 { 20 }
+fn default_page_limit() -> i32 {
+    20
+}
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct SystemStatus {
@@ -134,6 +182,77 @@ pub struct AggregationStats {
     pub concepts: Vec<(String, i64)>,
     pub authors: Vec<(String, i64)>,
     pub word_count_ranges: Vec<(String, i64)>,
+}
+
+// ============================================
+// Faceted Search DTOs
+// ============================================
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct FacetValue {
+    pub value: String,
+    pub count: i64,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct FacetAggregate {
+    pub facet_name: String,
+    pub facet_value: String,
+    pub count: i64,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct FacetedSearchRequest {
+    pub query: String,
+    #[serde(default = "default_limit")]
+    pub limit: i32,
+    #[serde(default = "default_bm25_weight")]
+    pub bm25_weight: f64,
+    #[serde(default = "default_vector_weight")]
+    pub vector_weight: f64,
+    pub category_id: Option<Uuid>,
+    pub date_from: Option<String>,
+    pub date_to: Option<String>,
+    pub locations: Option<Vec<String>>,
+    pub keywords: Option<Vec<String>>,
+    pub authors: Option<Vec<String>>,
+    pub concepts: Option<Vec<String>>,
+    pub organizations: Option<Vec<String>>,
+    pub persons: Option<Vec<String>>,
+    pub products: Option<Vec<String>>,
+    #[serde(default = "default_facet_limit")]
+    pub facet_limit: i32,
+}
+
+fn default_facet_limit() -> i32 {
+    10
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct FacetedSearchResponse {
+    pub results: Vec<crate::domain::models::SearchResult>,
+    pub facets: Vec<FacetAggregate>,
+    pub total_results: i64,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct FacetValuesRequest {
+    pub facet_type: String,
+    pub query: Option<String>,
+    pub category_id: Option<Uuid>,
+    pub date_from: Option<String>,
+    pub date_to: Option<String>,
+    pub locations: Option<Vec<String>>,
+    pub keywords: Option<Vec<String>>,
+    pub authors: Option<Vec<String>>,
+    #[serde(default = "default_facet_limit")]
+    pub limit: i32,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct FacetValuesResponse {
+    pub facet_type: String,
+    pub values: Vec<FacetValue>,
 }
 
 // ============================================
@@ -252,4 +371,34 @@ pub struct AddKnowledgeBasePathsResponse {
 #[derive(Debug, Deserialize)]
 pub struct ImportBookmarksRequest {
     pub path: String,
+}
+
+// ============================================
+// Conversation Management DTOs
+// ============================================
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ConversationInfo {
+    pub id: Uuid,
+    pub title: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+    pub message_count: i64,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ConversationsListResponse {
+    pub conversations: Vec<ConversationInfo>,
+    pub total: i64,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct CreateConversationRequest {
+    pub title: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct CreateConversationResponse {
+    pub id: Uuid,
+    pub title: Option<String>,
 }

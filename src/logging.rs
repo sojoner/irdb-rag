@@ -1,7 +1,7 @@
 use std::fmt;
 use std::sync::{Arc, Mutex};
 use tracing::{Event, Subscriber};
-use tracing_subscriber::{layer::Context, Layer, registry::LookupSpan};
+use tracing_subscriber::{layer::Context, registry::LookupSpan, Layer};
 
 pub struct BufferLayer {
     buffer: Arc<Mutex<Vec<String>>>,
@@ -21,10 +21,10 @@ where
     fn on_event(&self, event: &Event<'_>, _ctx: Context<'_, S>) {
         let mut visitor = StringVisitor::new();
         event.record(&mut visitor);
-        
+
         let timestamp = chrono::Local::now().format("%H:%M:%S");
         let message = format!("[{}] {} {}", timestamp, event.metadata().level(), visitor.0);
-        
+
         if let Ok(mut buf) = self.buffer.lock() {
             if buf.len() >= self.max_lines {
                 buf.remove(0);

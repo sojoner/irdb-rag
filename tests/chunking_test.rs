@@ -4,9 +4,7 @@ use text_splitter::{ChunkConfig, TextSplitter};
 fn chunk_text(text: &str, target_tokens: usize) -> Vec<String> {
     let splitter = TextSplitter::new(ChunkConfig::new(target_tokens).with_trim(true));
 
-    splitter.chunks(text)
-        .map(|s: &str| s.to_string())
-        .collect()
+    splitter.chunks(text).map(|s: &str| s.to_string()).collect()
 }
 
 #[test]
@@ -65,7 +63,8 @@ fn test_chunk_size_limits() {
 fn test_chunking_preserves_content() {
     println!("\n🔍 Testing content preservation during chunking...\n");
 
-    let original = "The quick brown fox jumps over the lazy dog. This is a test of content preservation.";
+    let original =
+        "The quick brown fox jumps over the lazy dog. This is a test of content preservation.";
 
     let chunks = chunk_text(original, 20);
 

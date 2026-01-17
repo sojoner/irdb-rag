@@ -3,12 +3,15 @@
 /// Prerequisites:
 /// - PostgreSQL/ParadeDB running (docker compose up -d)
 /// - DATABASE_URL set in .env or environment
-
 use rag_chat::config::Settings;
 
 #[tokio::test]
 async fn test_database_connection() {
-    if std::env::var("RUN_ENV").is_err() { if std::env::var("RUN_ENV").is_err() { std::env::set_var("RUN_ENV", "test"); } }
+    if std::env::var("RUN_ENV").is_err() {
+        if std::env::var("RUN_ENV").is_err() {
+            std::env::set_var("RUN_ENV", "test");
+        }
+    }
     let settings = Settings::new().expect("Failed to load settings");
     let db_url = settings.database.url.clone();
 
@@ -38,7 +41,6 @@ async fn test_database_connection() {
 #[tokio::test]
 
 async fn test_docling_pipeline() {
-
     let pdf_path = "tests/test_data/HumanPrincipals.pdf";
 
     // Use container service name when running inside Docker, localhost otherwise
@@ -51,7 +53,8 @@ async fn test_docling_pipeline() {
     // Step 1: Verify PDF exists
     assert!(
         std::path::Path::new(pdf_path).exists(),
-        "Test PDF not found at {}", pdf_path
+        "Test PDF not found at {}",
+        pdf_path
     );
     println!("✓ PDF file found: {}", pdf_path);
 
@@ -75,14 +78,13 @@ async fn test_docling_pipeline() {
     // Step 3: Upload PDF to Docling for processing
     let file_bytes = std::fs::read(pdf_path).expect("Failed to read PDF file");
 
-    let form = reqwest::multipart::Form::new()
-        .part(
-            "files",  // API expects "files" (plural)
-            reqwest::multipart::Part::bytes(file_bytes)
-                .file_name("HumanPrincipals.pdf")
-                .mime_str("application/pdf")
-                .expect("Invalid MIME type"),
-        );
+    let form = reqwest::multipart::Form::new().part(
+        "files", // API expects "files" (plural)
+        reqwest::multipart::Part::bytes(file_bytes)
+            .file_name("HumanPrincipals.pdf")
+            .mime_str("application/pdf")
+            .expect("Invalid MIME type"),
+    );
 
     println!("Sending PDF to Docling for processing...");
     let convert_response = client
@@ -111,7 +113,7 @@ async fn test_docling_pipeline() {
         result.get("document").is_some(),
         "Docling response missing 'document' field"
     );
-    
+
     let document = &result["document"];
     assert!(
         document.get("md_content").is_some(),
@@ -119,16 +121,18 @@ async fn test_docling_pipeline() {
     );
     println!("✓ Markdown content extracted");
 
-    let markdown = document["md_content"].as_str().expect("Markdown is not a string");
-    assert!(
-        !markdown.is_empty(),
-        "Docling returned empty markdown"
-    );
+    let markdown = document["md_content"]
+        .as_str()
+        .expect("Markdown is not a string");
+    assert!(!markdown.is_empty(), "Docling returned empty markdown");
     println!("  Markdown length: {} chars", markdown.len());
 
     // Check for metadata
     if let Some(metadata) = result.get("metadata") {
-        println!("✓ Metadata extracted: {}", serde_json::to_string_pretty(metadata).unwrap_or_default());
+        println!(
+            "✓ Metadata extracted: {}",
+            serde_json::to_string_pretty(metadata).unwrap_or_default()
+        );
     }
 
     // Display first 200 chars of markdown
@@ -150,7 +154,11 @@ async fn test_docling_pipeline() {
 /// - RUN_ENV=test for loading config/test.toml with LLM settings
 #[tokio::test]
 async fn test_llm_api_integration() {
-    if std::env::var("RUN_ENV").is_err() { if std::env::var("RUN_ENV").is_err() { std::env::set_var("RUN_ENV", "test"); } }
+    if std::env::var("RUN_ENV").is_err() {
+        if std::env::var("RUN_ENV").is_err() {
+            std::env::set_var("RUN_ENV", "test");
+        }
+    }
     let settings = Settings::new().expect("Failed to load settings");
 
     let config = rag_chat::domain::models::LLMConfig {
@@ -170,11 +178,17 @@ async fn test_llm_api_integration() {
         Ok(response) => {
             println!("✓ LLM API call succeeded");
             println!("  Response length: {} chars", response.len());
-            println!("  Response: {}", &response[..std::cmp::min(200, response.len())]);
+            println!(
+                "  Response: {}",
+                &response[..std::cmp::min(200, response.len())]
+            );
             assert!(!response.is_empty(), "LLM returned empty response");
         }
         Err(e) => {
-            println!("⚠ Skipping LLM test: API call failed (is vLLM running?): {}", e);
+            println!(
+                "⚠ Skipping LLM test: API call failed (is vLLM running?): {}",
+                e
+            );
         }
     }
 }
@@ -192,7 +206,11 @@ async fn test_chat_with_rag_context() {
     use axum::extract::State;
     use axum::Json;
 
-    if std::env::var("RUN_ENV").is_err() { if std::env::var("RUN_ENV").is_err() { std::env::set_var("RUN_ENV", "test"); } }
+    if std::env::var("RUN_ENV").is_err() {
+        if std::env::var("RUN_ENV").is_err() {
+            std::env::set_var("RUN_ENV", "test");
+        }
+    }
     let settings = Settings::new().expect("Failed to load settings");
     let db_url = settings.database.url.clone();
 
@@ -256,9 +274,15 @@ async fn test_chat_with_rag_context() {
             println!("  Conversation ID: {}", response.0.conversation_id);
             println!("  Response length: {} chars", response.0.message.len());
             println!("  Sources: {}", response.0.sources.len());
-            println!("  Response: {}", &response.0.message[..std::cmp::min(200, response.0.message.len())]);
+            println!(
+                "  Response: {}",
+                &response.0.message[..std::cmp::min(200, response.0.message.len())]
+            );
 
-            assert!(!response.0.message.is_empty(), "Chat returned empty response");
+            assert!(
+                !response.0.message.is_empty(),
+                "Chat returned empty response"
+            );
             assert!(!response.0.sources.is_empty(), "Chat returned no sources");
         }
         Err(e) => {

@@ -1,13 +1,17 @@
 use anyhow::Result;
-use serde_json::{json, Value};
 use rag_chat::config::Settings;
+use serde_json::{json, Value};
 
 /// Test docling URL processing with the /v1/convert/source endpoint
 /// This test verifies that docling returns a consistent structure for URL-based documents
 #[tokio::test]
 
 async fn test_docling_url_processing() -> Result<()> {
-    if std::env::var("RUN_ENV").is_err() { if std::env::var("RUN_ENV").is_err() { std::env::set_var("RUN_ENV", "test"); } }
+    if std::env::var("RUN_ENV").is_err() {
+        if std::env::var("RUN_ENV").is_err() {
+            std::env::set_var("RUN_ENV", "test");
+        }
+    }
 
     let settings = Settings::new()?;
     let docling_url = settings.docling.url.clone();
@@ -60,19 +64,32 @@ async fn test_docling_url_processing() -> Result<()> {
     }
 
     // Verify expected structure
-    assert!(result.get("document").is_some(), "Response should contain 'document' field");
+    assert!(
+        result.get("document").is_some(),
+        "Response should contain 'document' field"
+    );
 
     let document = result.get("document").expect("document field should exist");
 
     // Check for markdown content
-    let md_content = document.get("md_content")
+    let md_content = document
+        .get("md_content")
         .and_then(|v| v.as_str())
         .expect("md_content should exist and be a string");
 
-    println!("\n📝 Markdown content extracted: {} chars", md_content.len());
-    println!("Preview (first 300 chars):\n{}", &md_content.chars().take(300).collect::<String>());
+    println!(
+        "\n📝 Markdown content extracted: {} chars",
+        md_content.len()
+    );
+    println!(
+        "Preview (first 300 chars):\n{}",
+        &md_content.chars().take(300).collect::<String>()
+    );
 
-    assert!(!md_content.is_empty(), "Markdown content should not be empty");
+    assert!(
+        !md_content.is_empty(),
+        "Markdown content should not be empty"
+    );
 
     // Check for metadata
     if let Some(metadata) = document.get("metadata") {
@@ -110,7 +127,11 @@ async fn test_docling_url_processing() -> Result<()> {
 #[tokio::test]
 
 async fn test_docling_html_url() -> Result<()> {
-    if std::env::var("RUN_ENV").is_err() { if std::env::var("RUN_ENV").is_err() { std::env::set_var("RUN_ENV", "test"); } }
+    if std::env::var("RUN_ENV").is_err() {
+        if std::env::var("RUN_ENV").is_err() {
+            std::env::set_var("RUN_ENV", "test");
+        }
+    }
 
     let settings = Settings::new()?;
     let docling_url = settings.docling.url.clone();
@@ -153,15 +174,22 @@ async fn test_docling_html_url() -> Result<()> {
     let result: Value = response.json().await?;
 
     // Verify structure
-    assert!(result.get("document").is_some(), "Response should contain 'document' field");
+    assert!(
+        result.get("document").is_some(),
+        "Response should contain 'document' field"
+    );
 
     let document = result.get("document").expect("document field should exist");
-    let md_content = document.get("md_content")
+    let md_content = document
+        .get("md_content")
         .and_then(|v| v.as_str())
         .expect("md_content should exist");
 
     println!("✅ HTML converted to Markdown: {} chars", md_content.len());
-    println!("Preview:\n{}", &md_content.chars().take(500).collect::<String>());
+    println!(
+        "Preview:\n{}",
+        &md_content.chars().take(500).collect::<String>()
+    );
 
     assert!(!md_content.is_empty(), "Content should not be empty");
 
@@ -172,7 +200,11 @@ async fn test_docling_html_url() -> Result<()> {
 #[tokio::test]
 
 async fn test_docling_structure_consistency() -> Result<()> {
-    if std::env::var("RUN_ENV").is_err() { if std::env::var("RUN_ENV").is_err() { std::env::set_var("RUN_ENV", "test"); } }
+    if std::env::var("RUN_ENV").is_err() {
+        if std::env::var("RUN_ENV").is_err() {
+            std::env::set_var("RUN_ENV", "test");
+        }
+    }
 
     let settings = Settings::new()?;
     let docling_url = settings.docling.url.clone();
@@ -184,8 +216,11 @@ async fn test_docling_structure_consistency() -> Result<()> {
         println!("📦 Checking {} structure:", source_type);
 
         // All responses should have a 'document' field
-        assert!(result.get("document").is_some(),
-            "{} response should contain 'document' field", source_type);
+        assert!(
+            result.get("document").is_some(),
+            "{} response should contain 'document' field",
+            source_type
+        );
 
         let document = result.get("document").unwrap();
 
