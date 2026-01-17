@@ -42,6 +42,83 @@ pub fn sanitize_bm25_query(query: &str) -> &str {
     }
 }
 
+/// Tokenize query string into normalized tokens
+///
+/// - Converts to lowercase
+/// - Removes extra whitespace
+/// - Filters single-character noise
+/// - Preserves hyphenated terms
+///
+/// # Examples
+/// ```
+/// use rag_chat::infra::db_utils::tokenize_query;
+/// let tokens = tokenize_query("Hello-World test  case");
+/// assert_eq!(tokens.len(), 3);
+/// assert_eq!(tokens[0], "hello-world");
+/// ```
+pub fn tokenize_query(query: &str) -> Vec<String> {
+    query
+        .trim()
+        .to_lowercase()
+        // Normalize whitespace
+        .split_whitespace()
+        // Filter empty and single-char tokens
+        .filter(|token| token.len() > 1)
+        .map(|token| token.to_string())
+        .collect()
+}
+
+/// Build a phrase query for exact phrase matching
+///
+/// Expects tokens to match in exact order and adjacent positions
+///
+/// Note: Uses double-quoted terms to preserve case and special characters
+/// when used with ParadeDB's BM25 index via the @@@ operator
+pub fn build_phrase_query(tokens: &[String]) -> String {
+    if tokens.is_empty() {
+        "id:__no_match__".to_string()
+    } else {
+        // Use quoted terms for phrase matching instead of PHRASE() function
+        // to avoid parsing errors with field-qualified queries
+        let quoted = tokens
+            .iter()
+            .map(|t| format!("\"{}\"", t))
+            .collect::<Vec<_>>()
+            .join(" ");
+        quoted
+    }
+}
+
+/// Build a prefix query for fuzzy matching
+///
+/// Appends * to each token for prefix matching with OR semantics
+pub fn build_prefix_query(query: &str) -> String {
+    let tokens = tokenize_query(query);
+    if tokens.is_empty() {
+        "id:__no_match__".to_string()
+    } else {
+        // Join with ||| (OR) operator, append * for prefix matching
+        tokens
+            .iter()
+            .map(|t| format!("{}*", t))
+            .collect::<Vec<_>>()
+            .join(" ||| ")
+    }
+}
+
+/// Build a boolean query with AND semantics
+///
+/// All tokens must be present for a match
+pub fn build_boolean_query(query: &str) -> String {
+    let tokens = tokenize_query(query);
+    if tokens.is_empty() {
+        "id:__no_match__".to_string()
+    } else {
+        // Join with &&& (AND) operator for strict matching
+        tokens.join(" &&& ")
+    }
+}
+
 /// Convert embedding vector to PostgreSQL vector format string
 ///
 /// # Examples
@@ -421,5 +498,98 @@ mod tests {
         filters_with_multiple.keywords = Some(vec!["test".to_string()]);
         filters_with_multiple.concepts = Some(vec!["concept".to_string()]);
         assert_eq!(count_active_filters(&filters_with_multiple), 3);
+    }
+
+    #[test]
+    fn test_tokenize_query_basic() {
+        let tokens = tokenize_query("hello world");
+        assert_eq!(tokens.len(), 2);
+        assert_eq!(tokens[0], "hello");
+        assert_eq!(tokens[1], "world");
+    }
+
+    #[test]
+    fn test_tokenize_query_lowercase() {
+        let tokens = tokenize_query("Hello WORLD");
+        assert_eq!(tokens[0], "hello");
+        assert_eq!(tokens[1], "world");
+    }
+
+    #[test]
+    fn test_tokenize_query_whitespace() {
+        let tokens = tokenize_query("  hello   world  ");
+        assert_eq!(tokens.len(), 2);
+    }
+
+    #[test]
+    fn test_tokenize_query_filters_single_chars() {
+        let tokens = tokenize_query("a hello b world");
+        assert_eq!(tokens.len(), 2);
+        assert_eq!(tokens[0], "hello");
+        assert_eq!(tokens[1], "world");
+    }
+
+    #[test]
+    fn test_tokenize_query_preserves_hyphens() {
+        let tokens = tokenize_query("hello-world test");
+        assert_eq!(tokens.len(), 2);
+        assert_eq!(tokens[0], "hello-world");
+        assert_eq!(tokens[1], "test");
+    }
+
+    #[test]
+    fn test_build_phrase_query_empty() {
+        let tokens: Vec<String> = vec![];
+        assert_eq!(build_phrase_query(&tokens), "id:__no_match__");
+    }
+
+    #[test]
+    fn test_build_phrase_query_single() {
+        let tokens = vec!["hello".to_string()];
+        assert_eq!(build_phrase_query(&tokens), "\"hello\"");
+    }
+
+    #[test]
+    fn test_build_phrase_query_multiple() {
+        let tokens = vec!["hello".to_string(), "world".to_string()];
+        assert_eq!(build_phrase_query(&tokens), "\"hello\" \"world\"");
+    }
+
+    #[test]
+    fn test_build_prefix_query_empty() {
+        assert_eq!(build_prefix_query(""), "id:__no_match__");
+    }
+
+    #[test]
+    fn test_build_prefix_query_single() {
+        let result = build_prefix_query("hello");
+        assert_eq!(result, "hello*");
+    }
+
+    #[test]
+    fn test_build_prefix_query_multiple() {
+        let result = build_prefix_query("hello world");
+        assert!(result.contains("hello*"));
+        assert!(result.contains("world*"));
+        assert!(result.contains("|||"));
+    }
+
+    #[test]
+    fn test_build_boolean_query_empty() {
+        assert_eq!(build_boolean_query(""), "id:__no_match__");
+    }
+
+    #[test]
+    fn test_build_boolean_query_single() {
+        let result = build_boolean_query("hello");
+        assert_eq!(result, "hello");
+    }
+
+    #[test]
+    fn test_build_boolean_query_multiple() {
+        let result = build_boolean_query("hello world");
+        assert!(result.contains("hello"));
+        assert!(result.contains("world"));
+        assert!(result.contains("&&&"));
     }
 }

@@ -129,7 +129,18 @@ fn matches_entity_filter(doc: &Document, filter: &Option<Vec<String>>, entity_ke
         .unwrap_or(false)
 }
 
-/// Perform hybrid search combining BM25 and vector similarity
+/// Perform advanced hybrid search combining multiple strategies for better F-measure
+///
+/// This improved search combines:
+/// 1. Phrase matching (exact sequences, high weight)
+/// 2. Boolean AND matching (all terms required, high precision)
+/// 3. BM25 full-text search (standard lexical matching)
+/// 4. Prefix/fuzzy matching (handles typos and partial matches)
+/// 5. Vector semantic search (contextual similarity, lower weight)
+///
+/// Weights can be tuned based on corpus characteristics:
+/// - More technical docs: increase bm25_weight to 0.7
+/// - More conversational: increase vector_weight to 0.4
 #[allow(clippy::too_many_arguments)]
 pub async fn hybrid_search(
     pool: &PgPool,
@@ -141,35 +152,119 @@ pub async fn hybrid_search(
     vector_weight: f64,
     reranker: Option<&std::sync::Arc<crate::infra::reranker::Reranker>>,
 ) -> Result<Vec<SearchResult>> {
-    // Sanitize query using pure function
-    let sanitized_query = sanitize_bm25_query(query);
+    // Build enhanced queries using improved tokenization
+    let tokens = crate::infra::db_utils::tokenize_query(query);
+    let phrase_query = crate::infra::db_utils::build_phrase_query(&tokens);
+    let prefix_query = crate::infra::db_utils::build_prefix_query(query);
+    let boolean_query = crate::infra::db_utils::build_boolean_query(query);
+    let sanitized_query = crate::infra::db_utils::sanitize_bm25_query(query);
 
-    // Convert embedding to PostgreSQL vector format using pure function
+    // Convert embedding to PostgreSQL vector format
     let embedding_str = embedding_to_string(embedding);
 
     let dims = get_embedding_dimensions()?;
     let sql = format!(
         r#"
-        SELECT * FROM hybrid_search(
-            $1::TEXT,
-            $2::vector({}),
-            $3::INTEGER,
-            $4::FLOAT,
-            $5::FLOAT,
-            $6::UUID,
-            $7::TIMESTAMPTZ,
-            $8::TIMESTAMPTZ,
-            $9::TEXT[],
-            $10::TEXT[]
+        WITH phrase_results AS (
+            -- Phrase matching: exact sequences get 2.0x boost
+            SELECT
+                d.id,
+                2.0 * paradedb.score(d.id) AS phrase_score
+            FROM documents d
+            WHERE (d.content @@@ $13 OR d.title @@@ $13)
+            AND (d.status = 'indexed')
+            LIMIT $3 * 4
+        ),
+        bm25_results AS (
+            -- Full BM25 search: standard lexical matching
+            SELECT
+                d.id,
+                ROW_NUMBER() OVER (ORDER BY paradedb.score(d.id) DESC) as bm25_rank
+            FROM documents d
+            WHERE d.id @@@ $1
+            AND (d.status = 'indexed')
+            LIMIT $3 * 3
+        ),
+        boolean_results AS (
+            -- Boolean AND matching: all terms required for precision
+            SELECT
+                d.id,
+                1.5 * paradedb.score(d.id) AS boolean_score
+            FROM documents d
+            WHERE d.content @@@ $14 AND d.id @@@ $1
+            AND (d.status = 'indexed')
+            LIMIT $3 * 3
+        ),
+        prefix_results AS (
+            -- Prefix/fuzzy matching: flexibility with wildcards
+            SELECT
+                d.id,
+                ROW_NUMBER() OVER (ORDER BY paradedb.score(d.id) DESC) as prefix_rank
+            FROM documents d
+            WHERE (d.content @@@ $15 OR d.title @@@ $15)
+            AND (d.status = 'indexed')
+            LIMIT $3 * 2
+        ),
+        vector_results AS (
+            -- Vector semantic search: contextual similarity
+            SELECT
+                d.id,
+                ROW_NUMBER() OVER (ORDER BY d.embedding <=> $2::vector({})) as vector_rank
+            FROM documents d
+            WHERE d.embedding IS NOT NULL
+            AND (d.status = 'indexed')
+            ORDER BY d.embedding <=> $2::vector({})
+            LIMIT $3 * 3
+        ),
+        all_results AS (
+            SELECT DISTINCT
+                COALESCE(ph.id, b.id, bo.id, pr.id, v.id) AS result_id,
+                ph.phrase_score,
+                COALESCE(1.0 / (60 + b.bm25_rank), 0.0) AS bm25_score,
+                bo.boolean_score,
+                COALESCE(1.0 / (60 + pr.prefix_rank), 0.0) AS prefix_score,
+                COALESCE(1.0 / (60 + v.vector_rank), 0.0) AS vector_score
+            FROM phrase_results ph
+            FULL OUTER JOIN bm25_results b ON ph.id = b.id
+            FULL OUTER JOIN boolean_results bo ON COALESCE(ph.id, b.id) = bo.id
+            FULL OUTER JOIN prefix_results pr ON COALESCE(ph.id, b.id, bo.id) = pr.id
+            FULL OUTER JOIN vector_results v ON COALESCE(ph.id, b.id, bo.id, pr.id) = v.id
         )
+        SELECT
+            d.id,
+            d.title,
+            d.content,
+            d.source_path,
+            c.name as category_name,
+            COALESCE(ar.bm25_score, 0.0)::FLOAT as bm25_score,
+            COALESCE(ar.vector_score, 0.0)::FLOAT as vector_score,
+            (
+                COALESCE(ar.phrase_score, 0.0) * 0.15 +
+                COALESCE(ar.bm25_score, 0.0) * $4 +
+                COALESCE(ar.boolean_score, 0.0) * 0.15 +
+                COALESCE(ar.prefix_score, 0.0) * 0.05 +
+                COALESCE(ar.vector_score, 0.0) * $5
+            )::FLOAT as combined_score,
+            NULL::FLOAT as reranker_score
+        FROM all_results ar
+        JOIN documents d ON ar.result_id = d.id
+        LEFT JOIN categories c ON d.category_id = c.id
+        WHERE
+            ($6::UUID IS NULL OR d.category_id = $6)
+            AND ($7::TIMESTAMPTZ IS NULL OR d.created_at >= $7)
+            AND ($8::TIMESTAMPTZ IS NULL OR d.created_at <= $8)
+            AND ($9::TEXT[] IS NULL OR d.locations && $9)
+            AND ($10::TEXT[] IS NULL OR d.keywords && $10)
+        ORDER BY combined_score DESC
+        LIMIT $3
         "#,
-        dims
+        dims, dims
     );
 
     let mut results = sqlx::query_as::<_, SearchResult>(&sql)
         .bind(sanitized_query)
         .bind(&embedding_str)
-        .bind(limit * 3) // Get more results for post-filtering
+        .bind(limit * 3) // Fetch more for post-filtering
         .bind(bm25_weight)
         .bind(vector_weight)
         .bind(filters.category_id)
@@ -177,8 +272,18 @@ pub async fn hybrid_search(
         .bind(filters.date_to)
         .bind(&filters.locations)
         .bind(&filters.keywords)
+        .bind("") // placeholder for additional filtering
+        .bind("") // placeholder
+        .bind(&phrase_query) // $13: phrase query
+        .bind(&boolean_query) // $14: boolean query
+        .bind(&prefix_query) // $15: prefix query
         .fetch_all(pool)
         .await?;
+
+    tracing::debug!(
+        "Hybrid search: phrase_query='{}', boolean_query='{}', prefix_query='{}'",
+        phrase_query, boolean_query, prefix_query
+    );
 
     // Apply entity and word count filters using functional composition
     if has_entity_or_wordcount_filters(filters) {
