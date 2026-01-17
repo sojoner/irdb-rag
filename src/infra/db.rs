@@ -159,6 +159,17 @@ pub async fn hybrid_search(
     let boolean_query = crate::infra::db_utils::build_boolean_query(query);
     let sanitized_query = crate::infra::db_utils::sanitize_bm25_query(query);
 
+    // Log query building details
+    tracing::info!("=== HYBRID SEARCH QUERY BUILDING ===");
+    tracing::info!("Original query: '{}'", query);
+    tracing::info!("Tokenized: {:?}", tokens);
+    tracing::info!("Phrase query: {}", phrase_query);
+    tracing::info!("Boolean query: {}", boolean_query);
+    tracing::info!("Prefix query: {}", prefix_query);
+    tracing::info!("BM25 (sanitized): {}", sanitized_query);
+    tracing::info!("Search weights - BM25: {}, Vector: {}", bm25_weight, vector_weight);
+    tracing::info!("=====================================");
+
     // Convert embedding to PostgreSQL vector format
     let embedding_str = embedding_to_string(embedding);
 
@@ -238,13 +249,13 @@ pub async fn hybrid_search(
             c.name as category_name,
             COALESCE(ar.bm25_score, 0.0)::FLOAT as bm25_score,
             COALESCE(ar.vector_score, 0.0)::FLOAT as vector_score,
-            (
+            LEAST(1.0, (
                 COALESCE(ar.phrase_score, 0.0) * 0.15 +
                 COALESCE(ar.bm25_score, 0.0) * $4 +
                 COALESCE(ar.boolean_score, 0.0) * 0.15 +
                 COALESCE(ar.prefix_score, 0.0) * 0.05 +
                 COALESCE(ar.vector_score, 0.0) * $5
-            )::FLOAT as combined_score,
+            ))::FLOAT as combined_score,
             NULL::FLOAT as reranker_score
         FROM all_results ar
         JOIN documents d ON ar.result_id = d.id
@@ -1063,6 +1074,209 @@ pub async fn get_aggregation_stats(pool: &PgPool) -> Result<crate::domain::dtos:
         authors: authors_rows,
         word_count_ranges: word_count_rows,
     })
+}
+
+// ============================================
+// Faceted Search
+// ============================================
+
+/// Get all facet aggregations for the current search context
+pub async fn get_facet_aggregations(
+    pool: &PgPool,
+    query: Option<&str>,
+    filters: &SearchFilters,
+) -> Result<Vec<crate::domain::dtos::FacetAggregate>> {
+    let category_id = filters.category_id;
+    let date_from = filters.date_from;
+    let date_to = filters.date_to;
+    let locations = filters.locations.clone();
+    let keywords = filters.keywords.clone();
+    let authors = filters.authors.clone();
+
+    let facets = sqlx::query_as::<_, (String, String, i64)>(
+        r#"
+        SELECT facet_name, facet_value, count
+        FROM get_facet_aggregations($1, $2::UUID, $3::TIMESTAMPTZ, $4::TIMESTAMPTZ, $5::TEXT[], $6::TEXT[], $7::TEXT[])
+        ORDER BY facet_name, count DESC
+        "#
+    )
+    .bind(query)
+    .bind(category_id)
+    .bind(date_from)
+    .bind(date_to)
+    .bind(locations.as_deref())
+    .bind(keywords.as_deref())
+    .bind(authors.as_deref())
+    .fetch_all(pool)
+    .await?;
+
+    let aggregates = facets
+        .into_iter()
+        .map(|(facet_name, facet_value, count)| crate::domain::dtos::FacetAggregate {
+            facet_name,
+            facet_value,
+            count,
+        })
+        .collect();
+
+    Ok(aggregates)
+}
+
+/// Get specific facet values with counts
+pub async fn get_facet_values(
+    pool: &PgPool,
+    facet_type: &str,
+    query: Option<&str>,
+    filters: &SearchFilters,
+    limit: i32,
+) -> Result<Vec<crate::domain::dtos::FacetValue>> {
+    let category_id = filters.category_id;
+    let date_from = filters.date_from;
+    let date_to = filters.date_to;
+    let locations = filters.locations.clone();
+    let keywords = filters.keywords.clone();
+    let authors = filters.authors.clone();
+
+    let values = sqlx::query_as::<_, (String, i64)>(
+        r#"
+        SELECT value, count
+        FROM get_facet_values($1, $2, $3::UUID, $4::TIMESTAMPTZ, $5::TIMESTAMPTZ, $6::TEXT[], $7::TEXT[], $8::TEXT[], $9::INT)
+        "#
+    )
+    .bind(facet_type)
+    .bind(query)
+    .bind(category_id)
+    .bind(date_from)
+    .bind(date_to)
+    .bind(locations.as_deref())
+    .bind(keywords.as_deref())
+    .bind(authors.as_deref())
+    .bind(limit)
+    .fetch_all(pool)
+    .await?;
+
+    let facet_values = values
+        .into_iter()
+        .map(|(value, count)| crate::domain::dtos::FacetValue { value, count })
+        .collect();
+
+    Ok(facet_values)
+}
+
+/// Execute search with faceted results
+pub async fn search_with_facets(
+    pool: &PgPool,
+    query: &str,
+    embedding: &[f32],
+    filters: &SearchFilters,
+    limit: i32,
+    bm25_weight: f64,
+    vector_weight: f64,
+    facet_limit: i32,
+    reranker: Option<&crate::infra::reranker::Reranker>,
+) -> Result<(Vec<SearchResult>, Vec<crate::domain::dtos::FacetAggregate>)> {
+    let embedding_str = embedding_to_string(embedding);
+
+    let category_id = filters.category_id;
+    let date_from = filters.date_from;
+    let date_to = filters.date_to;
+    let locations = filters.locations.clone();
+    let keywords = filters.keywords.clone();
+    let authors = filters.authors.clone();
+
+    // Call the SQL function that returns both results and facets
+    let raw_results = sqlx::query_as::<_, (
+        String,  // result_type
+        Option<Uuid>,  // id
+        Option<String>,  // title
+        Option<String>,  // content
+        Option<String>,  // source_path
+        Option<String>,  // category_name
+        Option<f32>,  // bm25_score
+        Option<f32>,  // vector_score
+        Option<f32>,  // combined_score
+        Option<String>,  // facet_name
+        Option<String>,  // facet_value
+        Option<i64>,  // facet_count
+    )>(
+        r#"
+        SELECT result_type, id, title, content, source_path, category_name,
+               bm25_score, vector_score, combined_score,
+               facet_name, facet_value, facet_count
+        FROM search_with_facets($1, $2::VECTOR, $3::INT, $4::FLOAT, $5::FLOAT,
+                                $6::UUID, $7::TIMESTAMPTZ, $8::TIMESTAMPTZ,
+                                $9::TEXT[], $10::TEXT[], $11::TEXT[], $12::INT)
+        "#
+    )
+    .bind(&query)
+    .bind(&embedding_str)
+    .bind(limit)
+    .bind(bm25_weight)
+    .bind(vector_weight)
+    .bind(category_id)
+    .bind(date_from)
+    .bind(date_to)
+    .bind(locations.as_deref())
+    .bind(keywords.as_deref())
+    .bind(authors.as_deref())
+    .bind(facet_limit)
+    .fetch_all(pool)
+    .await?;
+
+    // Separate results and facets
+    let mut search_results = Vec::new();
+    let mut facets = Vec::new();
+
+    for row in raw_results {
+        match row.0.as_str() {
+            "result" => {
+                if let (Some(id), Some(title), Some(content), combined_score) =
+                    (row.1, row.2, row.3, row.8)
+                {
+                    search_results.push(SearchResult {
+                        id,
+                        title,
+                        content,
+                        source_path: row.4,
+                        category_name: row.5,
+                        bm25_score: row.6.map(|v| v as f64).unwrap_or(0.0),
+                        vector_score: row.7.map(|v| v as f64).unwrap_or(0.0),
+                        combined_score: combined_score.map(|v| v as f64).unwrap_or(0.0),
+                        reranker_score: None,
+                    });
+                }
+            }
+            "facet" => {
+                if let (Some(facet_name), Some(facet_value), Some(count)) =
+                    (row.9, row.10, row.11)
+                {
+                    facets.push(crate::domain::dtos::FacetAggregate {
+                        facet_name,
+                        facet_value,
+                        count,
+                    });
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // Apply reranking if available
+    if let Some(reranker) = reranker {
+        let chunk_contents: Vec<&str> = search_results.iter().map(|r| r.content.as_str()).collect();
+
+        if let Ok(ranked) = reranker.rerank_and_sort(query, &chunk_contents).await {
+            let mut reranked = Vec::new();
+            for doc in ranked {
+                if let Some(result) = search_results.get(doc.index) {
+                    reranked.push(result.clone());
+                }
+            }
+            search_results = reranked;
+        }
+    }
+
+    Ok((search_results, facets))
 }
 
 // ============================================

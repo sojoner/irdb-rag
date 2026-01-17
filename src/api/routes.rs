@@ -17,6 +17,8 @@ pub fn create_router(state: AppState) -> Router {
     Router::new()
         // API routes
         .route("/api/search", post(handlers::search))
+        .route("/api/search/faceted", post(handlers::faceted_search))
+        .route("/api/facets/values", post(handlers::get_facet_values))
         .route("/api/chat", post(handlers::chat))
         .route("/api/chat/stream", post(handlers::chat_stream))
         .route("/api/documents", get(handlers::list_documents))

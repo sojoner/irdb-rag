@@ -137,6 +137,75 @@ pub struct AggregationStats {
 }
 
 // ============================================
+// Faceted Search DTOs
+// ============================================
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct FacetValue {
+    pub value: String,
+    pub count: i64,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct FacetAggregate {
+    pub facet_name: String,
+    pub facet_value: String,
+    pub count: i64,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct FacetedSearchRequest {
+    pub query: String,
+    #[serde(default = "default_limit")]
+    pub limit: i32,
+    #[serde(default = "default_bm25_weight")]
+    pub bm25_weight: f64,
+    #[serde(default = "default_vector_weight")]
+    pub vector_weight: f64,
+    pub category_id: Option<Uuid>,
+    pub date_from: Option<String>,
+    pub date_to: Option<String>,
+    pub locations: Option<Vec<String>>,
+    pub keywords: Option<Vec<String>>,
+    pub authors: Option<Vec<String>>,
+    pub concepts: Option<Vec<String>>,
+    pub organizations: Option<Vec<String>>,
+    pub persons: Option<Vec<String>>,
+    pub products: Option<Vec<String>>,
+    #[serde(default = "default_facet_limit")]
+    pub facet_limit: i32,
+}
+
+fn default_facet_limit() -> i32 { 10 }
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct FacetedSearchResponse {
+    pub results: Vec<crate::domain::models::SearchResult>,
+    pub facets: Vec<FacetAggregate>,
+    pub total_results: i64,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct FacetValuesRequest {
+    pub facet_type: String,
+    pub query: Option<String>,
+    pub category_id: Option<Uuid>,
+    pub date_from: Option<String>,
+    pub date_to: Option<String>,
+    pub locations: Option<Vec<String>>,
+    pub keywords: Option<Vec<String>>,
+    pub authors: Option<Vec<String>>,
+    #[serde(default = "default_facet_limit")]
+    pub limit: i32,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct FacetValuesResponse {
+    pub facet_type: String,
+    pub values: Vec<FacetValue>,
+}
+
+// ============================================
 // Import DTOs
 // ============================================
 

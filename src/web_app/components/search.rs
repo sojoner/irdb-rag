@@ -48,10 +48,32 @@ pub async fn search_documents(
         authors,
     } = request;
     use crate::infra::db;
+    use crate::infra::db_utils;
     use crate::api::state::AppState;
     use tracing::info;
 
-    info!("SERVER: SearchDocuments called. Query: '{}'", query);
+    info!("========== SEARCH DEBUG START ==========");
+    info!("Query: '{}'", query);
+
+    // Debug: Show tokenization
+    let tokens = db_utils::tokenize_query(&query);
+    info!("Tokens: {:?}", tokens);
+
+    // Debug: Show built queries
+    let phrase_query = db_utils::build_phrase_query(&tokens);
+    info!("Phrase query: {}", phrase_query);
+
+    let boolean_query = db_utils::build_boolean_query(&query);
+    info!("Boolean query: {}", boolean_query);
+
+    let prefix_query = db_utils::build_prefix_query(&query);
+    info!("Prefix query: {}", prefix_query);
+
+    let sanitized = db_utils::sanitize_bm25_query(&query);
+    info!("Sanitized BM25: {}", sanitized);
+
+    info!("Weights: BM25={}, Vector={}", bm25_weight, vector_weight);
+    info!("========== SEARCH DEBUG END ==========");
 
     // Extract the AppState from context
     let state = use_context::<AppState>()

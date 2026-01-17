@@ -480,6 +480,116 @@ pub async fn get_aggregation_stats(
     Ok(Json(stats))
 }
 
+/// Faceted search - returns search results with facet aggregations
+pub async fn faceted_search(
+    State(state): State<AppState>,
+    Json(req): Json<crate::domain::dtos::FacetedSearchRequest>,
+) -> Result<Json<crate::domain::dtos::FacetedSearchResponse>, AppError> {
+    tracing::info!("Received faceted search request: query='{}', facet_limit={}", req.query, req.facet_limit);
+
+    let trimmed_query = req.query.trim();
+    if trimmed_query.is_empty() || trimmed_query == "*" {
+        tracing::info!("Query rejected: empty or special character only");
+        return Ok(Json(crate::domain::dtos::FacetedSearchResponse {
+            results: Vec::new(),
+            facets: Vec::new(),
+            total_results: 0,
+        }));
+    }
+
+    // Generate embedding for query
+    tracing::debug!("Generating embedding for query: '{}'", req.query);
+    let embedding = state.embedder.embed(&req.query)
+        .await
+        .map_err(|e| {
+            tracing::error!("Failed to generate embedding: {}", e);
+            AppError::Internal(e.to_string())
+        })?;
+
+    let filters = db::SearchFilters {
+        category_id: req.category_id,
+        date_from: req.date_from.and_then(|d| d.parse().ok()),
+        date_to: req.date_to.and_then(|d| d.parse().ok()),
+        locations: req.locations,
+        keywords: req.keywords,
+        source_types: None,
+        authors: req.authors,
+        concepts: req.concepts,
+        organizations: req.organizations,
+        persons: req.persons,
+        products: req.products,
+        word_count_min: None,
+        word_count_max: None,
+    };
+
+    tracing::debug!("Executing faceted search with filters: {:?}", filters);
+    let (results, facets) = db::search_with_facets(
+        &state.pool,
+        &req.query,
+        &embedding,
+        &filters,
+        req.limit,
+        req.bm25_weight,
+        req.vector_weight,
+        req.facet_limit,
+        state.reranker.as_ref().map(|r| r.as_ref()),
+    ).await.map_err(|e| {
+        tracing::error!("Faceted search failed: {}", e);
+        AppError::Internal(e.to_string())
+    })?;
+
+    let total_results = results.len() as i64;
+    tracing::info!("Faceted search completed: {} results, {} facets", results.len(), facets.len());
+
+    Ok(Json(crate::domain::dtos::FacetedSearchResponse {
+        results,
+        facets,
+        total_results,
+    }))
+}
+
+/// Get facet values for a specific facet type
+pub async fn get_facet_values(
+    State(state): State<AppState>,
+    Json(req): Json<crate::domain::dtos::FacetValuesRequest>,
+) -> Result<Json<crate::domain::dtos::FacetValuesResponse>, AppError> {
+    tracing::info!("Received facet values request for facet_type: '{}'", req.facet_type);
+
+    let filters = db::SearchFilters {
+        category_id: req.category_id,
+        date_from: req.date_from.and_then(|d| d.parse().ok()),
+        date_to: req.date_to.and_then(|d| d.parse().ok()),
+        locations: req.locations,
+        keywords: req.keywords,
+        source_types: None,
+        authors: req.authors,
+        concepts: None,
+        organizations: None,
+        persons: None,
+        products: None,
+        word_count_min: None,
+        word_count_max: None,
+    };
+
+    let values = db::get_facet_values(
+        &state.pool,
+        &req.facet_type,
+        req.query.as_deref(),
+        &filters,
+        req.limit,
+    ).await.map_err(|e| {
+        tracing::error!("Failed to get facet values: {}", e);
+        AppError::Internal(e.to_string())
+    })?;
+
+    tracing::info!("Retrieved {} values for facet '{}'", values.len(), req.facet_type);
+
+    Ok(Json(crate::domain::dtos::FacetValuesResponse {
+        facet_type: req.facet_type,
+        values,
+    }))
+}
+
 // ============================================
 // Import Handlers
 // ============================================

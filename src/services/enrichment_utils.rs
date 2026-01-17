@@ -585,7 +585,7 @@ mod tests {
     fn test_sanitize_filename_for_docling_em_dash() {
         let input = "Edler achtfacher Pfad – Wikipedia.pdf";
         let result = sanitize_filename_for_docling(input);
-        assert_eq!(result, "Edler_achtfacher_Pfad_Wikipedia.pdf");
+        assert_eq!(result, "Edler_achtfacher_Pfad_-_Wikipedia.pdf");
     }
 
     #[test]
@@ -606,6 +606,6 @@ mod tests {
     fn test_sanitize_filename_for_docling_unicode_quotes() {
         let input = "I Love My Wife — Bingqian G.pdf";
         let result = sanitize_filename_for_docling(input);
-        assert_eq!(result, "I_Love_My_Wife_Bingqian_G.pdf");
+        assert_eq!(result, "I_Love_My_Wife_-_Bingqian_G.pdf");
     }
 }

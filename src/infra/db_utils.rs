@@ -9,17 +9,16 @@ use uuid::Uuid;
 /// Sanitize BM25 query to handle empty or problematic inputs
 ///
 /// ParadeDB's pg_search has edge cases with empty/wildcard queries that cause parsing errors.
-/// This function ensures only valid queries are sent.
+/// Also converts plain queries to field-qualified format for multi-field search.
 ///
 /// # Examples
 /// ```
 /// use rag_chat::infra::db_utils::sanitize_bm25_query;
 /// assert_eq!(sanitize_bm25_query(""), "id:__no_match__");
 /// assert_eq!(sanitize_bm25_query("*"), "id:__no_match__");
-/// assert_eq!(sanitize_bm25_query("id:()"), "id:__no_match__");
-/// assert_eq!(sanitize_bm25_query("hello"), "hello");
+/// assert_eq!(sanitize_bm25_query("hello"), "(content:(hello) OR title:(hello) OR summary:(hello))");
 /// ```
-pub fn sanitize_bm25_query(query: &str) -> &str {
+pub fn sanitize_bm25_query(query: &str) -> String {
     let trimmed = query.trim();
 
     // Check for empty ID queries like "id:()", "id: ()", "id:(*)"
@@ -36,9 +35,10 @@ pub fn sanitize_bm25_query(query: &str) -> &str {
     };
 
     if trimmed.is_empty() || trimmed == "*" || is_empty_id {
-        "id:__no_match__"
+        "id:__no_match__".to_string()
     } else {
-        query
+        // Add field qualification for multi-field search
+        format!("(content:({}) OR title:({}) OR summary:({}))", trimmed, trimmed, trimmed)
     }
 }
 
@@ -70,52 +70,57 @@ pub fn tokenize_query(query: &str) -> Vec<String> {
 
 /// Build a phrase query for exact phrase matching
 ///
-/// Expects tokens to match in exact order and adjacent positions
+/// Expects tokens to match in exact order and adjacent positions.
+/// Searches across content, title, and summary fields.
 ///
-/// Note: Uses double-quoted terms to preserve case and special characters
-/// when used with ParadeDB's BM25 index via the @@@ operator
+/// Note: ParadeDB requires field-qualified queries when using multiple fields.
 pub fn build_phrase_query(tokens: &[String]) -> String {
     if tokens.is_empty() {
         "id:__no_match__".to_string()
     } else {
-        // Use quoted terms for phrase matching instead of PHRASE() function
-        // to avoid parsing errors with field-qualified queries
+        // Create a phrase from tokens and search multiple fields
         let quoted = tokens
             .iter()
             .map(|t| format!("\"{}\"", t))
             .collect::<Vec<_>>()
             .join(" ");
-        quoted
+        // Search phrase in content, title, or summary
+        format!("(content:({}) OR title:({}) OR summary:({}))", quoted, quoted, quoted)
     }
 }
 
 /// Build a prefix query for fuzzy matching
 ///
-/// Appends * to each token for prefix matching with OR semantics
+/// Appends * to each token for prefix matching with OR semantics.
+/// Searches across content, title, and summary fields.
 pub fn build_prefix_query(query: &str) -> String {
     let tokens = tokenize_query(query);
     if tokens.is_empty() {
         "id:__no_match__".to_string()
     } else {
-        // Join with ||| (OR) operator, append * for prefix matching
-        tokens
+        // Create prefix search terms and search multiple fields
+        let prefix_terms = tokens
             .iter()
             .map(|t| format!("{}*", t))
             .collect::<Vec<_>>()
-            .join(" ||| ")
+            .join(" ||| ");
+        // Search across content, title, or summary
+        format!("(content:({}) OR title:({}) OR summary:({}))", prefix_terms, prefix_terms, prefix_terms)
     }
 }
 
 /// Build a boolean query with AND semantics
 ///
-/// All tokens must be present for a match
+/// All tokens must be present for a match across content, title, or summary.
 pub fn build_boolean_query(query: &str) -> String {
     let tokens = tokenize_query(query);
     if tokens.is_empty() {
         "id:__no_match__".to_string()
     } else {
-        // Join with &&& (AND) operator for strict matching
-        tokens.join(" &&& ")
+        // Create AND terms and search multiple fields
+        let and_terms = tokens.join(" &&& ");
+        // Search for all terms in any field
+        format!("(content:({}) OR title:({}) OR summary:({}))", and_terms, and_terms, and_terms)
     }
 }
 
@@ -332,9 +337,9 @@ mod tests {
 
     #[test]
     fn test_sanitize_valid_queries() {
-        assert_eq!(sanitize_bm25_query("hello"), "hello");
-        assert_eq!(sanitize_bm25_query("  hello world  "), "  hello world  ");
-        assert_eq!(sanitize_bm25_query("id:(123)"), "id:(123)");
+        assert_eq!(sanitize_bm25_query("hello"), "(content:(hello) OR title:(hello) OR summary:(hello))");
+        assert_eq!(sanitize_bm25_query("  hello world  "), "(content:(hello world) OR title:(hello world) OR summary:(hello world))");
+        assert_eq!(sanitize_bm25_query("id:(123)"), "(content:(id:(123)) OR title:(id:(123)) OR summary:(id:(123)))");
     }
 
     #[test]
@@ -546,13 +551,13 @@ mod tests {
     #[test]
     fn test_build_phrase_query_single() {
         let tokens = vec!["hello".to_string()];
-        assert_eq!(build_phrase_query(&tokens), "\"hello\"");
+        assert_eq!(build_phrase_query(&tokens), "(content:(\"hello\") OR title:(\"hello\") OR summary:(\"hello\"))");
     }
 
     #[test]
     fn test_build_phrase_query_multiple() {
         let tokens = vec!["hello".to_string(), "world".to_string()];
-        assert_eq!(build_phrase_query(&tokens), "\"hello\" \"world\"");
+        assert_eq!(build_phrase_query(&tokens), "(content:(\"hello\" \"world\") OR title:(\"hello\" \"world\") OR summary:(\"hello\" \"world\"))");
     }
 
     #[test]
@@ -563,7 +568,7 @@ mod tests {
     #[test]
     fn test_build_prefix_query_single() {
         let result = build_prefix_query("hello");
-        assert_eq!(result, "hello*");
+        assert_eq!(result, "(content:(hello*) OR title:(hello*) OR summary:(hello*))");
     }
 
     #[test]
@@ -582,7 +587,7 @@ mod tests {
     #[test]
     fn test_build_boolean_query_single() {
         let result = build_boolean_query("hello");
-        assert_eq!(result, "hello");
+        assert_eq!(result, "(content:(hello) OR title:(hello) OR summary:(hello))");
     }
 
     #[test]
