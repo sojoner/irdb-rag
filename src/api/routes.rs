@@ -29,6 +29,7 @@ pub fn create_router(state: AppState) -> Router {
         .route("/api/documents/batch", delete(handlers::delete_documents_batch))
         .route("/api/categories", get(handlers::list_categories))
         .route("/api/aggregation-stats", get(handlers::get_aggregation_stats))
+        .route("/api/stats/db", get(handlers::get_db_stats))
         .route("/api/index", post(handlers::index_document))
         .route("/api/health", get(handlers::health_check))
         .route("/api/status", get(handlers::get_status))

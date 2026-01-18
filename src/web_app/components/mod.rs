@@ -5,3 +5,4 @@ pub mod results_list;
 pub mod document_preview;
 pub mod search;
 pub mod chat_panel;
+pub mod stats_bar;

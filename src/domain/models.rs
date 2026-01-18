@@ -11,7 +11,7 @@ use crate::config::{LLMProviderConfig, EmbeddingConfig};
 // Core Domain Models
 // ============================================
 
-#[allow(dead_code)]
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[cfg_attr(feature = "ssr", derive(FromRow))]
 pub struct Document {
@@ -36,7 +36,7 @@ pub struct Document {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[allow(dead_code)]
+
 #[cfg_attr(feature = "ssr", derive(FromRow))]
 pub struct DocumentChunk {
     pub id: Uuid,
@@ -85,11 +85,22 @@ pub struct SearchResult {
     pub snippet: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SearchMetadata {
+    pub duration_ms: u128,
+    pub total_results: usize,
+    pub unique_documents: usize,
+    pub total_chunks_searched: usize,
+    pub bm25_weight: f64,
+    pub vector_weight: f64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[cfg_attr(feature = "ssr", derive(FromRow))]
 pub struct DbStats {
     pub document_count: i64,
     pub chunk_count: i64,
+    pub database_size: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]

@@ -8,7 +8,9 @@ use crate::web_app::components::{
     chat_panel::ChatPanel,
     document_preview::DocumentPreview,
     faceted_filters::{FacetedFilters, get_categories},
+    stats_bar::StatsBar,
 };
+use crate::domain::models::SearchMetadata;
 
 #[component]
 pub fn SearchPage() -> impl IntoView {
@@ -46,6 +48,7 @@ pub fn SearchPage() -> impl IntoView {
 
     // Derived signals from action
     let (results, set_results) = signal(Vec::new());
+    let (search_metadata, set_search_metadata) = signal(None::<SearchMetadata>);
 
     // ============ SEARCH FUNCTION ============
     let execute_search = move |_| {
@@ -108,22 +111,33 @@ pub fn SearchPage() -> impl IntoView {
         delete_action.dispatch(DeleteDocument { doc_id: id });
     });
 
-    let search_results = move || {
-        let val = search_action.value().get();
-        leptos::logging::log!("SearchPage: search_action value changed: {:?}", val);
-        match val {
-            Some(Ok(res)) => {
-                leptos::logging::log!("SearchPage: received {} results", res.len());
-                set_results.set(res.clone());
-                res
-            },
-            Some(Err(e)) => {
-                leptos::logging::error!("SearchPage: Search failed: {:?}", e);
-                vec![]
-            }
-            None => results.get(),
+    // Effect to update results when search_action completes
+    Effect::new(move |_| {
+        if let Some(Ok(res)) = search_action.value().get() {
+            leptos::logging::log!("SearchPage: Effect received {} results", res.len());
+
+            let unique_documents = res.iter()
+                .map(|r| r.id)
+                .collect::<std::collections::HashSet<_>>()
+                .len();
+
+            let metadata = SearchMetadata {
+                duration_ms: 0, // Timing calculation simplified due to WASM limitations
+                total_results: res.len(),
+                unique_documents,
+                total_chunks_searched: res.len(), // Each result is a chunk in our context
+                bm25_weight: bm25_weight.get(),
+                vector_weight: vector_weight.get(),
+            };
+
+            set_search_metadata.set(Some(metadata));
+            set_results.set(res);
+        } else if let Some(Err(e)) = search_action.value().get() {
+            leptos::logging::error!("SearchPage: Search failed: {:?}", e);
+            set_results.set(vec![]);
+            set_search_metadata.set(None);
         }
-    };
+    });
 
     let is_loading = search_action.pending();
 
@@ -161,7 +175,7 @@ pub fn SearchPage() -> impl IntoView {
                         <UnifiedSearch
                             query=search_query.into()
                             set_query=set_search_query
-                            results=Signal::derive(search_results)
+                            results=results.into()
                             set_results=set_dummy_results
                             loading=is_loading.into()
                             set_loading=set_dummy_loading
@@ -227,6 +241,9 @@ pub fn SearchPage() -> impl IntoView {
                 </Show>
             </header>
 
+            // STATS BAR: Database and index information
+            <StatsBar />
+
             // MAIN CONTENT: 3 Column Layout (Filters + Results + Chat)
             <div class="flex-1 overflow-hidden flex gap-4 p-4 bg-gray-50">
                 // Column 1: Filters Sidebar (minimum 200px, max 20%)
@@ -256,12 +273,45 @@ pub fn SearchPage() -> impl IntoView {
 
                 // Column 2: Search Results (minimum 300px, max 35%)
                 <div class="min-w-[300px] w-[35%] flex flex-col bg-white rounded-lg border border-gray-200 overflow-hidden shadow-sm">
-                    <div class="px-4 py-3 border-b border-gray-200 bg-gray-50 flex justify-between items-center">
-                        <h2 class="text-sm font-bold text-gray-700">"Discovery & Context"</h2>
-                        <span class="text-xs text-gray-500">{move || format!("{} found", search_results().len())}</span>
+                    <div class="px-4 py-3 border-b border-gray-200 bg-gray-50 flex flex-col gap-2">
+                        <div class="flex justify-between items-center">
+                            <h2 class="text-sm font-bold text-gray-700">"Discovery & Context"</h2>
+                            <span class="text-xs text-gray-500">{move || format!("{} found", results.get().len())}</span>
+                        </div>
+                        <Show when=move || search_metadata.get().is_some()>
+                            <div class="flex gap-3 text-xs text-gray-600 bg-white/50 px-2 py-1.5 rounded">
+                                {move || search_metadata.get().map(|meta| {
+                                    view! {
+                                        <>
+                                            <span class="flex items-center gap-1">
+                                                <svg class="h-3 w-3" fill="currentColor" viewBox="0 0 20 20">
+                                                    <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm1-11a1 1 0 10-2 0v3.5H7a1 1 0 100 2h4a1 1 0 001-1v-4.5z" clip-rule="evenodd" />
+                                                </svg>
+                                                <span>{format!("{}ms", meta.duration_ms)}</span>
+                                            </span>
+                                            <span>"•"</span>
+                                            <span class="flex items-center gap-1">
+                                                <svg class="h-3 w-3" fill="currentColor" viewBox="0 0 20 20">
+                                                    <path d="M9 2a1 1 0 000 2h2a1 1 0 100-2H9z" />
+                                                    <path fill-rule="evenodd" d="M4 5a2 2 0 012-2 1 1 0 000-2 4 4 0 00-4 4v10a4 4 0 004 4h12a4 4 0 004-4V5a1 1 0 00-2 0v10a2 2 0 01-2 2H6a2 2 0 01-2-2V5z" clip-rule="evenodd" />
+                                                </svg>
+                                                <span>{format!("{} docs", meta.unique_documents)}</span>
+                                            </span>
+                                            <span>"•"</span>
+                                            <span class="flex items-center gap-1">
+                                                <svg class="h-3 w-3" fill="currentColor" viewBox="0 0 20 20">
+                                                    <path d="M5 3a2 2 0 00-2 2v2c0 1.306.895 2.418 2.097 2.671A2 2 0 105 7V5a2 2 0 002-2h2a2 2 0 002 2v2h2V5a2 2 0 012-2h2a2 2 0 00-2-2h-2a2 2 0 00-2 2V3z" />
+                                                </svg>
+                                                <span>{format!("{} chunks", meta.total_chunks_searched)}</span>
+                                            </span>
+                                        </>
+                                    }
+                                })}
+                            </div>
+                        </Show>
                     </div>
                     <ResultsList
-                        results=Signal::derive(search_results)
+                        results=results.into()
                         loading=is_loading.into()
                         selected_context=selected_context.into()
                         set_selected_context=set_selected_context
@@ -273,7 +323,7 @@ pub fn SearchPage() -> impl IntoView {
                 // Column 3: Synthesis & Chat (minimum 400px, max 45%)
                 <div class="md:flex min-w-[400px] w-[45%] flex-col bg-white rounded-lg border border-gray-200 overflow-hidden shadow-sm">
                     <ChatPanel
-                        results=Signal::derive(search_results)
+                        results=results.into()
                         search_query=search_query.into()
                         selected_context=selected_context.into()
                     />

@@ -480,6 +480,28 @@ pub async fn get_aggregation_stats(
     Ok(Json(stats))
 }
 
+/// Get database and index statistics
+pub async fn get_db_stats(
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let doc_count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM documents")
+        .fetch_one(&state.pool)
+        .await
+        .map_err(|e| AppError::Internal(format!("Failed to count documents: {}", e)))?;
+
+    let chunk_count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM document_chunks")
+        .fetch_one(&state.pool)
+        .await
+        .map_err(|e| AppError::Internal(format!("Failed to count chunks: {}", e)))?;
+
+    let stats = serde_json::json!({
+        "documents": doc_count.0,
+        "chunks": chunk_count.0,
+    });
+
+    Ok(Json(stats))
+}
+
 /// Faceted search - returns search results with facet aggregations
 pub async fn faceted_search(
     State(state): State<AppState>,

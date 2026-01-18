@@ -257,10 +257,7 @@ pub async fn hybrid_search(
                 COALESCE(ar.vector_score, 0.0) * $5
             ))::FLOAT as combined_score,
             NULL::FLOAT as reranker_score,
-            CASE
-                WHEN d.content @@@ $1 THEN paradedb.snippet(d.content, start_tag => '<mark>', end_tag => '</mark>', max_num_chars => 300)
-                ELSE NULL
-            END as snippet
+            NULL::TEXT as snippet
         FROM all_results ar
         JOIN documents d ON ar.result_id = d.id
         LEFT JOIN categories c ON d.category_id = c.id
@@ -711,7 +708,8 @@ pub async fn filter_only_search(
             0.0::FLOAT as bm25_score,
             0.0::FLOAT as vector_score,
             0.0::FLOAT as combined_score,
-            NULL::FLOAT as reranker_score
+            NULL::FLOAT as reranker_score,
+            NULL::TEXT as snippet
         FROM documents d
         LEFT JOIN categories c ON d.category_id = c.id
         WHERE d.status = 'indexed'
