@@ -68,7 +68,9 @@ pub fn ResultsList(
                         let id = res.id;
                         let is_selected = move || selected_context.get().contains(&id);
                         let category_name = res.category_name.clone();
-                        
+                        let snippet = create_rw_signal(res.snippet.clone());
+                        let snippet_get = move || snippet.get();
+
                         let category_name_clone = category_name.clone();
                         
                         view! {
@@ -110,8 +112,20 @@ pub fn ResultsList(
 
                                             <p class="text-xs text-gray-600 mt-1 line-clamp-2 cursor-pointer hover:text-gray-700"
                                                on:click=move |_| handle_preview_click(id)>
-                                                {res.content.chars().take(150).collect::<String>()}
-                                                {if res.content.len() > 150 { "..." } else { "" }}
+                                                <Show when=move || snippet_get().is_some()>
+                                                    {move || {
+                                                        // Strip HTML tags from snippet for display
+                                                        let snippet = snippet_get().unwrap_or_default();
+                                                        let cleaned = snippet
+                                                            .replace("<mark>", "")
+                                                            .replace("</mark>", "");
+                                                        cleaned
+                                                    }}
+                                                </Show>
+                                                <Show when=move || snippet_get().is_none()>
+                                                    {res.content.chars().take(150).collect::<String>()}
+                                                    {if res.content.len() > 150 { "..." } else { "" }}
+                                                </Show>
                                             </p>
 
                                             <div class="flex items-center gap-2 mt-2 text-[10px] text-gray-400">

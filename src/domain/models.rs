@@ -81,6 +81,8 @@ pub struct SearchResult {
     pub combined_score: f64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reranker_score: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub snippet: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

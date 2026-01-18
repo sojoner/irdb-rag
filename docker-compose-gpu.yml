@@ -326,7 +326,7 @@ services:
       POSTGRES_PASSWORD: rag_password
       POSTGRES_DB: rag_chat
       # PostgreSQL tuning for 16GB RAM allocation (System has 94GB)
-      POSTGRES_INITDB_ARGS: "-c shared_buffers=4GB -c effective_cache_size=12GB -c work_mem=256MB -c maintenance_work_mem=1GB -c max_connections=200"
+      POSTGRES_INITDB_ARGS: "-c shared_buffers=4GB -c effective_cache_size=12GB -c work_mem=256MB -c maintenance_work_mem=1GB -c max_connections=200 -c paradedb.enable_aggregate_custom_scan=on -c paradedb.enable_custom_scan_without_operator=on -c paradedb.per_tuple_cost=100 -c paradedb.limit_fetch_multiplier=2"
     ports:
       - "15432:5432"
     volumes:

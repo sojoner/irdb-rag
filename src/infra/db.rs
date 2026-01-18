@@ -256,7 +256,11 @@ pub async fn hybrid_search(
                 COALESCE(ar.prefix_score, 0.0) * 0.05 +
                 COALESCE(ar.vector_score, 0.0) * $5
             ))::FLOAT as combined_score,
-            NULL::FLOAT as reranker_score
+            NULL::FLOAT as reranker_score,
+            CASE
+                WHEN d.content @@@ $1 THEN paradedb.snippet(d.content, start_tag => '<mark>', end_tag => '</mark>', max_num_chars => 300)
+                ELSE NULL
+            END as snippet
         FROM all_results ar
         JOIN documents d ON ar.result_id = d.id
         LEFT JOIN categories c ON d.category_id = c.id
@@ -1195,13 +1199,14 @@ pub async fn search_with_facets(
         Option<f32>,  // bm25_score
         Option<f32>,  // vector_score
         Option<f32>,  // combined_score
+        Option<String>,  // snippet
         Option<String>,  // facet_name
         Option<String>,  // facet_value
         Option<i64>,  // facet_count
     )>(
         r#"
         SELECT result_type, id, title, content, source_path, category_name,
-               bm25_score, vector_score, combined_score,
+               bm25_score, vector_score, combined_score, snippet,
                facet_name, facet_value, facet_count
         FROM search_with_facets($1, $2::VECTOR, $3::INT, $4::FLOAT, $5::FLOAT,
                                 $6::UUID, $7::TIMESTAMPTZ, $8::TIMESTAMPTZ,
@@ -1243,12 +1248,13 @@ pub async fn search_with_facets(
                         vector_score: row.7.map(|v| v as f64).unwrap_or(0.0),
                         combined_score: combined_score.map(|v| v as f64).unwrap_or(0.0),
                         reranker_score: None,
+                        snippet: row.9,
                     });
                 }
             }
             "facet" => {
                 if let (Some(facet_name), Some(facet_value), Some(count)) =
-                    (row.9, row.10, row.11)
+                    (row.10, row.11, row.12)
                 {
                     facets.push(crate::domain::dtos::FacetAggregate {
                         facet_name,

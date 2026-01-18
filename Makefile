@@ -3,7 +3,7 @@
         gpu-up gpu-down gpu-restart gpu-build gpu-logs gpu-shell gpu-test gpu-lint gpu-ci \
         gpu-verify-db gpu-db-stats \
         docker-build docker-push docker-release \
-        docling-test reranker-test clean
+        docling-test reranker-test clean db-backup db-restore
 
 # Test configuration - use 768 for nomic-embed-text-v2-moe (faster embeddings)
 EMBEDDING_DIMENSIONS ?= 768
@@ -58,7 +58,9 @@ help:
 	@echo "  docker-push       - Push Docker image to registry"
 	@echo "  docker-release    - Build, tag, and push Docker image (all-in-one)"
 	@echo ""
-	@echo "Maintenance:"
+	@echo "Maintenance & Backup:"
+	@echo "  db-backup         - Backup database to /data/backups"
+	@echo "  db-restore        - Restore database from backup (requires BACKUP_FILE=...)"
 	@echo "  clean             - Clean all test artifacts (DB data, target/)"
 	@echo ""
 	@echo "Environment variables:"
@@ -227,13 +229,14 @@ gpu-up:
 	@echo ""
 	@echo "Step 1: Cleaning up old containers and data..."
 	RUN_ENV=test-gpu docker compose -f docker-compose-gpu.yml down -v 2>/dev/null || true
-	@sudo rm -rf /data/postgres
+	#@sudo rm -rf /data/postgres
 	@echo "✅ Cleaned old data"
 	@echo ""
 	@echo "Step 2: Preparing data directories..."
-	@sudo mkdir -p /data/docling_models /data/docling_scratch /data/ollama /data/postgres
+	@sudo mkdir -p /data/docling_models /data/docling_scratch /data/ollama /data/postgres /data/backups
 	@sudo chown 999:999 /data/postgres
 	@sudo chmod 700 /data/postgres
+	@sudo chmod 777 /data/backups
 	@echo "✅ Directories ready"
 	@echo ""
 	@echo "Step 3: Starting database service only..."
@@ -368,6 +371,35 @@ gpu-db-stats:
 	@echo ""
 
 # =============================================================================
+# Maintenance & Backup
+# =============================================================================
+
+# Backup the database to /data/backups
+db-backup:
+	@echo "Backing up database to /data/backups..."
+	@sudo mkdir -p /data/backups
+	@sudo chmod 777 /data/backups
+	@BACKUP_FILE="/data/backups/rag_chat_$$(date +%Y%m%d_%H%M%S).dump"; \
+	docker exec rag-db pg_dump -U rag_user -d rag_chat -F c -f /tmp/temp_backup.dump; \
+	docker cp rag-db:/tmp/temp_backup.dump $$BACKUP_FILE; \
+	docker exec rag-db rm /tmp/temp_backup.dump; \
+	echo "✅ Backup created: $$BACKUP_FILE"; \
+	ls -lh $$BACKUP_FILE
+
+# Restore the database from a backup file
+# Usage: make db-restore BACKUP_FILE=/data/backups/rag_chat_20260118_111800.dump
+db-restore:
+	@if [ -z "$(BACKUP_FILE)" ]; then \
+		echo "❌ Error: BACKUP_FILE is not set. Usage: make db-restore BACKUP_FILE=/path/to/backup.dump"; \
+		exit 1; \
+	fi
+	@echo "Restoring database from $(BACKUP_FILE)..."
+	@docker cp $(BACKUP_FILE) rag-db:/tmp/restore.dump
+	@docker exec rag-db pg_restore -U rag_user -d rag_chat -c /tmp/restore.dump
+	@docker exec rag-db rm /tmp/restore.dump
+	@echo "✅ Restore complete!"
+
+# =============================================================================
 # Integration Testing
 # =============================================================================
 
@@ -407,3 +439,44 @@ reranker-test:
 	@echo "Testing reranker integration..."
 	@echo "Ensure Ollama has reranker model: docker exec ollama ollama pull dengcao/Qwen3-Reranker-0.6B:Q5_K_M"
 	RUN_ENV=test-gpu cargo test --test reranker_test -- --nocapture --test-threads=1
+
+# ============================================
+# Search Performance Tests
+# ============================================
+
+# Run database-level search performance tests
+search-perf-test:
+	@echo "Running search performance tests (requires database)..."
+	@echo "Tests will measure query times for BM25, facets, filters, and chunks"
+	RUN_ENV=test-gpu cargo test --test search_performance_test -- --ignored --nocapture
+
+# Run specific database performance test
+search-perf-bm25:
+	@echo "Testing BM25 search performance..."
+	RUN_ENV=test-gpu cargo test --test search_performance_test bm25 -- --ignored --nocapture
+
+search-perf-facets:
+	@echo "Testing faceted search performance (keywords, entities, locations)..."
+	RUN_ENV=test-gpu cargo test --test search_performance_test facet -- --ignored --nocapture
+
+search-perf-filters:
+	@echo "Testing filter performance (date range, combined, chunks)..."
+	RUN_ENV=test-gpu cargo test --test search_performance_test filter -- --ignored --nocapture
+
+search-perf-comprehensive:
+	@echo "Running comprehensive search performance suite..."
+	RUN_ENV=test-gpu cargo test --test search_performance_test comprehensive -- --ignored --nocapture
+
+# Run API-level search tests
+api-search-test:
+	@echo "Running API search tests (requires server running: make gpu-up)..."
+	@echo "Tests will send HTTP requests to the search endpoints"
+	cargo test --test api_search_test -- --ignored --nocapture
+
+api-search-benchmark:
+	@echo "Running API search performance benchmark..."
+	cargo test --test api_search_test search_performance_benchmark -- --ignored --nocapture
+
+# Run all search tests (database + API)
+search-tests-all: search-perf-test api-search-test
+	@echo "✅ All search performance tests completed!"
