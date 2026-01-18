@@ -17,9 +17,14 @@ pub fn StatsBar() -> impl IntoView {
     // Fetch stats on component mount
     #[cfg(target_arch = "wasm32")]
     Effect::new(move |_| {
+        leptos::logging::log!("StatsBar: Effect triggered, fetching DB stats");
         leptos::task::spawn_local(async move {
+            leptos::logging::log!("StatsBar: Async task started");
             if let Some(db_stats) = fetch_db_stats().await {
+                leptos::logging::log!("StatsBar: Got stats, updating signal");
                 set_stats.set(db_stats);
+            } else {
+                leptos::logging::warn!("StatsBar: fetch_db_stats returned None");
             }
         });
     });
@@ -73,13 +78,39 @@ pub fn StatsBar() -> impl IntoView {
 async fn fetch_db_stats() -> Option<DbStats> {
     use web_sys::window;
 
+    leptos::logging::log!("StatsBar: fetch_db_stats called");
+
     let window = window()?;
     let origin = window.location().origin().ok()?;
     let url = format!("{}/api/stats/db", origin);
 
-    let response = gloo_net::http::Request::get(&url).send().await.ok()?;
+    leptos::logging::log!("StatsBar: Fetching from URL: {}", url);
 
-    response.json::<DbStats>().await.ok()
+    let response = gloo_net::http::Request::get(&url)
+        .send()
+        .await
+        .map_err(|e| {
+            leptos::logging::error!("StatsBar: Fetch error: {}", e);
+        })
+        .ok()?;
+
+    leptos::logging::log!("StatsBar: Response status: {}", response.status());
+
+    let json_result = response.json::<DbStats>().await.map_err(|e| {
+        leptos::logging::error!("StatsBar: JSON parsing error: {}", e);
+    });
+
+    match json_result {
+        Ok(stats) => {
+            leptos::logging::log!(
+                "StatsBar: Successfully fetched stats - docs: {}, chunks: {}",
+                stats.documents,
+                stats.chunks
+            );
+            Some(stats)
+        }
+        Err(_) => None,
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
