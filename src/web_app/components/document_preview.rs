@@ -1,7 +1,7 @@
 use crate::domain::models::Document;
 use leptos::prelude::*;
-use leptos::*;
 use uuid::Uuid;
+use leptos::web_sys;
 
 #[server(GetDocument, "/api")]
 pub async fn get_document(id: Uuid) -> Result<Option<Document>, ServerFnError> {
@@ -22,6 +22,7 @@ pub async fn get_document(id: Uuid) -> Result<Option<Document>, ServerFnError> {
 pub fn DocumentPreview(
     #[prop(into)] document_id: Signal<Option<Uuid>>,
     #[prop(into)] on_close: Callback<()>,
+    #[prop(optional)] set_chat_input: Option<leptos::prelude::WriteSignal<String>>,
 ) -> impl IntoView {
     let document = Resource::new(
         move || document_id.get(),
@@ -53,13 +54,22 @@ pub fn DocumentPreview(
                             <div class="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-500"></div>
                         </div>
                     }>
-                        {move || document.get().map(|res| match res {
-                            Ok(Some(doc)) => view! {
-                                <DocumentDetails doc=doc />
-                            }.into_any(),
-                            Ok(None) => view! { <p>"Document not found"</p> }.into_any(),
-                            Err(e) => view! { <p class="text-red-500">{e.to_string()}</p> }.into_any(),
-                        })}
+                        {move || {
+                            document.get().map(|res| match res {
+                                Ok(Some(doc)) => {
+                                    match set_chat_input {
+                                        Some(setter) => view! {
+                                            <DocumentDetailsInline doc=doc.clone() set_chat_input=setter />
+                                        }.into_any(),
+                                        None => view! {
+                                            <DocumentDetailsInline doc=doc.clone() />
+                                        }.into_any(),
+                                    }
+                                },
+                                Ok(None) => view! { <p>"Document not found"</p> }.into_any(),
+                                Err(e) => view! { <p class="text-red-500">{e.to_string()}</p> }.into_any(),
+                            })
+                        }}
                     </Suspense>
                 </div>
             </div>
@@ -68,7 +78,10 @@ pub fn DocumentPreview(
 }
 
 #[component]
-fn DocumentDetails(doc: Document) -> impl IntoView {
+fn DocumentDetailsInline(
+    doc: Document,
+    #[prop(optional)] set_chat_input: Option<leptos::prelude::WriteSignal<String>>,
+) -> impl IntoView {
     let summary_check = doc.summary.clone();
     let summary_view = doc.summary.clone();
 
@@ -78,9 +91,60 @@ fn DocumentDetails(doc: Document) -> impl IntoView {
     let locations_check = doc.locations.clone();
     let locations_view = doc.locations.clone();
 
+    let handle_copy_to_clipboard = move |content: String| {
+        #[cfg(target_arch = "wasm32")]
+        {
+            if let Some(window) = web_sys::window() {
+                if let Some(navigator) = window.navigator().clipboard() {
+                    let promise = navigator.write_text(&content);
+                    let _ = wasm_bindgen_futures::JsFuture::from(promise);
+                }
+            }
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let _ = content;
+        }
+    };
+
+    let handle_send_to_chat = move |content: String| {
+        if let Some(setter) = set_chat_input {
+            setter.set(content);
+        }
+    };
+
+    let doc_content = doc.content.clone();
+    let doc_content_copy = doc.content.clone();
+
     view! {
         <article class="prose max-w-none">
-            <h1 class="text-2xl font-bold mb-4 text-gray-900">{doc.title}</h1>
+            <div class="flex items-center justify-between mb-4">
+                <h1 class="text-2xl font-bold text-gray-900">{doc.title}</h1>
+                <div class="flex gap-2">
+                    <button
+                        class="px-3 py-2 text-sm text-gray-600 hover:text-blue-600 hover:bg-blue-50 rounded-md transition-colors border border-gray-200 hover:border-blue-200 flex items-center gap-2"
+                        on:click=move |_| handle_copy_to_clipboard(doc_content.clone())
+                        title="Copy content to clipboard"
+                    >
+                        <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                  d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
+                        </svg>
+                        <span>"Copy"</span>
+                    </button>
+                    <button
+                        class="px-3 py-2 text-sm text-gray-600 hover:text-green-600 hover:bg-green-50 rounded-md transition-colors border border-gray-200 hover:border-green-200 flex items-center gap-2"
+                        on:click=move |_| handle_send_to_chat(doc_content_copy.clone())
+                        title="Paste to chat input"
+                    >
+                        <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                  d="M13 7l5 5m0 0l-5 5m5-5H6" />
+                        </svg>
+                        <span>"Send to Chat"</span>
+                    </button>
+                </div>
+            </div>
 
             <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6 text-sm bg-gray-50 p-4 rounded-lg border border-gray-200">
                 <div>

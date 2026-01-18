@@ -10,13 +10,14 @@ use uuid::Uuid;
 ///
 /// ParadeDB's pg_search has edge cases with empty/wildcard queries that cause parsing errors.
 /// Also converts plain queries to field-qualified format for multi-field search.
+/// Searches across all indexed fields: content, title, summary, author, and source_path.
 ///
 /// # Examples
 /// ```
 /// use rag_chat::infra::db_utils::sanitize_bm25_query;
 /// assert_eq!(sanitize_bm25_query(""), "id:__no_match__");
 /// assert_eq!(sanitize_bm25_query("*"), "id:__no_match__");
-/// assert_eq!(sanitize_bm25_query("hello"), "(content:(hello) OR title:(hello) OR summary:(hello))");
+/// assert_eq!(sanitize_bm25_query("hello"), "(content:(hello) OR title:(hello) OR summary:(hello) OR author:(hello) OR source_path:(hello))");
 /// ```
 pub fn sanitize_bm25_query(query: &str) -> String {
     let trimmed = query.trim();
@@ -37,10 +38,11 @@ pub fn sanitize_bm25_query(query: &str) -> String {
     if trimmed.is_empty() || trimmed == "*" || is_empty_id {
         "id:__no_match__".to_string()
     } else {
-        // Add field qualification for multi-field search
+        // Add field qualification for multi-field search across all indexed fields
+        // Searches: content, title, summary, author, and source_path
         format!(
-            "(content:({}) OR title:({}) OR summary:({}))",
-            trimmed, trimmed, trimmed
+            "(content:({}) OR title:({}) OR summary:({}) OR author:({}) OR source_path:({}))",
+            trimmed, trimmed, trimmed, trimmed, trimmed
         )
     }
 }
@@ -74,7 +76,7 @@ pub fn tokenize_query(query: &str) -> Vec<String> {
 /// Build a phrase query for exact phrase matching
 ///
 /// Expects tokens to match in exact order and adjacent positions.
-/// Searches across content, title, and summary fields.
+/// Searches across all indexed fields: content, title, summary, author, and source_path.
 ///
 /// Note: ParadeDB requires field-qualified queries when using multiple fields.
 pub fn build_phrase_query(tokens: &[String]) -> String {
@@ -87,10 +89,10 @@ pub fn build_phrase_query(tokens: &[String]) -> String {
             .map(|t| format!("\"{}\"", t))
             .collect::<Vec<_>>()
             .join(" ");
-        // Search phrase in content, title, or summary
+        // Search phrase in all indexed fields for comprehensive matching
         format!(
-            "(content:({}) OR title:({}) OR summary:({}))",
-            quoted, quoted, quoted
+            "(content:({}) OR title:({}) OR summary:({}) OR author:({}) OR source_path:({}))",
+            quoted, quoted, quoted, quoted, quoted
         )
     }
 }
@@ -98,7 +100,7 @@ pub fn build_phrase_query(tokens: &[String]) -> String {
 /// Build a prefix query for fuzzy matching
 ///
 /// Appends * to each token for prefix matching with OR semantics.
-/// Searches across content, title, and summary fields.
+/// Searches across all indexed fields: content, title, summary, author, and source_path.
 pub fn build_prefix_query(query: &str) -> String {
     let tokens = tokenize_query(query);
     if tokens.is_empty() {
@@ -110,17 +112,17 @@ pub fn build_prefix_query(query: &str) -> String {
             .map(|t| format!("{}*", t))
             .collect::<Vec<_>>()
             .join(" ||| ");
-        // Search across content, title, or summary
+        // Search across all indexed fields for typo tolerance and partial matches
         format!(
-            "(content:({}) OR title:({}) OR summary:({}))",
-            prefix_terms, prefix_terms, prefix_terms
+            "(content:({}) OR title:({}) OR summary:({}) OR author:({}) OR source_path:({}))",
+            prefix_terms, prefix_terms, prefix_terms, prefix_terms, prefix_terms
         )
     }
 }
 
 /// Build a boolean query with AND semantics
 ///
-/// All tokens must be present for a match across content, title, or summary.
+/// All tokens must be present for a match across all indexed fields.
 pub fn build_boolean_query(query: &str) -> String {
     let tokens = tokenize_query(query);
     if tokens.is_empty() {
@@ -128,10 +130,10 @@ pub fn build_boolean_query(query: &str) -> String {
     } else {
         // Create AND terms and search multiple fields
         let and_terms = tokens.join(" &&& ");
-        // Search for all terms in any field
+        // Search for all terms in any indexed field with high precision
         format!(
-            "(content:({}) OR title:({}) OR summary:({}))",
-            and_terms, and_terms, and_terms
+            "(content:({}) OR title:({}) OR summary:({}) OR author:({}) OR source_path:({}))",
+            and_terms, and_terms, and_terms, and_terms, and_terms
         )
     }
 }
@@ -348,15 +350,15 @@ mod tests {
     fn test_sanitize_valid_queries() {
         assert_eq!(
             sanitize_bm25_query("hello"),
-            "(content:(hello) OR title:(hello) OR summary:(hello))"
+            "(content:(hello) OR title:(hello) OR summary:(hello) OR author:(hello) OR source_path:(hello))"
         );
         assert_eq!(
             sanitize_bm25_query("  hello world  "),
-            "(content:(hello world) OR title:(hello world) OR summary:(hello world))"
+            "(content:(hello world) OR title:(hello world) OR summary:(hello world) OR author:(hello world) OR source_path:(hello world))"
         );
         assert_eq!(
             sanitize_bm25_query("id:(123)"),
-            "(content:(id:(123)) OR title:(id:(123)) OR summary:(id:(123)))"
+            "(content:(id:(123)) OR title:(id:(123)) OR summary:(id:(123)) OR author:(id:(123)) OR source_path:(id:(123)))"
         );
     }
 
@@ -580,14 +582,14 @@ mod tests {
         let tokens = vec!["hello".to_string()];
         assert_eq!(
             build_phrase_query(&tokens),
-            "(content:(\"hello\") OR title:(\"hello\") OR summary:(\"hello\"))"
+            "(content:(\"hello\") OR title:(\"hello\") OR summary:(\"hello\") OR author:(\"hello\") OR source_path:(\"hello\"))"
         );
     }
 
     #[test]
     fn test_build_phrase_query_multiple() {
         let tokens = vec!["hello".to_string(), "world".to_string()];
-        assert_eq!(build_phrase_query(&tokens), "(content:(\"hello\" \"world\") OR title:(\"hello\" \"world\") OR summary:(\"hello\" \"world\"))");
+        assert_eq!(build_phrase_query(&tokens), "(content:(\"hello\" \"world\") OR title:(\"hello\" \"world\") OR summary:(\"hello\" \"world\") OR author:(\"hello\" \"world\") OR source_path:(\"hello\" \"world\"))");
     }
 
     #[test]
@@ -600,7 +602,7 @@ mod tests {
         let result = build_prefix_query("hello");
         assert_eq!(
             result,
-            "(content:(hello*) OR title:(hello*) OR summary:(hello*))"
+            "(content:(hello*) OR title:(hello*) OR summary:(hello*) OR author:(hello*) OR source_path:(hello*))"
         );
     }
 
@@ -610,6 +612,8 @@ mod tests {
         assert!(result.contains("hello*"));
         assert!(result.contains("world*"));
         assert!(result.contains("|||"));
+        assert!(result.contains("author:"));
+        assert!(result.contains("source_path:"));
     }
 
     #[test]
@@ -622,7 +626,7 @@ mod tests {
         let result = build_boolean_query("hello");
         assert_eq!(
             result,
-            "(content:(hello) OR title:(hello) OR summary:(hello))"
+            "(content:(hello) OR title:(hello) OR summary:(hello) OR author:(hello) OR source_path:(hello))"
         );
     }
 
@@ -632,5 +636,7 @@ mod tests {
         assert!(result.contains("hello"));
         assert!(result.contains("world"));
         assert!(result.contains("&&&"));
+        assert!(result.contains("author:"));
+        assert!(result.contains("source_path:"));
     }
 }

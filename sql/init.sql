@@ -150,6 +150,10 @@ CREATE TABLE IF NOT EXISTS import_items (
 CREATE INDEX documents_search_idx ON documents USING bm25 (id, content, title, summary)
 WITH (key_field='id');
 
+-- BM25 index for document_chunks (actual searchable content)
+CREATE INDEX chunks_search_idx ON document_chunks USING bm25 (id, content)
+WITH (key_field='id');
+
 -- HNSW Vector index (optional - created separately for performance)
 -- Note: HNSW requires dimension specification, which depends on embedding model
 -- Vector similarity is computed in application code as part of hybrid search

@@ -261,7 +261,12 @@ fn default_512() -> usize {
 /// RAG system configuration
 #[derive(Debug, Deserialize, Clone)]
 pub struct RagConfig {
+    /// System prompt for RAG-based chat (when document context is provided)
     pub system_prompt: Option<String>,
+
+    /// System prompt for standalone chat (no document context)
+    pub chat_system_prompt: Option<String>,
+
     pub entity_extraction_enabled: bool,
 }
 

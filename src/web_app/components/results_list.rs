@@ -11,6 +11,7 @@ pub fn ResultsList(
     set_selected_context: WriteSignal<Vec<Uuid>>,
     #[prop(optional)] on_preview: Option<Callback<Uuid>>,
     #[prop(optional)] on_delete: Option<Callback<Uuid>>,
+    #[prop(optional)] set_chat_input: Option<leptos::prelude::WriteSignal<String>>,
 ) -> impl IntoView {
     let toggle_selection = move |id: Uuid| {
         set_selected_context.update(|ids: &mut Vec<Uuid>| {
@@ -39,6 +40,28 @@ pub fn ResultsList(
             {
                 callback.run(id);
             }
+        }
+    };
+
+    let handle_copy_to_clipboard = move |content: String| {
+        #[cfg(target_arch = "wasm32")]
+        {
+            if let Some(window) = web_sys::window() {
+                if let Some(navigator) = window.navigator().clipboard() {
+                    let promise = navigator.write_text(&content);
+                    let _ = wasm_bindgen_futures::JsFuture::from(promise);
+                }
+            }
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let _ = content;
+        }
+    };
+
+    let handle_send_to_chat = move |content: String| {
+        if let Some(setter) = set_chat_input {
+            setter.set(content);
         }
     };
 
@@ -75,6 +98,8 @@ pub fn ResultsList(
                         let snippet_get = move || snippet.get();
 
                         let category_name_clone = category_name.clone();
+                        let res_content = res.content.clone();
+                        let res_content_send = res.content.clone();
 
                         view! {
                             <div class="group bg-white rounded-lg border border-gray-200 shadow-sm hover:shadow-md transition-all overflow-hidden"
@@ -166,6 +191,32 @@ pub fn ResultsList(
                                                             </svg>
                                                         </button>
                                                     </Show>
+                                                    <button
+                                                        class="text-gray-400 hover:text-blue-600 transition-colors"
+                                                        on:click=move |e: web_sys::MouseEvent| {
+                                                            e.stop_propagation();
+                                                            handle_copy_to_clipboard(res_content.clone());
+                                                        }
+                                                        title="Copy content to clipboard"
+                                                    >
+                                                        <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                                                  d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
+                                                        </svg>
+                                                    </button>
+                                                    <button
+                                                        class="text-gray-400 hover:text-green-600 transition-colors"
+                                                        on:click=move |e: web_sys::MouseEvent| {
+                                                            e.stop_propagation();
+                                                            handle_send_to_chat(res_content_send.clone());
+                                                        }
+                                                        title="Paste to chat input"
+                                                    >
+                                                        <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                                                  d="M13 7l5 5m0 0l-5 5m5-5H6" />
+                                                        </svg>
+                                                    </button>
                                                 </div>
                                             </div>
                                         </div>

@@ -1,6 +1,6 @@
 use crate::domain::models::SearchMetadata;
 use crate::web_app::components::{
-    chat_panel::ChatPanel,
+    chat::Chat,
     document_preview::DocumentPreview,
     faceted_filters::{get_categories, FacetedFilters},
     results_list::ResultsList,
@@ -48,7 +48,7 @@ pub fn SearchPage() -> impl IntoView {
 
     // Derived signals from action
     let (results, set_results) = signal(Vec::new());
-    let (search_metadata, set_search_metadata) = signal(None::<SearchMetadata>);
+    let (_search_metadata, _set_search_metadata) = signal(None::<SearchMetadata>);
 
     // ============ SEARCH FUNCTION ============
     let execute_search = move |_| {
@@ -146,27 +146,10 @@ pub fn SearchPage() -> impl IntoView {
         if let Some(Ok(res)) = search_action.value().get() {
             leptos::logging::log!("SearchPage: Effect received {} results", res.len());
 
-            let unique_documents = res
-                .iter()
-                .map(|r| r.id)
-                .collect::<std::collections::HashSet<_>>()
-                .len();
-
-            let metadata = SearchMetadata {
-                duration_ms: 0, // Timing calculation simplified due to WASM limitations
-                total_results: res.len(),
-                unique_documents,
-                total_chunks_searched: res.len(), // Each result is a chunk in our context
-                bm25_weight: bm25_weight.get(),
-                vector_weight: vector_weight.get(),
-            };
-
-            set_search_metadata.set(Some(metadata));
             set_results.set(res);
         } else if let Some(Err(e)) = search_action.value().get() {
             leptos::logging::error!("SearchPage: Search failed: {:?}", e);
             set_results.set(vec![]);
-            set_search_metadata.set(None);
         }
     });
 
@@ -184,43 +167,31 @@ pub fn SearchPage() -> impl IntoView {
     let (_, set_dummy_results) = signal(Vec::new());
     let (_, set_dummy_loading) = signal(false);
 
+    // Signal for chat input text - will be set by copy/send buttons
+    let (chat_input_text, set_chat_input_text) = signal(String::new());
+
     // Effect for page mount
     Effect::new(move |_| {
         leptos::logging::log!("SearchPage mounted/hydrated");
     });
+
+    // ============ RESIZE STATE ============
+    // Track left column width percentage (0-100), default 50%
+    // Note: Resize functionality can be re-enabled with proper closure handling
+    let (left_width_percent, _set_left_width_percent) = signal(50.0);
 
     // ============ RENDER ============
     let search_error = move || search_action.value().get().and_then(|res| res.err());
 
     view! {
         <div class="flex flex-col h-screen bg-white">
-            // HEADER: Unified Search with macOS-style toolbar
-            <header class="bg-white shadow-sm z-10">
-                <div class="px-6 py-3 border-b border-gray-200 flex justify-between items-center bg-gradient-to-b from-gray-50 to-white">
+            // HEADER: Title bar with toolbar buttons
+            <header class="bg-white shadow-sm z-10 border-b border-gray-200">
+                <div class="px-6 py-4 flex justify-between items-center">
                     <h1 class="text-2xl font-bold text-gray-900">"RAG Search"</h1>
-                </div>
-                <div class="px-6 py-3 border-b border-gray-200 flex justify-between items-center gap-4 bg-white">
-                    <div class="flex-1">
-                        <UnifiedSearch
-                            query=search_query.into()
-                            set_query=set_search_query
-                            results=results.into()
-                            set_results=set_dummy_results
-                            loading=is_loading.into()
-                            set_loading=set_dummy_loading
-                            bm25_weight=bm25_weight.into()
-                            set_bm25_weight=set_bm25_weight
-                            vector_weight=vector_weight.into()
-                            set_vector_weight=set_vector_weight
-                            ai_mode_enabled=ai_mode_enabled.into()
-                            set_ai_mode_enabled=set_ai_mode_enabled
-                            on_search=Callback::new(move |_| execute_search(()))
-                            on_ai_search=Callback::new(move |_| execute_search(())) // Treat AI search as normal search for Phase 1
-                        />
-                    </div>
 
                     // macOS-style toolbar buttons on the right
-                    <div class="flex items-center gap-1 bg-gray-100/50 rounded-lg p-1 border border-gray-200/60 shadow-sm flex-shrink-0">
+                    <div class="flex items-center gap-1 bg-gray-100/50 rounded-lg p-1 border border-gray-200/60 shadow-sm">
                         <a
                             href="/import"
                             class="px-3 py-1.5 text-xs font-medium text-gray-700 bg-white rounded-md hover:bg-gray-50 transition-all flex items-center gap-1.5 shadow-sm border border-gray-200/40 hover:shadow"
@@ -253,7 +224,7 @@ pub fn SearchPage() -> impl IntoView {
                     </div>
                 </div>
                 <Show when=move || search_error().is_some()>
-                    <div class="bg-red-50 border-l-4 border-red-500 p-4 mx-6 mt-2">
+                    <div class="bg-red-50 border-l-4 border-red-500 p-4 mx-6 mb-2">
                         <div class="flex">
                             <div class="flex-shrink-0">
                                 <svg class="h-5 w-5 text-red-400" viewBox="0 0 20 20" fill="currentColor">
@@ -273,95 +244,96 @@ pub fn SearchPage() -> impl IntoView {
             // STATS BAR: Database and index information
             <StatsBar />
 
-            // MAIN CONTENT: 3 Column Layout (Filters + Results + Chat)
-            <div class="flex-1 overflow-hidden flex gap-4 p-4 bg-gray-50">
-                // Column 1: Filters Sidebar (minimum 200px, max 20%)
-                <div class="min-w-[200px] w-[20%] flex flex-col bg-white rounded-lg border border-gray-200 overflow-y-auto shadow-sm">
-                    <div class="px-4 py-3 border-b border-gray-200 bg-gray-50">
-                        <h2 class="text-sm font-bold text-gray-700">"Filters"</h2>
+            // MAIN CONTENT: 2 Column Layout (Search + Filters + Results | Chat)
+            <div id="content-container" class="flex-1 overflow-hidden flex bg-gray-50 select-none p-4 gap-1">
+                // Column 1: Search + Filters + Results (resizable)
+                <div class="flex flex-col bg-white rounded-lg border border-gray-200 overflow-hidden shadow-sm" style=move || {
+                    format!("width: calc({}% - 2px); transition: width 0.1s ease;",
+                        left_width_percent.get()
+                    )
+                }>
+                    <div class="px-4 py-3 border-b border-gray-200 bg-white flex-shrink-0">
+                        <UnifiedSearch
+                            query=search_query.into()
+                            set_query=set_search_query
+                            results=results.into()
+                            set_results=set_dummy_results
+                            loading=is_loading.into()
+                            set_loading=set_dummy_loading
+                            bm25_weight=bm25_weight.into()
+                            set_bm25_weight=set_bm25_weight
+                            vector_weight=vector_weight.into()
+                            set_vector_weight=set_vector_weight
+                            ai_mode_enabled=ai_mode_enabled.into()
+                            set_ai_mode_enabled=set_ai_mode_enabled
+                            on_search=Callback::new(move |_| execute_search(()))
+                            on_ai_search=Callback::new(move |_| execute_search(()))
+                        />
                     </div>
-                    <FacetedFilters
-                        categories=categories
-                        selected_category=selected_category.into()
-                        set_selected_category=set_selected_category
-                        selected_keywords=selected_keywords.into()
-                        set_selected_keywords=set_selected_keywords
-                        selected_concepts=selected_concepts.into()
-                        set_selected_concepts=set_selected_concepts
-                        selected_locations=selected_locations.into()
-                        set_selected_locations=set_selected_locations
-                        selected_persons=selected_persons.into()
-                        set_selected_persons=set_selected_persons
-                        selected_organizations=selected_organizations.into()
-                        set_selected_organizations=set_selected_organizations
-                        selected_authors=selected_authors.into()
-                        set_selected_authors=set_selected_authors
-                        on_change=Callback::new(move |_| execute_search(()))
-                    />
-                </div>
 
-                // Column 2: Search Results (minimum 300px, max 35%)
-                <div class="min-w-[300px] w-[35%] flex flex-col bg-white rounded-lg border border-gray-200 overflow-hidden shadow-sm">
-                    <div class="px-4 py-3 border-b border-gray-200 bg-gray-50 flex flex-col gap-2">
-                        <div class="flex justify-between items-center">
-                            <h2 class="text-sm font-bold text-gray-700">"Discovery & Context"</h2>
-                            <span class="text-xs text-gray-500">{move || format!("{} found", results.get().len())}</span>
-                        </div>
-                        <Show when=move || search_metadata.get().is_some()>
-                            <div class="flex gap-3 text-xs text-gray-600 bg-white/50 px-2 py-1.5 rounded">
-                                {move || search_metadata.get().map(|meta| {
-                                    view! {
-                                        <>
-                                            <span class="flex items-center gap-1">
-                                                <svg class="h-3 w-3" fill="currentColor" viewBox="0 0 20 20">
-                                                    <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm1-11a1 1 0 10-2 0v3.5H7a1 1 0 100 2h4a1 1 0 001-1v-4.5z" clip-rule="evenodd" />
-                                                </svg>
-                                                <span>{format!("{}ms", meta.duration_ms)}</span>
-                                            </span>
-                                            <span>"•"</span>
-                                            <span class="flex items-center gap-1">
-                                                <svg class="h-3 w-3" fill="currentColor" viewBox="0 0 20 20">
-                                                    <path d="M9 2a1 1 0 000 2h2a1 1 0 100-2H9z" />
-                                                    <path fill-rule="evenodd" d="M4 5a2 2 0 012-2 1 1 0 000-2 4 4 0 00-4 4v10a4 4 0 004 4h12a4 4 0 004-4V5a1 1 0 00-2 0v10a2 2 0 01-2 2H6a2 2 0 01-2-2V5z" clip-rule="evenodd" />
-                                                </svg>
-                                                <span>{format!("{} docs", meta.unique_documents)}</span>
-                                            </span>
-                                            <span>"•"</span>
-                                            <span class="flex items-center gap-1">
-                                                <svg class="h-3 w-3" fill="currentColor" viewBox="0 0 20 20">
-                                                    <path d="M5 3a2 2 0 00-2 2v2c0 1.306.895 2.418 2.097 2.671A2 2 0 105 7V5a2 2 0 002-2h2a2 2 0 002 2v2h2V5a2 2 0 012-2h2a2 2 0 00-2-2h-2a2 2 0 00-2 2V3z" />
-                                                </svg>
-                                                <span>{format!("{} chunks", meta.total_chunks_searched)}</span>
-                                            </span>
-                                        </>
-                                    }
-                                })}
+                    // Filters and Results
+                    <div class="flex-1 flex gap-3 overflow-hidden p-3">
+                        // Filters (collapsible)
+                        <div class="w-48 flex flex-col bg-gray-50 rounded border border-gray-200 overflow-y-auto flex-shrink-0">
+                            <div class="px-3 py-2 border-b border-gray-200 bg-white">
+                                <h3 class="text-xs font-bold text-gray-700">"Filters"</h3>
                             </div>
-                        </Show>
+                            <FacetedFilters
+                                categories=categories
+                                selected_category=selected_category.into()
+                                set_selected_category=set_selected_category
+                                selected_keywords=selected_keywords.into()
+                                set_selected_keywords=set_selected_keywords
+                                selected_concepts=selected_concepts.into()
+                                set_selected_concepts=set_selected_concepts
+                                selected_locations=selected_locations.into()
+                                set_selected_locations=set_selected_locations
+                                selected_persons=selected_persons.into()
+                                set_selected_persons=set_selected_persons
+                                selected_organizations=selected_organizations.into()
+                                set_selected_organizations=set_selected_organizations
+                                selected_authors=selected_authors.into()
+                                set_selected_authors=set_selected_authors
+                                on_change=Callback::new(move |_| execute_search(()))
+                            />
+                        </div>
+
+                        // Results
+                        <div class="flex-1 flex flex-col bg-gray-50 rounded border border-gray-200 overflow-hidden">
+                            <div class="px-3 py-2 border-b border-gray-200 bg-white flex justify-between items-center flex-shrink-0">
+                                <h3 class="text-xs font-bold text-gray-700">"Results"</h3>
+                                <span class="text-xs text-gray-500">{move || format!("{} found", results.get().len())}</span>
+                            </div>
+                            <ResultsList
+                                results=results.into()
+                                loading=is_loading.into()
+                                selected_context=selected_context.into()
+                                set_selected_context=set_selected_context
+                                on_preview=Callback::new(move |id| set_selected_document_id.set(Some(id)))
+                                on_delete=on_delete
+                                set_chat_input=set_chat_input_text
+                            />
+                        </div>
                     </div>
-                    <ResultsList
-                        results=results.into()
-                        loading=is_loading.into()
-                        selected_context=selected_context.into()
-                        set_selected_context=set_selected_context
-                        on_preview=Callback::new(move |id| set_selected_document_id.set(Some(id)))
-                        on_delete=on_delete
-                    />
                 </div>
 
-                // Column 3: Synthesis & Chat (minimum 400px, max 45%)
-                <div class="md:flex min-w-[400px] w-[45%] flex-col bg-white rounded-lg border border-gray-200 overflow-hidden shadow-sm">
-                    <ChatPanel
-                        results=results.into()
-                        search_query=search_query.into()
-                        selected_context=selected_context.into()
-                    />
+                // Draggable Divider (visual only, resizing via CSS media queries)
+                <div
+                    class="w-1 bg-gradient-to-b from-gray-200 via-gray-300 to-gray-200 hover:from-blue-300 hover:via-blue-400 hover:to-blue-300 hover:bg-gradient-to-b flex-shrink-0 cursor-col-resize transition-colors"
+                    style="height: calc(100% + 8px); margin: -4px 0;"
+                />
+
+                // Column 2: Chat Interface (resizable)
+                <div class="flex flex-col bg-white rounded-lg border border-gray-200 overflow-hidden shadow-sm flex-1" style="min-width: 400px;">
+
+                    <Chat external_input_text=chat_input_text.into() />
                 </div>
             </div>
 
             <DocumentPreview
                 document_id=selected_document_id
                 on_close=Callback::new(move |_| set_selected_document_id.set(None))
+                set_chat_input=set_chat_input_text
             />
         </div>
     }

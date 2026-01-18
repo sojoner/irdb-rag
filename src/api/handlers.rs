@@ -208,7 +208,377 @@ pub async fn chat(
     }))
 }
 
-/// Stream chat response using Server-Sent Events
+/// Chat with conversation history (new API)
+pub async fn chat_conversation(
+    State(state): State<AppState>,
+    Json(req): Json<crate::domain::dtos::ChatConversationRequest>,
+) -> Result<Json<crate::domain::dtos::ChatConversationResponse>, AppError> {
+    tracing::info!(
+        "Received conversation chat request: {} messages, context_chunks={}, document_ids={:?}",
+        req.messages.len(),
+        req.context_chunks,
+        req.document_ids
+    );
+
+    // Get the last user message for context retrieval
+    let last_user_message = req
+        .messages
+        .iter()
+        .rev()
+        .find(|m| m.role == "user")
+        .map(|m| m.content.clone())
+        .unwrap_or_default();
+
+    if last_user_message.is_empty() {
+        return Err(AppError::Internal("No user message found".to_string()));
+    }
+
+    // Generate embedding for the last user message
+    tracing::debug!("Generating embedding for last user message");
+    let embedding = state
+        .embedder
+        .embed(&last_user_message)
+        .await
+        .map_err(|e| {
+            tracing::error!("Failed to generate embedding for chat: {}", e);
+            AppError::Internal(e.to_string())
+        })?;
+
+    // Retrieve relevant chunks if document_ids provided
+    let mut context = String::new();
+    if req.document_ids.is_some() && req.context_chunks > 0 {
+        let mut chunks = db::get_relevant_chunks(
+            &state.pool,
+            &embedding,
+            req.context_chunks,
+            req.document_ids.as_deref(),
+        )
+        .await
+        .map_err(|e| {
+            tracing::error!("Failed to retrieve chunks: {}", e);
+            AppError::Internal(e.to_string())
+        })?;
+        tracing::debug!("Retrieved {} chunks", chunks.len());
+
+        // Rerank chunks if available
+        if let Some(reranker) = state.reranker.as_ref() {
+            let chunk_contents: Vec<&str> = chunks.iter().map(|c| c.content.as_str()).collect();
+
+            match reranker
+                .rerank_and_sort(&last_user_message, &chunk_contents)
+                .await
+            {
+                Ok(ranked) => {
+                    let mut reranked = Vec::new();
+                    for doc in ranked {
+                        if let Some(chunk) = chunks.get(doc.index) {
+                            reranked.push(chunk.clone());
+                        }
+                    }
+                    tracing::debug!("Reranked {} chunks for chat context", reranked.len());
+                    chunks = reranked;
+                }
+                Err(e) => {
+                    tracing::warn!("Chunk reranking failed, using original order: {}", e);
+                }
+            }
+        }
+
+        // Build context
+        context = chunks
+            .iter()
+            .map(|c| format!("---\n{}\n", c.content))
+            .collect();
+    }
+
+    // Build system prompt - use different prompts for RAG vs standalone chat
+    let system_prompt = if !context.is_empty() {
+        // RAG mode: use document-focused system prompt
+        let default_rag_prompt = "You are a helpful assistant answering questions based on the provided context from documents. Answer based ONLY on the context provided. If the context doesn't contain enough information to answer, say so. Be concise and cite specific parts of the context when relevant.";
+        state
+            .settings
+            .rag
+            .system_prompt
+            .as_deref()
+            .unwrap_or(default_rag_prompt)
+    } else {
+        // Standalone chat mode: use conversational system prompt
+        let default_chat_prompt = "You are a helpful, friendly AI assistant. Be conversational, thoughtful, and engaging in your responses.";
+        state
+            .settings
+            .rag
+            .chat_system_prompt
+            .as_deref()
+            .unwrap_or(default_chat_prompt)
+    };
+
+    // Build conversation with context if available
+    let mut messages_with_context = req.messages.clone();
+
+    // If we have context, inject it before the last user message
+    if !context.is_empty() {
+        if let Some(last_idx) = messages_with_context.iter().rposition(|m| m.role == "user") {
+            let original_message = messages_with_context[last_idx].content.clone();
+            messages_with_context[last_idx].content = format!(
+                "CONTEXT FROM DOCUMENTS:\n{}\n\nUSER QUESTION:\n{}",
+                context, original_message
+            );
+        }
+    }
+
+    // Format messages for LLM
+    let conversation_text = messages_with_context
+        .iter()
+        .map(|m| {
+            if m.role == "user" {
+                format!("User: {}", m.content)
+            } else {
+                format!("Assistant: {}", m.content)
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n");
+
+    // Call LLM
+    tracing::debug!("Calling LLM with conversation history");
+    let config = state.llm_config.read().await;
+    let response = llm::call_llm(&config, system_prompt, &conversation_text)
+        .await
+        .map_err(|e| {
+            tracing::error!("LLM call failed: {}", e);
+            AppError::Internal(e.to_string())
+        })?;
+    tracing::debug!("Received LLM response: {} chars", response.len());
+
+    let conversation_id = req.conversation_id.unwrap_or_else(Uuid::new_v4);
+    tracing::info!("Chat conversation completed successfully, conversation_id={}", conversation_id);
+
+    Ok(Json(crate::domain::dtos::ChatConversationResponse {
+        message: crate::domain::dtos::ChatMessage {
+            role: "assistant".to_string(),
+            content: response,
+        },
+        conversation_id,
+        sources: vec![], // TODO: Add sources if context was used
+    }))
+}
+
+/// Stream chat with conversation history
+pub async fn chat_conversation_stream(
+    State(state): State<AppState>,
+    Json(req): Json<crate::domain::dtos::ChatConversationRequest>,
+) -> Result<
+    axum::response::Sse<impl futures::stream::Stream<Item = Result<Event, axum::Error>>>,
+    AppError,
+> {
+    tracing::info!(
+        "Received streaming conversation chat request: {} messages, context_chunks={}, document_ids={:?}",
+        req.messages.len(),
+        req.context_chunks,
+        req.document_ids
+    );
+
+    // Get the last user message for context retrieval
+    let last_user_message = req
+        .messages
+        .iter()
+        .rev()
+        .find(|m| m.role == "user")
+        .map(|m| m.content.clone())
+        .unwrap_or_default();
+
+    if last_user_message.is_empty() {
+        return Err(AppError::Internal("No user message found".to_string()));
+    }
+
+    // Generate embedding for the last user message
+    let embedding = state
+        .embedder
+        .embed(&last_user_message)
+        .await
+        .map_err(|e| {
+            tracing::error!("Failed to generate embedding for chat: {}", e);
+            AppError::Internal(e.to_string())
+        })?;
+
+    // Retrieve relevant chunks if document_ids provided
+    let mut context = String::new();
+    let mut sources: Vec<SourceReference> = vec![];
+
+    if req.document_ids.is_some() && req.context_chunks > 0 {
+        let mut chunks = db::get_relevant_chunks(
+            &state.pool,
+            &embedding,
+            req.context_chunks,
+            req.document_ids.as_deref(),
+        )
+        .await
+        .map_err(|e| {
+            tracing::error!("Failed to retrieve chunks: {}", e);
+            AppError::Internal(e.to_string())
+        })?;
+
+        // Rerank chunks if available
+        if let Some(reranker) = state.reranker.as_ref() {
+            let chunk_contents: Vec<&str> = chunks.iter().map(|c| c.content.as_str()).collect();
+
+            match reranker
+                .rerank_and_sort(&last_user_message, &chunk_contents)
+                .await
+            {
+                Ok(ranked) => {
+                    let mut reranked = Vec::new();
+                    for doc in ranked {
+                        if let Some(chunk) = chunks.get(doc.index) {
+                            reranked.push(chunk.clone());
+                        }
+                    }
+                    tracing::debug!(
+                        "Reranked {} chunks for streaming chat context",
+                        reranked.len()
+                    );
+                    chunks = reranked;
+                }
+                Err(e) => {
+                    tracing::warn!("Chunk reranking failed, using original order: {}", e);
+                }
+            }
+        }
+
+        // Build context
+        context = chunks
+            .iter()
+            .map(|c| format!("---\n{}\n", c.content))
+            .collect();
+
+        // Build sources
+        sources = chunks
+            .iter()
+            .enumerate()
+            .map(|(i, c)| SourceReference {
+                document_id: c.document_id,
+                title: c
+                    .section_title
+                    .clone()
+                    .unwrap_or_else(|| format!("Chunk {}", i + 1)),
+                chunk: c.content.chars().take(200).collect::<String>() + "...",
+                relevance: 1.0 - (i as f64 * 0.1),
+            })
+            .collect();
+    }
+
+    // Build system prompt - use different prompts for RAG vs standalone chat
+    let system_prompt = if !context.is_empty() {
+        // RAG mode: use document-focused system prompt
+        let default_rag_prompt = "You are a helpful assistant answering questions based on the provided context from documents. Answer based ONLY on the context provided. If the context doesn't contain enough information to answer, say so. Be concise and cite specific parts of the context when relevant.";
+        state
+            .settings
+            .rag
+            .system_prompt
+            .as_deref()
+            .unwrap_or(default_rag_prompt)
+            .to_string()
+    } else {
+        // Standalone chat mode: use conversational system prompt
+        let default_chat_prompt = "You are a helpful, friendly AI assistant. Be conversational, thoughtful, and engaging in your responses.";
+        state
+            .settings
+            .rag
+            .chat_system_prompt
+            .as_deref()
+            .unwrap_or(default_chat_prompt)
+            .to_string()
+    };
+
+    // Build conversation with context if available
+    let mut messages_with_context = req.messages.clone();
+
+    // If we have context, inject it before the last user message
+    if !context.is_empty() {
+        if let Some(last_idx) = messages_with_context.iter().rposition(|m| m.role == "user") {
+            let original_message = messages_with_context[last_idx].content.clone();
+            messages_with_context[last_idx].content = format!(
+                "CONTEXT FROM DOCUMENTS:\n{}\n\nUSER QUESTION:\n{}",
+                context, original_message
+            );
+        }
+    }
+
+    // Format messages for LLM
+    let conversation_text = messages_with_context
+        .iter()
+        .map(|m| {
+            if m.role == "user" {
+                format!("User: {}", m.content)
+            } else {
+                format!("Assistant: {}", m.content)
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n");
+
+    // Get LLM config
+    let config = state.llm_config.read().await.clone();
+    let conversation_id = req.conversation_id.unwrap_or_else(Uuid::new_v4);
+
+    let stream = async_stream::stream! {
+        // Stream the LLM response
+        match llm::stream_llm(&config, &system_prompt, &conversation_text).await {
+            Ok(mut stream) => {
+                while let Some(result) = stream.next().await {
+                    match result {
+                        Ok(chunk) if !chunk.is_empty() => {
+                            let json = serde_json::json!({
+                                "type": "chunk",
+                                "content": chunk
+                            });
+                            if let Ok(event) = Event::default().json_data(json) {
+                                yield Ok(event);
+                            }
+                        }
+                        Err(e) => {
+                            let error = serde_json::json!({
+                                "type": "error",
+                                "message": e.to_string()
+                            });
+                            if let Ok(event) = Event::default().json_data(error) {
+                                yield Ok(event);
+                            }
+                            break;
+                        }
+                        _ => {}
+                    }
+                }
+
+                // Send completion with sources
+                let completion = serde_json::json!({
+                    "type": "complete",
+                    "conversation_id": conversation_id,
+                    "sources": sources
+                });
+                if let Ok(event) = Event::default().json_data(completion) {
+                    yield Ok(event);
+                }
+
+                tracing::info!("Stream completed successfully for conversation_id={}", conversation_id);
+            }
+            Err(e) => {
+                tracing::error!("LLM streaming failed: {}", e);
+                let error = serde_json::json!({
+                    "type": "error",
+                    "message": e.to_string()
+                });
+                if let Ok(event) = Event::default().json_data(error) {
+                    yield Ok(event);
+                }
+            }
+        }
+    };
+
+    Ok(axum::response::Sse::new(stream).keep_alive(KeepAlive::default()))
+}
+
+/// Stream chat response using Server-Sent Events (legacy API)
 pub async fn chat_stream(
     State(state): State<AppState>,
     Json(req): Json<ChatRequest>,

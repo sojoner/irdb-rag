@@ -222,6 +222,51 @@ WITH (key_field='id');
 
 ---
 
+---
+
+## BM25 Field Expansion (2026-01-18)
+
+### Enhancement: Extended BM25 Search to All Indexed Fields
+
+**Issue**: BM25 search only queried 3 fields (content, title, summary), missing author and source_path searches.
+
+**Solution**: Updated query builders to search **5 indexed fields**:
+- `content` - Document body (existing)
+- `title` - Document title (existing)
+- `summary` - Document summary (existing)
+- `author` - Document author (NEW)
+- `source_path` - File path/source location (NEW)
+
+### Modified Functions (`src/infra/db_utils.rs`)
+
+1. **`sanitize_bm25_query()`** - Standard full-text search
+   - Before: `(content:(q) OR title:(q) OR summary:(q))`
+   - After: `(content:(q) OR title:(q) OR summary:(q) OR author:(q) OR source_path:(q))`
+
+2. **`build_phrase_query()`** - Exact phrase matching (2.0x boost)
+   - Extended to search all 5 fields
+
+3. **`build_prefix_query()`** - Typo tolerance (5% weight)
+   - Extended to search all 5 fields with prefix wildcards
+
+4. **`build_boolean_query()`** - AND semantics (1.5x boost)
+   - Extended to search all 5 fields requiring all terms
+
+### Test Results
+✅ All 29 unit tests pass, including:
+- `test_sanitize_valid_queries` - Validates all 5 fields
+- `test_build_phrase_query_*` - Phrase queries include new fields
+- `test_build_prefix_query_*` - Prefix matching on all fields
+- `test_build_boolean_query_*` - Boolean AND across 5 fields
+
+### Benefits
+- **Author searches**: "John Smith" now finds author field matches
+- **Path searches**: "/documents/reports" finds source_path matches
+- **Better ranking**: Multi-field matches score higher via RRF
+- **Native BM25**: Moved from post-filtering to database-level search
+
+---
+
 ## References
 
 - [PostgreSQL GIN Indexes](https://www.postgresql.org/docs/current/indexes-types.html#INDEXES-GIN)

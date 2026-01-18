@@ -46,6 +46,32 @@ fn default_vector_weight() -> f64 {
     0.5
 }
 
+// Chat message in a conversation
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
+pub struct ChatMessage {
+    pub role: String,    // "user" or "assistant"
+    pub content: String,
+}
+
+// New conversation-based chat request
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct ChatConversationRequest {
+    pub messages: Vec<ChatMessage>,
+    pub conversation_id: Option<Uuid>,
+    #[serde(default = "default_context_chunks")]
+    pub context_chunks: i32,
+    pub document_ids: Option<Vec<Uuid>>,
+}
+
+// New conversation-based chat response
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ChatConversationResponse {
+    pub message: ChatMessage,
+    pub conversation_id: Uuid,
+    pub sources: Vec<SourceReference>,
+}
+
+// Legacy single-message chat request (kept for backward compatibility)
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct ChatRequest {
     pub message: String,
@@ -59,6 +85,7 @@ fn default_context_chunks() -> i32 {
     5
 }
 
+// Legacy single-message chat response (kept for backward compatibility)
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ChatResponse {
     pub message: String,

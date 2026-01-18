@@ -21,6 +21,11 @@ pub fn create_router(state: AppState) -> Router {
         .route("/api/facets/values", post(handlers::get_facet_values))
         .route("/api/chat", post(handlers::chat))
         .route("/api/chat/stream", post(handlers::chat_stream))
+        .route("/api/chat/conversation", post(handlers::chat_conversation))
+        .route(
+            "/api/chat/conversation/stream",
+            post(handlers::chat_conversation_stream),
+        )
         .route("/api/documents", get(handlers::list_documents))
         .route("/api/documents/{id}", get(handlers::get_document))
         .route("/api/documents/{id}", delete(handlers::delete_document))

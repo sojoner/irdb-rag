@@ -195,52 +195,48 @@ pub async fn hybrid_search(
         WITH phrase_results AS (
             -- Phrase matching: exact sequences get 2.0x boost
             SELECT
-                d.id,
-                2.0 * paradedb.score(d.id) AS phrase_score
-            FROM documents d
-            WHERE (d.content @@@ $13 OR d.title @@@ $13)
-            AND (d.status = 'indexed')
+                dc.document_id AS id,
+                2.0 * paradedb.score(dc.id) AS phrase_score
+            FROM document_chunks dc
+            WHERE dc.content @@@ $13
             LIMIT $3 * 4
         ),
         bm25_results AS (
             -- Full BM25 search: standard lexical matching
             SELECT
-                d.id,
-                ROW_NUMBER() OVER (ORDER BY paradedb.score(d.id) DESC) as bm25_rank
-            FROM documents d
-            WHERE d.id @@@ $1
-            AND (d.status = 'indexed')
+                dc.document_id AS id,
+                ROW_NUMBER() OVER (ORDER BY paradedb.score(dc.id) DESC) as bm25_rank
+            FROM document_chunks dc
+            WHERE dc.content @@@ $1
             LIMIT $3 * 3
         ),
         boolean_results AS (
             -- Boolean AND matching: all terms required for precision
             SELECT
-                d.id,
-                1.5 * paradedb.score(d.id) AS boolean_score
-            FROM documents d
-            WHERE d.content @@@ $14 AND d.id @@@ $1
-            AND (d.status = 'indexed')
+                dc.document_id AS id,
+                1.5 * paradedb.score(dc.id) AS boolean_score
+            FROM document_chunks dc
+            WHERE dc.content @@@ $14
             LIMIT $3 * 3
         ),
         prefix_results AS (
             -- Prefix/fuzzy matching: flexibility with wildcards
             SELECT
-                d.id,
-                ROW_NUMBER() OVER (ORDER BY paradedb.score(d.id) DESC) as prefix_rank
-            FROM documents d
-            WHERE (d.content @@@ $15 OR d.title @@@ $15)
-            AND (d.status = 'indexed')
+                dc.document_id AS id,
+                ROW_NUMBER() OVER (ORDER BY paradedb.score(dc.id) DESC) as prefix_rank
+            FROM document_chunks dc
+            WHERE dc.content @@@ $15
             LIMIT $3 * 2
         ),
         vector_results AS (
             -- Vector semantic search: contextual similarity
             SELECT
                 d.id,
-                ROW_NUMBER() OVER (ORDER BY d.embedding <=> $2::vector({})) as vector_rank
+                ROW_NUMBER() OVER (ORDER BY dc.embedding <=> $2::vector({})) as vector_rank
             FROM documents d
-            WHERE d.embedding IS NOT NULL
-            AND (d.status = 'indexed')
-            ORDER BY d.embedding <=> $2::vector({})
+            JOIN document_chunks dc ON d.id = dc.document_id
+            WHERE dc.embedding IS NOT NULL
+            ORDER BY dc.embedding <=> $2::vector({})
             LIMIT $3 * 3
         ),
         all_results AS (
