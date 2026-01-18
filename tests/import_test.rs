@@ -1,19 +1,17 @@
 use anyhow::Result;
 use axum::extract::State;
 use axum::Json;
+use futures::stream::{self, StreamExt};
 use rag_chat::api::handlers;
 use rag_chat::api::state::AppState;
 use rag_chat::config::Settings;
-use rag_chat::domain::dtos::{
-    CreateImportRequest, DeleteImportRequest, ListQuery,
-};
+use rag_chat::domain::dtos::{CreateImportRequest, DeleteImportRequest, ListQuery};
 use rag_chat::infra::embedder::Embedder;
 use rag_chat::services::indexing::index_path_with_config;
 use sqlx::postgres::PgPoolOptions;
 use std::path::Path;
 use std::sync::{Arc, Mutex, Once};
 use std::time::Instant;
-use futures::stream::{self, StreamExt};
 
 // ============================================================================
 // Test Setup & Helpers
@@ -112,9 +110,10 @@ async fn test_import_job_crud_via_api() {
     assert_eq!(job.source_type, "folder");
 
     // 2. Get Import Status
-    let status_response = handlers::get_import_status(state_extractor.clone(), axum::extract::Path(job.id))
-        .await
-        .expect("Failed to get import status");
+    let status_response =
+        handlers::get_import_status(state_extractor.clone(), axum::extract::Path(job.id))
+            .await
+            .expect("Failed to get import status");
     let status = status_response.0;
 
     assert_eq!(status.id, job.id);
@@ -125,25 +124,36 @@ async fn test_import_job_crud_via_api() {
         limit: 10,
         offset: 0,
     };
-    let list_response = handlers::list_imports(state_extractor.clone(), axum::extract::Query(list_query))
-        .await
-        .expect("Failed to list imports");
-    
+    let list_response =
+        handlers::list_imports(state_extractor.clone(), axum::extract::Query(list_query))
+            .await
+            .expect("Failed to list imports");
+
     let json_val = list_response.0;
-    let jobs_array = json_val.get("jobs").and_then(|v| v.as_array()).expect("Should have jobs array");
-    
-    assert!(jobs_array.iter().any(|j| j["id"].as_str() == Some(&job.id.to_string())));
+    let jobs_array = json_val
+        .get("jobs")
+        .and_then(|v| v.as_array())
+        .expect("Should have jobs array");
+
+    assert!(jobs_array
+        .iter()
+        .any(|j| j["id"].as_str() == Some(&job.id.to_string())));
 
     // 4. Delete Import Job
     let delete_req = DeleteImportRequest {
         delete_documents: false,
     };
-    let _ = handlers::delete_import(state_extractor.clone(), axum::extract::Path(job.id), Json(delete_req))
-        .await
-        .expect("Failed to delete import job");
+    let _ = handlers::delete_import(
+        state_extractor.clone(),
+        axum::extract::Path(job.id),
+        Json(delete_req),
+    )
+    .await
+    .expect("Failed to delete import job");
 
     // Verify deletion
-    let result = handlers::get_import_status(state_extractor.clone(), axum::extract::Path(job.id)).await;
+    let result =
+        handlers::get_import_status(state_extractor.clone(), axum::extract::Path(job.id)).await;
     assert!(result.is_err(), "Job should be deleted");
 }
 
@@ -170,29 +180,50 @@ async fn test_import_folder_workflow_via_api() {
     // 2. Wait for completion (poll status)
     let mut attempts = 0;
     loop {
-        let status_res = handlers::get_import_status(state_extractor.clone(), axum::extract::Path(job_id))
-            .await
-            .expect("Failed to get status");
+        let status_res =
+            handlers::get_import_status(state_extractor.clone(), axum::extract::Path(job_id))
+                .await
+                .expect("Failed to get status");
         let status = status_res.0;
 
-        tracing::info!("Job status: {} (processed: {}/{})", status.status, status.progress.processed, status.progress.total);
+        tracing::info!(
+            "Job status: {} (processed: {}/{})",
+            status.status,
+            status.progress.processed,
+            status.progress.total
+        );
 
-        if status.status == "completed" || status.status == "failed" || status.status == "completed_with_errors" {
+        if status.status == "completed"
+            || status.status == "failed"
+            || status.status == "completed_with_errors"
+        {
             if status.status == "failed" {
-                 // Check items to see why
-                 let items_res = handlers::get_import_items(
-                    state_extractor.clone(), 
-                    axum::extract::Path(job_id), 
-                    axum::extract::Query(ListQuery { limit: 100, offset: 0 })
-                ).await.unwrap();
-                tracing::warn!("Job failed (likely due to missing LLM service). Items: {:?}", items_res.0);
+                // Check items to see why
+                let items_res = handlers::get_import_items(
+                    state_extractor.clone(),
+                    axum::extract::Path(job_id),
+                    axum::extract::Query(ListQuery {
+                        limit: 100,
+                        offset: 0,
+                    }),
+                )
+                .await
+                .unwrap();
+                tracing::warn!(
+                    "Job failed (likely due to missing LLM service). Items: {:?}",
+                    items_res.0
+                );
                 return; // Skip further assertions if failed
             }
             break;
         }
 
-        if attempts > 180 { // 180 seconds timeout
-            tracing::error!("Timeout waiting for import job completion. Last status: {:?}", status);
+        if attempts > 180 {
+            // 180 seconds timeout
+            tracing::error!(
+                "Timeout waiting for import job completion. Last status: {:?}",
+                status
+            );
             panic!("Timeout waiting for import job completion");
         }
         attempts += 1;
@@ -201,14 +232,22 @@ async fn test_import_folder_workflow_via_api() {
 
     // 3. Verify items
     let items_res = handlers::get_import_items(
-        state_extractor.clone(), 
-        axum::extract::Path(job_id), 
-        axum::extract::Query(ListQuery { limit: 100, offset: 0 })
-    ).await.expect("Failed to get items");
-    
+        state_extractor.clone(),
+        axum::extract::Path(job_id),
+        axum::extract::Query(ListQuery {
+            limit: 100,
+            offset: 0,
+        }),
+    )
+    .await
+    .expect("Failed to get items");
+
     let items_json = items_res.0;
-    let items = items_json.get("items").and_then(|v| v.as_array()).expect("Should have items");
-    
+    let items = items_json
+        .get("items")
+        .and_then(|v| v.as_array())
+        .expect("Should have items");
+
     assert!(!items.is_empty(), "Should have imported items");
     tracing::info!("Imported {} items", items.len());
 }
@@ -217,10 +256,13 @@ async fn test_import_folder_workflow_via_api() {
 async fn test_real_file_import_via_api() {
     let state = setup_test_state().await;
     let state_extractor = State(state.clone());
-    
+
     // Use a file that definitely exists in the repo
     let test_file = "tests/test_data/sample1.txt";
-    assert!(std::path::Path::new(test_file).exists(), "Test file must exist");
+    assert!(
+        std::path::Path::new(test_file).exists(),
+        "Test file must exist"
+    );
 
     let req = CreateImportRequest {
         source_type: "file".to_string(),
@@ -236,9 +278,10 @@ async fn test_real_file_import_via_api() {
     // Wait for completion
     let mut attempts = 0;
     loop {
-        let status_res = handlers::get_import_status(state_extractor.clone(), axum::extract::Path(job_id))
-            .await
-            .unwrap();
+        let status_res =
+            handlers::get_import_status(state_extractor.clone(), axum::extract::Path(job_id))
+                .await
+                .unwrap();
         let status = status_res.0;
 
         if status.status == "completed" {
@@ -247,11 +290,19 @@ async fn test_real_file_import_via_api() {
         if status.status == "failed" {
             // Get items to see error
             let items_res = handlers::get_import_items(
-                state_extractor.clone(), 
-                axum::extract::Path(job_id), 
-                axum::extract::Query(ListQuery { limit: 10, offset: 0 })
-            ).await.unwrap();
-            tracing::warn!("Import job failed (likely due to missing LLM service). Items: {:?}", items_res.0);
+                state_extractor.clone(),
+                axum::extract::Path(job_id),
+                axum::extract::Query(ListQuery {
+                    limit: 10,
+                    offset: 0,
+                }),
+            )
+            .await
+            .unwrap();
+            tracing::warn!(
+                "Import job failed (likely due to missing LLM service). Items: {:?}",
+                items_res.0
+            );
             return; // Skip further assertions if failed
         }
 
@@ -261,7 +312,7 @@ async fn test_real_file_import_via_api() {
         attempts += 1;
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     }
-    
+
     tracing::info!("File import completed successfully");
 }
 
@@ -269,7 +320,7 @@ async fn test_real_file_import_via_api() {
 async fn test_real_url_import_via_api() {
     let state = setup_test_state().await;
     let state_extractor = State(state.clone());
-    
+
     // Use a reliable URL, or skip if network not allowed (but integration tests usually allow it)
     // Using example.com as it's stable and small
     let test_url = "https://example.com";
@@ -288,23 +339,29 @@ async fn test_real_url_import_via_api() {
     // Wait for completion
     let mut attempts = 0;
     loop {
-        let status_res = handlers::get_import_status(state_extractor.clone(), axum::extract::Path(job_id))
-            .await
-            .unwrap();
+        let status_res =
+            handlers::get_import_status(state_extractor.clone(), axum::extract::Path(job_id))
+                .await
+                .unwrap();
         let status = status_res.0;
 
         if status.status == "completed" || status.status == "completed_with_errors" {
             break;
         }
         if status.status == "failed" {
-             // It might fail if network is down, which is acceptable in some envs, but let's log it
-             let items_res = handlers::get_import_items(
-                state_extractor.clone(), 
-                axum::extract::Path(job_id), 
-                axum::extract::Query(ListQuery { limit: 10, offset: 0 })
-            ).await.unwrap();
-             tracing::warn!("URL import failed (network issue?): {:?}", items_res.0);
-             return; 
+            // It might fail if network is down, which is acceptable in some envs, but let's log it
+            let items_res = handlers::get_import_items(
+                state_extractor.clone(),
+                axum::extract::Path(job_id),
+                axum::extract::Query(ListQuery {
+                    limit: 10,
+                    offset: 0,
+                }),
+            )
+            .await
+            .unwrap();
+            tracing::warn!("URL import failed (network issue?): {:?}", items_res.0);
+            return;
         }
 
         if attempts > 120 {
@@ -313,7 +370,7 @@ async fn test_real_url_import_via_api() {
         attempts += 1;
         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
     }
-    
+
     tracing::info!("URL import completed");
 }
 
@@ -321,23 +378,34 @@ async fn test_real_url_import_via_api() {
 async fn test_delete_import_job_cascades_via_api() {
     let state = setup_test_state().await;
     let state_extractor = State(state.clone());
-    
+
     // Create job
     let req = CreateImportRequest {
         source_type: "folder".to_string(),
         source_path: Some("tests/test_data".to_string()),
         urls: None,
     };
-    let job_id = handlers::create_import(state_extractor.clone(), Json(req)).await.unwrap().0.id;
+    let job_id = handlers::create_import(state_extractor.clone(), Json(req))
+        .await
+        .unwrap()
+        .0
+        .id;
 
     // Delete job immediately
-    let delete_req = DeleteImportRequest { delete_documents: true };
-    let _ = handlers::delete_import(state_extractor.clone(), axum::extract::Path(job_id), Json(delete_req))
-        .await
-        .expect("Failed to delete job");
+    let delete_req = DeleteImportRequest {
+        delete_documents: true,
+    };
+    let _ = handlers::delete_import(
+        state_extractor.clone(),
+        axum::extract::Path(job_id),
+        Json(delete_req),
+    )
+    .await
+    .expect("Failed to delete job");
 
     // Verify job is gone
-    let status = handlers::get_import_status(state_extractor.clone(), axum::extract::Path(job_id)).await;
+    let status =
+        handlers::get_import_status(state_extractor.clone(), axum::extract::Path(job_id)).await;
     assert!(status.is_err());
 }
 
@@ -346,14 +414,14 @@ async fn test_delete_import_job_cascades_via_api() {
 async fn test_bulk_pdf_import_performance_via_api() {
     let state = setup_test_state().await;
     let state_extractor = State(state.clone());
-    
+
     // Create temp dir for subset of files
     let temp_dir = std::env::temp_dir().join(format!("rag_chat_test_{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&temp_dir).expect("Failed to create temp dir");
-    
+
     let test_folder = "tests/test_data";
     let mut pdf_count = 0;
-    
+
     // Copy 3 PDFs to temp dir
     for entry in walkdir::WalkDir::new(test_folder)
         .into_iter()
@@ -367,13 +435,17 @@ async fn test_bulk_pdf_import_performance_via_api() {
             break;
         }
     }
-    
+
     if pdf_count == 0 {
         tracing::warn!("No PDFs found in test_data, skipping performance test");
         return;
     }
 
-    tracing::info!("Starting bulk import of {} PDFs from {:?}", pdf_count, temp_dir);
+    tracing::info!(
+        "Starting bulk import of {} PDFs from {:?}",
+        pdf_count,
+        temp_dir
+    );
     let start_time = std::time::Instant::now();
 
     let req = CreateImportRequest {
@@ -390,26 +462,30 @@ async fn test_bulk_pdf_import_performance_via_api() {
 
     // Poll for completion
     loop {
-        let status = handlers::get_import_status(state_extractor.clone(), axum::extract::Path(job_id))
-            .await
-            .unwrap()
-            .0;
-        
-        if status.status == "completed" || status.status == "completed_with_errors" || status.status == "failed" {
+        let status =
+            handlers::get_import_status(state_extractor.clone(), axum::extract::Path(job_id))
+                .await
+                .unwrap()
+                .0;
+
+        if status.status == "completed"
+            || status.status == "completed_with_errors"
+            || status.status == "failed"
+        {
             tracing::info!("Bulk import finished with status: {}", status.status);
             break;
         }
-        
+
         if start_time.elapsed().as_secs() > 300 {
             panic!("Bulk import timed out (>300s)");
         }
-        
+
         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
     }
 
     let duration = start_time.elapsed();
     tracing::info!("Bulk import took {:.2}s", duration.as_secs_f64());
-    
+
     // Cleanup
     let _ = std::fs::remove_dir_all(&temp_dir);
 
@@ -417,7 +493,11 @@ async fn test_bulk_pdf_import_performance_via_api() {
     // Adjusted assertion for 3 files (approx 1/5th of 16 files, so maybe 40-50s?)
     // Let's set a generous range for now, or maybe just an upper bound.
     // User asked for optimization.
-    assert!(secs <= 60, "Performance regression: Import took {}s, expected <= 60s for 3 files", secs);
+    assert!(
+        secs <= 60,
+        "Performance regression: Import took {}s, expected <= 60s for 3 files",
+        secs
+    );
 }
 
 // ============================================================================
@@ -436,7 +516,10 @@ async fn test_import_wellbeing_pdf() -> Result<()> {
     let settings = Settings::new()?;
     println!("\n📋 Settings loaded:");
     println!("   Docling URL: {}", settings.docling.url);
-    println!("   Docling Timeout: {} seconds", settings.docling.timeout_seconds);
+    println!(
+        "   Docling Timeout: {} seconds",
+        settings.docling.timeout_seconds
+    );
     println!("   Database URL: {}", settings.database.url);
 
     // Connect to database
@@ -476,7 +559,10 @@ async fn test_import_wellbeing_pdf() -> Result<()> {
     let test_file = test_file.unwrap();
     println!("\n🚀 Testing PDF import with Docling");
     println!("   File: {}", test_file);
-    println!("   File size: {} bytes", std::fs::metadata(test_file)?.len());
+    println!(
+        "   File size: {} bytes",
+        std::fs::metadata(test_file)?.len()
+    );
 
     let start = Instant::now();
 
@@ -491,7 +577,10 @@ async fn test_import_wellbeing_pdf() -> Result<()> {
         }
         Err(e) => {
             let duration = start.elapsed();
-            println!("\n❌ PDF import failed after {:.2}s", duration.as_secs_f64());
+            println!(
+                "\n❌ PDF import failed after {:.2}s",
+                duration.as_secs_f64()
+            );
             println!("   Error: {}", e);
 
             // Provide diagnostic information
@@ -528,10 +617,7 @@ async fn test_docling_service_health() -> Result<()> {
 
     // Test 1: Health endpoint
     println!("1️⃣  Testing /health endpoint...");
-    let health_response = client
-        .get(format!("{}/health", docling_url))
-        .send()
-        .await;
+    let health_response = client.get(format!("{}/health", docling_url)).send().await;
 
     match health_response {
         Ok(resp) => {
@@ -590,7 +676,9 @@ async fn test_docling_service_health() -> Result<()> {
         Ok(resp) => {
             println!("   Status: {}", resp.status());
             if resp.status().is_client_error() && resp.status() != reqwest::StatusCode::NOT_FOUND {
-                println!("   ✅ Endpoint exists (got client error for empty form, which is expected)");
+                println!(
+                    "   ✅ Endpoint exists (got client error for empty form, which is expected)"
+                );
             } else if resp.status() == reqwest::StatusCode::NOT_FOUND {
                 println!("   ❌ Endpoint NOT FOUND - Docling may be using async API");
             }
@@ -677,7 +765,9 @@ async fn test_docling_file_format_support() -> Result<()> {
                 if e.to_string().contains("404") {
                     println!("   💡 Hint: 404 error - check if Docling endpoint exists");
                 } else if e.to_string().contains("timeout") {
-                    println!("   💡 Hint: Timeout - document may be too large or Docling overloaded");
+                    println!(
+                        "   💡 Hint: Timeout - document may be too large or Docling overloaded"
+                    );
                 } else if e.to_string().contains("Task result not found") {
                     println!("   💡 Hint: Docling async task tracking issue - see diagnostic test");
                 }
@@ -783,25 +873,20 @@ async fn test_import_database_storage() -> Result<()> {
 
     // Verify documents are in the database
     for doc_id in &ids {
-        let doc_row: (String, i32) = sqlx::query_as(
-            "SELECT title, chunks_count FROM documents WHERE id = $1",
-        )
-        .bind(doc_id)
-        .fetch_one(&pool)
-        .await?;
+        let doc_row: (String, i32) =
+            sqlx::query_as("SELECT title, chunks_count FROM documents WHERE id = $1")
+                .bind(doc_id)
+                .fetch_one(&pool)
+                .await?;
 
-        println!(
-            "✅ Document found: {} (chunks: {})",
-            doc_row.0, doc_row.1
-        );
+        println!("✅ Document found: {} (chunks: {})", doc_row.0, doc_row.1);
 
         // Check chunks are stored
-        let chunk_row: (Option<i64>,) = sqlx::query_as(
-            "SELECT COUNT(*) as count FROM document_chunks WHERE document_id = $1",
-        )
-        .bind(doc_id)
-        .fetch_one(&pool)
-        .await?;
+        let chunk_row: (Option<i64>,) =
+            sqlx::query_as("SELECT COUNT(*) as count FROM document_chunks WHERE document_id = $1")
+                .bind(doc_id)
+                .fetch_one(&pool)
+                .await?;
 
         println!("   - {} chunks stored", chunk_row.0.unwrap_or(0));
 
@@ -852,13 +937,16 @@ async fn test_import_wellbeing_folder_all_pdfs() -> Result<()> {
     let initial_count: (Option<i64>,) = sqlx::query_as("SELECT COUNT(*) FROM documents")
         .fetch_one(&pool)
         .await?;
-    println!("Initial documents in DB: {}\n", initial_count.0.unwrap_or(0));
+    println!(
+        "Initial documents in DB: {}\n",
+        initial_count.0.unwrap_or(0)
+    );
 
     // Find all PDFs in the wellbeing folder
     let wellbeing_paths = vec![
-        "/app/books/Wellbeing",      // Container path
-        "/data/books/Wellbeing",     // Host path
-        "./books/Wellbeing",         // Relative path
+        "/app/books/Wellbeing",  // Container path
+        "/data/books/Wellbeing", // Host path
+        "./books/Wellbeing",     // Relative path
     ];
 
     let mut wellbeing_folder = None;
@@ -898,7 +986,10 @@ async fn test_import_wellbeing_folder_all_pdfs() -> Result<()> {
         return Ok(());
     }
 
-    println!("📚 Found {} PDF files to process in parallel (concurrency: 4):\n", pdf_files.len());
+    println!(
+        "📚 Found {} PDF files to process in parallel (concurrency: 4):\n",
+        pdf_files.len()
+    );
 
     let start_all = Instant::now();
     let successful_count = Arc::new(Mutex::new(0));
@@ -922,9 +1013,7 @@ async fn test_import_wellbeing_folder_all_pdfs() -> Result<()> {
                     .and_then(|n| n.to_str())
                     .unwrap_or("unknown");
 
-                let file_size = std::fs::metadata(pdf_path)
-                    .map(|m| m.len())
-                    .unwrap_or(0);
+                let file_size = std::fs::metadata(pdf_path).map(|m| m.len()).unwrap_or(0);
 
                 println!(
                     "[{:2}/{}] Starting: {} ({:.2} MB)",
@@ -939,8 +1028,14 @@ async fn test_import_wellbeing_folder_all_pdfs() -> Result<()> {
                     Ok(ids) => {
                         let duration = start.elapsed();
                         *successful_count.lock().unwrap() += 1;
-                        
-                        println!("✅ [{:2}/{}] OK: {} ({:.2}s)", idx + 1, total_files, file_name, duration.as_secs_f64());
+
+                        println!(
+                            "✅ [{:2}/{}] OK: {} ({:.2}s)",
+                            idx + 1,
+                            total_files,
+                            file_name,
+                            duration.as_secs_f64()
+                        );
 
                         results.lock().unwrap().push((
                             file_name.to_string(),
@@ -953,7 +1048,14 @@ async fn test_import_wellbeing_folder_all_pdfs() -> Result<()> {
                         let duration = start.elapsed();
                         *failed_count.lock().unwrap() += 1;
 
-                        println!("❌ [{:2}/{}] FAILED: {} ({:.2}s) - Error: {}", idx + 1, total_files, file_name, duration.as_secs_f64(), e);
+                        println!(
+                            "❌ [{:2}/{}] FAILED: {} ({:.2}s) - Error: {}",
+                            idx + 1,
+                            total_files,
+                            file_name,
+                            duration.as_secs_f64(),
+                            e
+                        );
 
                         results.lock().unwrap().push((
                             file_name.to_string(),
@@ -979,7 +1081,10 @@ async fn test_import_wellbeing_folder_all_pdfs() -> Result<()> {
     println!("Total files processed: {}", pdf_files.len());
     println!("✅ Successful: {}", successful_count);
     println!("❌ Failed: {}", failed_count);
-    println!("Total wall-clock time: {:.2}s\n", total_duration.as_secs_f64());
+    println!(
+        "Total wall-clock time: {:.2}s\n",
+        total_duration.as_secs_f64()
+    );
 
     println!("Details:");
     println!("─────────────────────────────────────────────────────────────");
@@ -1074,23 +1179,21 @@ async fn test_vlm_enrichment_metadata_capture() -> Result<()> {
 
     // Check each document for VLM-related metadata
     for doc_id in &doc_ids {
-        let doc_row: (String, Option<serde_json::Value>) = sqlx::query_as(
-            "SELECT title, metadata FROM documents WHERE id = $1",
-        )
-        .bind(doc_id)
-        .fetch_one(&pool)
-        .await?;
+        let doc_row: (String, Option<serde_json::Value>) =
+            sqlx::query_as("SELECT title, metadata FROM documents WHERE id = $1")
+                .bind(doc_id)
+                .fetch_one(&pool)
+                .await?;
 
         let title = &doc_row.0;
         let metadata = &doc_row.1;
 
         // Get chunk count separately
-        let chunks_count: (i64,) = sqlx::query_as(
-            "SELECT COUNT(*) FROM document_chunks WHERE document_id = $1",
-        )
-        .bind(doc_id)
-        .fetch_one(&pool)
-        .await?;
+        let chunks_count: (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM document_chunks WHERE document_id = $1")
+                .bind(doc_id)
+                .fetch_one(&pool)
+                .await?;
         let chunks_count = chunks_count.0 as i32;
 
         println!("\n📄 Document: {}", title);
@@ -1146,16 +1249,18 @@ async fn test_vlm_enrichment_metadata_capture() -> Result<()> {
     println!("\n📸 Checking document_assets table for VLM enrichment...");
     println!("─────────────────────────────────────────────────────────────");
 
-    let assets_count: (Option<i64>,) = sqlx::query_as(
-        "SELECT COUNT(*) FROM document_assets WHERE document_id = ANY($1::uuid[])"
-    )
-    .bind(&doc_ids)
-    .fetch_one(&pool)
-    .await?;
+    let assets_count: (Option<i64>,) =
+        sqlx::query_as("SELECT COUNT(*) FROM document_assets WHERE document_id = ANY($1::uuid[])")
+            .bind(&doc_ids)
+            .fetch_one(&pool)
+            .await?;
 
     if let Some(count) = assets_count.0 {
         if count > 0 {
-            println!("✅ Found {} document assets (images with VLM metadata)\n", count);
+            println!(
+                "✅ Found {} document assets (images with VLM metadata)\n",
+                count
+            );
 
             let assets: Vec<(String, String, Option<String>)> = sqlx::query_as(
                 "SELECT asset_type, page_number::text, alt_text FROM document_assets WHERE document_id = ANY($1::uuid[]) LIMIT 10"
@@ -1165,13 +1270,17 @@ async fn test_vlm_enrichment_metadata_capture() -> Result<()> {
             .await?;
 
             for (asset_type, page, alt_text) in assets {
-                println!("   - Type: {}, Page: {}, Alt text: {}",
-                    asset_type, page,
+                println!(
+                    "   - Type: {}, Page: {}, Alt text: {}",
+                    asset_type,
+                    page,
                     alt_text.unwrap_or_else(|| "(none)".to_string())
                 );
             }
         } else {
-            println!("⚠️  No document assets stored - VLM picture descriptions may not be captured");
+            println!(
+                "⚠️  No document assets stored - VLM picture descriptions may not be captured"
+            );
         }
     }
 

@@ -4,16 +4,16 @@
 //!
 //! Library modules for the RAG Chat application
 
+#[cfg(feature = "ssr")]
+pub mod api;
 pub mod config;
 pub mod domain;
 #[cfg(feature = "ssr")]
 pub mod infra;
 #[cfg(feature = "ssr")]
-pub mod services;
-#[cfg(feature = "ssr")]
-pub mod api;
-#[cfg(feature = "ssr")]
 pub mod logging;
+#[cfg(feature = "ssr")]
+pub mod services;
 pub mod web_app;
 
 // SSR entry point (server-side)

@@ -7,7 +7,6 @@
 /// - Ollama service running (docker compose up -d)
 /// - Qwen reranker model pulled: `ollama pull dengcao/Qwen3-Reranker-0.6B:Q5_K_M`
 /// - RUN_ENV=test-gpu for loading GPU test configuration
-
 use anyhow::Result;
 use rag_chat::config::Settings;
 use rag_chat::infra::reranker::Reranker;
@@ -83,7 +82,8 @@ async fn test_rerank_single_document() -> Result<()> {
 
     let query = "What is machine learning?";
     let relevant_doc = "Machine learning is a subset of artificial intelligence that enables systems to learn and improve from experience without being explicitly programmed.";
-    let irrelevant_doc = "The capital of France is Paris. It is located in northern France on the Seine River.";
+    let irrelevant_doc =
+        "The capital of France is Paris. It is located in northern France on the Seine River.";
 
     let relevant_score = reranker.rerank_single(query, relevant_doc).await?;
     let irrelevant_score = reranker.rerank_single(query, irrelevant_doc).await?;
@@ -134,7 +134,11 @@ async fn test_rerank_batch_documents() -> Result<()> {
     let elapsed = start.elapsed();
 
     println!("Query: '{}'", query);
-    println!("Batch reranking {} documents took {:.2}s", documents.len(), elapsed.as_secs_f64());
+    println!(
+        "Batch reranking {} documents took {:.2}s",
+        documents.len(),
+        elapsed.as_secs_f64()
+    );
     println!("\nScores:");
 
     for (i, (doc, score)) in documents.iter().zip(scores.iter()).enumerate() {
@@ -158,9 +162,7 @@ async fn test_rerank_batch_documents() -> Result<()> {
 
     // Check that at least one cloud-related doc has higher score than pizza doc
     let pizza_idx = 4; // "Pizza is..."
-    let has_higher_scores = scores[..4]
-        .iter()
-        .any(|s| s > &scores[pizza_idx]);
+    let has_higher_scores = scores[..4].iter().any(|s| s > &scores[pizza_idx]);
 
     assert!(
         has_higher_scores,
@@ -197,9 +199,7 @@ async fn test_rerank_and_sort() -> Result<()> {
         "Next.js is a React framework for building full-stack web applications.",
     ];
 
-    let ranked = reranker
-        .rerank_and_sort(query, &documents)
-        .await?;
+    let ranked = reranker.rerank_and_sort(query, &documents).await?;
 
     println!("Query: '{}'", query);
     println!("Sorted results by relevance:\n");
@@ -224,9 +224,7 @@ async fn test_rerank_and_sort() -> Result<()> {
         );
     }
 
-    println!(
-        "✅ Results sorted correctly by relevance score"
-    );
+    println!("✅ Results sorted correctly by relevance score");
 
     Ok(())
 }
@@ -258,9 +256,7 @@ async fn test_reranking_performance() -> Result<()> {
     ];
 
     let start = std::time::Instant::now();
-    let _scores = reranker
-        .rerank_batch(query, &documents)
-        .await?;
+    let _scores = reranker.rerank_batch(query, &documents).await?;
     let total_time = start.elapsed();
 
     let avg_per_doc = total_time.as_secs_f64() / documents.len() as f64;

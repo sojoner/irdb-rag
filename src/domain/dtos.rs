@@ -1,14 +1,13 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-
 // We need to handle LLMConfig. For now, let's assume it will be in domain::models or we import it.
 // Since we haven't moved LLMConfig yet, we might have a temporary issue.
 // But we are defining the target state.
 // Let's assume LLMConfig is moved to domain::models or domain::config.
 // I will put LLMConfig in domain::models for now to avoid circular deps.
 
-use crate::domain::models::LLMConfig; 
+use crate::domain::models::LLMConfig;
 
 // ============================================
 // Request/Response Types
@@ -37,9 +36,15 @@ pub struct SearchRequest {
     pub word_count_max: Option<i32>,
 }
 
-fn default_limit() -> i32 { 10 }
-fn default_bm25_weight() -> f64 { 0.5 }
-fn default_vector_weight() -> f64 { 0.5 }
+fn default_limit() -> i32 {
+    10
+}
+fn default_bm25_weight() -> f64 {
+    0.5
+}
+fn default_vector_weight() -> f64 {
+    0.5
+}
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct ChatRequest {
@@ -50,7 +55,9 @@ pub struct ChatRequest {
     pub document_ids: Option<Vec<Uuid>>,
 }
 
-fn default_context_chunks() -> i32 { 5 }
+fn default_context_chunks() -> i32 {
+    5
+}
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ChatResponse {
@@ -81,7 +88,9 @@ pub struct ListQuery {
     pub offset: i32,
 }
 
-fn default_page_limit() -> i32 { 20 }
+fn default_page_limit() -> i32 {
+    20
+}
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct SystemStatus {
@@ -176,7 +185,9 @@ pub struct FacetedSearchRequest {
     pub facet_limit: i32,
 }
 
-fn default_facet_limit() -> i32 { 10 }
+fn default_facet_limit() -> i32 {
+    10
+}
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct FacetedSearchResponse {

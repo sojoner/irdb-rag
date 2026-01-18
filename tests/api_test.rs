@@ -1,10 +1,10 @@
 use axum::extract::State;
 use axum::Json;
-use rag_chat::api::state::AppState;
 use rag_chat::api::handlers;
+use rag_chat::api::state::AppState;
+use rag_chat::config::Settings;
 use rag_chat::domain::dtos::SearchRequest;
 use rag_chat::infra::embedder::Embedder;
-use rag_chat::config::Settings;
 use sqlx::postgres::PgPoolOptions;
 use std::sync::Arc;
 
@@ -12,7 +12,11 @@ use std::sync::Arc;
 async fn test_search_api_with_db() {
     // 1. Setup
     if std::env::var("RUN_ENV").is_err() {
-        if std::env::var("RUN_ENV").is_err() { if std::env::var("RUN_ENV").is_err() { std::env::set_var("RUN_ENV", "test"); } }
+        if std::env::var("RUN_ENV").is_err() {
+            if std::env::var("RUN_ENV").is_err() {
+                std::env::set_var("RUN_ENV", "test");
+            }
+        }
     }
 
     let settings = Settings::new().expect("Failed to load settings");
@@ -48,7 +52,15 @@ async fn test_search_api_with_db() {
     // Create dummy import job queue (tests don't need it)
     let (import_job_tx, _import_job_rx) = tokio::sync::mpsc::channel(100);
 
-    let state = AppState::new(pool.clone(), embedder, Arc::new(std::sync::Mutex::new(Vec::new())), leptos_options, import_job_tx, Arc::new(settings.clone()), None);
+    let state = AppState::new(
+        pool.clone(),
+        embedder,
+        Arc::new(std::sync::Mutex::new(Vec::new())),
+        leptos_options,
+        import_job_tx,
+        Arc::new(settings.clone()),
+        None,
+    );
 
     // 2. Index PDF
     let pdf_path = "/Users/hagentonnies/Workspace/irdb-rag/documents/HumanPrincipals.pdf";
@@ -59,8 +71,13 @@ async fn test_search_api_with_db() {
 
     println!("Indexing PDF: {}", pdf_path);
     // We use the index_path_with_config function from indexing module with settings
-    match rag_chat::services::indexing::index_path_with_config(&pool, &state.embedder, pdf_path, Some(&settings))
-        .await
+    match rag_chat::services::indexing::index_path_with_config(
+        &pool,
+        &state.embedder,
+        pdf_path,
+        Some(&settings),
+    )
+    .await
     {
         Ok(_) => {}
         Err(e) => {
@@ -106,17 +123,22 @@ async fn test_search_api_with_db() {
             panic!("Search API call failed: {:?}", e);
         }
     };
-    
+
     let search_results = result.0;
     println!("Found {} results", search_results.len());
 
     // Assertions
-    assert!(!search_results.is_empty(), "Expected search results, found none");
-    
+    assert!(
+        !search_results.is_empty(),
+        "Expected search results, found none"
+    );
+
     // Check if the indexed document is in the results
     // The title might be derived from filename "HumanPrincipals"
-    let found = search_results.iter().any(|r| r.title.contains("HumanPrincipals") || r.title.contains("Human Principals"));
-    
+    let found = search_results
+        .iter()
+        .any(|r| r.title.contains("HumanPrincipals") || r.title.contains("Human Principals"));
+
     // Print titles for debugging if not found
     if !found {
         println!("Results found:");
@@ -124,7 +146,7 @@ async fn test_search_api_with_db() {
             println!("- {}", r.title);
         }
     }
-    
+
     assert!(found, "Indexed document not found in search results");
 
     // 4. Teardown
@@ -140,7 +162,11 @@ async fn test_search_api_with_db() {
 async fn test_search_api_syntax_edge_cases() {
     // 1. Setup
     if std::env::var("RUN_ENV").is_err() {
-        if std::env::var("RUN_ENV").is_err() { if std::env::var("RUN_ENV").is_err() { std::env::set_var("RUN_ENV", "test"); } }
+        if std::env::var("RUN_ENV").is_err() {
+            if std::env::var("RUN_ENV").is_err() {
+                std::env::set_var("RUN_ENV", "test");
+            }
+        }
     }
 
     let settings = Settings::new().expect("Failed to load settings");
@@ -159,7 +185,15 @@ async fn test_search_api_syntax_edge_cases() {
     // Create dummy import job queue (tests don't need it)
     let (import_job_tx, _import_job_rx) = tokio::sync::mpsc::channel(100);
 
-    let state = AppState::new(pool.clone(), embedder, Arc::new(std::sync::Mutex::new(Vec::new())), leptos_options, import_job_tx, Arc::new(settings.clone()), None);
+    let state = AppState::new(
+        pool.clone(),
+        embedder,
+        Arc::new(std::sync::Mutex::new(Vec::new())),
+        leptos_options,
+        import_job_tx,
+        Arc::new(settings.clone()),
+        None,
+    );
 
     // 2. Test Cases
     let test_queries = vec![
@@ -195,13 +229,16 @@ async fn test_search_api_syntax_edge_cases() {
         };
 
         let result = handlers::search(State(state.clone()), Json(req)).await;
-        
+
         match result {
             Ok(_) => println!("✅ API Query '{}' succeeded", query),
             Err(e) => {
                 let error_msg = format!("{:?}", e);
                 if error_msg.contains("could not parse query string") {
-                    panic!("❌ API Query '{}' caused parsing error: {}", query, error_msg);
+                    panic!(
+                        "❌ API Query '{}' caused parsing error: {}",
+                        query, error_msg
+                    );
                 } else {
                     println!("⚠️ API Query '{}' failed with other error: {:?}", query, e);
                 }
@@ -219,7 +256,11 @@ async fn test_search_api_syntax_edge_cases() {
 async fn test_chat_stream_api_with_documents() {
     // 1. Setup
     if std::env::var("RUN_ENV").is_err() {
-        if std::env::var("RUN_ENV").is_err() { if std::env::var("RUN_ENV").is_err() { std::env::set_var("RUN_ENV", "test"); } }
+        if std::env::var("RUN_ENV").is_err() {
+            if std::env::var("RUN_ENV").is_err() {
+                std::env::set_var("RUN_ENV", "test");
+            }
+        }
     }
 
     let settings = Settings::new().expect("Failed to load settings");
@@ -238,13 +279,28 @@ async fn test_chat_stream_api_with_documents() {
     // Create dummy import job queue (tests don't need it)
     let (import_job_tx, _import_job_rx) = tokio::sync::mpsc::channel(100);
 
-    let state = AppState::new(pool.clone(), embedder, Arc::new(std::sync::Mutex::new(Vec::new())), leptos_options, import_job_tx, Arc::new(settings.clone()), None);
+    let state = AppState::new(
+        pool.clone(),
+        embedder,
+        Arc::new(std::sync::Mutex::new(Vec::new())),
+        leptos_options,
+        import_job_tx,
+        Arc::new(settings.clone()),
+        None,
+    );
 
     // 2. Index PDF
     let pdf_path = "/Users/hagentonnies/Workspace/irdb-rag/documents/HumanPrincipals.pdf";
     if std::path::Path::new(pdf_path).exists() {
         println!("Indexing PDF: {}", pdf_path);
-        if let Err(e) = rag_chat::services::indexing::index_path_with_config(&pool, &state.embedder, pdf_path, Some(&settings)).await {
+        if let Err(e) = rag_chat::services::indexing::index_path_with_config(
+            &pool,
+            &state.embedder,
+            pdf_path,
+            Some(&settings),
+        )
+        .await
+        {
             println!("⚠ Could not index PDF: {}", e);
             println!("Skipping test - no documents to test with");
             return;
@@ -302,7 +358,11 @@ async fn test_chat_stream_api_with_documents() {
 async fn test_chat_api_with_documents() {
     // 1. Setup
     if std::env::var("RUN_ENV").is_err() {
-        if std::env::var("RUN_ENV").is_err() { if std::env::var("RUN_ENV").is_err() { std::env::set_var("RUN_ENV", "test"); } }
+        if std::env::var("RUN_ENV").is_err() {
+            if std::env::var("RUN_ENV").is_err() {
+                std::env::set_var("RUN_ENV", "test");
+            }
+        }
     }
 
     let settings = Settings::new().expect("Failed to load settings");
@@ -321,13 +381,28 @@ async fn test_chat_api_with_documents() {
     // Create dummy import job queue (tests don't need it)
     let (import_job_tx, _import_job_rx) = tokio::sync::mpsc::channel(100);
 
-    let state = AppState::new(pool.clone(), embedder, Arc::new(std::sync::Mutex::new(Vec::new())), leptos_options, import_job_tx, Arc::new(settings.clone()), None);
+    let state = AppState::new(
+        pool.clone(),
+        embedder,
+        Arc::new(std::sync::Mutex::new(Vec::new())),
+        leptos_options,
+        import_job_tx,
+        Arc::new(settings.clone()),
+        None,
+    );
 
     // 2. Index PDF
     let pdf_path = "/Users/hagentonnies/Workspace/irdb-rag/documents/HumanPrincipals.pdf";
     if std::path::Path::new(pdf_path).exists() {
         println!("Indexing PDF: {}", pdf_path);
-        if let Err(e) = rag_chat::services::indexing::index_path_with_config(&pool, &state.embedder, pdf_path, Some(&settings)).await {
+        if let Err(e) = rag_chat::services::indexing::index_path_with_config(
+            &pool,
+            &state.embedder,
+            pdf_path,
+            Some(&settings),
+        )
+        .await
+        {
             println!("⚠ Could not index PDF: {}", e);
             println!("Skipping test - no documents to test with");
             return;
@@ -355,7 +430,10 @@ async fn test_chat_api_with_documents() {
             println!("  Number of sources: {}", response.0.sources.len());
 
             // Verify response has content
-            assert!(!response.0.message.is_empty(), "Chat returned empty message");
+            assert!(
+                !response.0.message.is_empty(),
+                "Chat returned empty message"
+            );
             assert!(!response.0.sources.is_empty(), "Chat returned no sources");
 
             // Print first 300 chars of response

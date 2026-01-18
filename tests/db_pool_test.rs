@@ -1,12 +1,15 @@
 /// Database pool connection tests
 ///
 /// Tests to validate database connection pool behavior and identify timeout issues
-
 use rag_chat::config::Settings;
 
 #[tokio::test]
 async fn test_basic_db_connection() {
-    if std::env::var("RUN_ENV").is_err() { if std::env::var("RUN_ENV").is_err() { std::env::set_var("RUN_ENV", "test"); } }
+    if std::env::var("RUN_ENV").is_err() {
+        if std::env::var("RUN_ENV").is_err() {
+            std::env::set_var("RUN_ENV", "test");
+        }
+    }
 
     let settings = Settings::new().expect("Failed to load settings");
     let db_url = settings.database.url.clone();
@@ -35,7 +38,11 @@ async fn test_basic_db_connection() {
 
 #[tokio::test]
 async fn test_concurrent_db_queries() {
-    if std::env::var("RUN_ENV").is_err() { if std::env::var("RUN_ENV").is_err() { std::env::set_var("RUN_ENV", "test"); } }
+    if std::env::var("RUN_ENV").is_err() {
+        if std::env::var("RUN_ENV").is_err() {
+            std::env::set_var("RUN_ENV", "test");
+        }
+    }
 
     let settings = Settings::new().expect("Failed to load settings");
     let db_url = settings.database.url.clone();
@@ -65,14 +72,19 @@ async fn test_concurrent_db_queries() {
                 .expect("Query failed");
 
             let elapsed = start.elapsed();
-            println!("  Query {} completed in {:?} (count: {})", i, elapsed, result.0);
+            println!(
+                "  Query {} completed in {:?} (count: {})",
+                i, elapsed, result.0
+            );
         });
         handles.push(handle);
     }
 
     // Wait for all queries to complete
     for (i, handle) in handles.into_iter().enumerate() {
-        handle.await.unwrap_or_else(|_| panic!("Query {} panicked", i));
+        handle
+            .await
+            .unwrap_or_else(|_| panic!("Query {} panicked", i));
     }
 
     println!("✓ All concurrent queries completed successfully");
@@ -82,7 +94,11 @@ async fn test_concurrent_db_queries() {
 
 #[tokio::test]
 async fn test_db_pool_under_load() {
-    if std::env::var("RUN_ENV").is_err() { if std::env::var("RUN_ENV").is_err() { std::env::set_var("RUN_ENV", "test"); } }
+    if std::env::var("RUN_ENV").is_err() {
+        if std::env::var("RUN_ENV").is_err() {
+            std::env::set_var("RUN_ENV", "test");
+        }
+    }
 
     let settings = Settings::new().expect("Failed to load settings");
     let db_url = settings.database.url.clone();
@@ -143,7 +159,11 @@ async fn test_db_pool_under_load() {
 
 #[tokio::test]
 async fn test_db_connection_with_slow_query() {
-    if std::env::var("RUN_ENV").is_err() { if std::env::var("RUN_ENV").is_err() { std::env::set_var("RUN_ENV", "test"); } }
+    if std::env::var("RUN_ENV").is_err() {
+        if std::env::var("RUN_ENV").is_err() {
+            std::env::set_var("RUN_ENV", "test");
+        }
+    }
 
     let settings = Settings::new().expect("Failed to load settings");
     let db_url = settings.database.url.clone();

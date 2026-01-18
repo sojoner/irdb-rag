@@ -2,17 +2,17 @@
 //!
 //! Handles document parsing (via Docling), chunking, and embedding generation.
 
-use anyhow::{Result, Context};
+use anyhow::{Context, Result};
 use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
+use serde_json::Value;
 use sqlx::PgPool;
 use std::path::Path;
 use std::sync::mpsc::channel;
 use std::sync::Arc;
 use std::time::Duration;
-use serde_json::Value;
 
 use crate::infra::{db, embedder::Embedder};
-use crate::services::enrichment::{self, Enricher, compute_sha256_hash};
+use crate::services::enrichment::{self, compute_sha256_hash, Enricher};
 
 // Default chunk size - configurable via settings.import.chunk_size_tokens
 // text-splitter creates chunks ~22% of target size (114 actual with 512 target)
@@ -30,15 +30,12 @@ fn chunk_text(text: &str, target_tokens: usize) -> Vec<String> {
 
     let splitter = TextSplitter::new(ChunkConfig::new(target_tokens).with_trim(true));
 
-    splitter.chunks(text)
-        .map(|s: &str| s.to_string())
-        .collect()
+    splitter.chunks(text).map(|s: &str| s.to_string()).collect()
 }
 
 // ============================================
 // Indexing Operations
 // ============================================
-
 
 /// Index a file or directory
 pub async fn index_path(pool: &PgPool, embedder: &Embedder, path: &str) -> Result<Vec<uuid::Uuid>> {
@@ -46,7 +43,12 @@ pub async fn index_path(pool: &PgPool, embedder: &Embedder, path: &str) -> Resul
 }
 
 /// Index a file or directory with custom settings
-pub async fn index_path_with_config(pool: &PgPool, embedder: &Embedder, path: &str, settings: Option<&crate::config::Settings>) -> Result<Vec<uuid::Uuid>> {
+pub async fn index_path_with_config(
+    pool: &PgPool,
+    embedder: &Embedder,
+    path: &str,
+    settings: Option<&crate::config::Settings>,
+) -> Result<Vec<uuid::Uuid>> {
     let path = Path::new(path);
     let mut indexed_ids = Vec::new();
 
@@ -59,20 +61,20 @@ pub async fn index_path_with_config(pool: &PgPool, embedder: &Embedder, path: &s
             .collect();
 
         // Sort by file size (smallest first) for bin packing - quick wins first
-        files.sort_by_key(|entry| {
-            entry.metadata()
-                .ok()
-                .map(|m| m.len())
-                .unwrap_or(u64::MAX)
-        });
+        files.sort_by_key(|entry| entry.metadata().ok().map(|m| m.len()).unwrap_or(u64::MAX));
 
         let total = files.len();
-        let total_size: u64 = files.iter()
+        let total_size: u64 = files
+            .iter()
             .filter_map(|e| e.metadata().ok().map(|m| m.len()))
             .sum();
 
         let total_size_mb = total_size as f64 / (1024.0 * 1024.0);
-        tracing::info!("📚 Found {} documents to index ({:.2} MB total)\n", total, total_size_mb);
+        tracing::info!(
+            "📚 Found {} documents to index ({:.2} MB total)\n",
+            total,
+            total_size_mb
+        );
 
         // Process documents in parallel batches
         let batch_size = settings.map(|s| s.import.indexing_batch_size).unwrap_or(4);
@@ -82,7 +84,12 @@ pub async fn index_path_with_config(pool: &PgPool, embedder: &Embedder, path: &s
             let batch_num = batch_idx + 1;
             let total_batches = total.div_ceil(batch_size);
 
-            tracing::info!("⚙️  Processing batch {}/{} ({} documents)\n", batch_num, total_batches, batch.len());
+            tracing::info!(
+                "⚙️  Processing batch {}/{} ({} documents)\n",
+                batch_num,
+                total_batches,
+                batch.len()
+            );
 
             // Create futures for all documents in this batch
             let futures: Vec<_> = batch
@@ -91,24 +98,26 @@ pub async fn index_path_with_config(pool: &PgPool, embedder: &Embedder, path: &s
                 .map(|(idx_in_batch, entry)| {
                     let doc_num = batch_idx * batch_size + idx_in_batch + 1;
                     let file_path = entry.path().to_path_buf();
-                    let file_name = file_path.file_name()
+                    let file_name = file_path
+                        .file_name()
                         .and_then(|n| n.to_str())
                         .unwrap_or("unknown")
                         .to_string();
-                    let file_size = entry.metadata()
-                        .ok()
-                        .map(|m| m.len())
-                        .unwrap_or(0);
+                    let file_size = entry.metadata().ok().map(|m| m.len()).unwrap_or(0);
                     let file_size_mb = file_size as f64 / (1024.0 * 1024.0);
 
-                    tracing::info!("  ├─ Document {}/{}: {} ({:.2} MB)", doc_num, total, file_name, file_size_mb);
+                    tracing::info!(
+                        "  ├─ Document {}/{}: {} ({:.2} MB)",
+                        doc_num,
+                        total,
+                        file_name,
+                        file_size_mb
+                    );
 
                     let pool = pool.clone();
                     let embedder = embedder.clone();
 
-                    async move {
-                        index_file(&pool, &embedder, &file_path, settings).await
-                    }
+                    async move { index_file(&pool, &embedder, &file_path, settings).await }
                 })
                 .collect();
 
@@ -133,7 +142,11 @@ pub async fn index_path_with_config(pool: &PgPool, embedder: &Embedder, path: &s
             }
         }
 
-        tracing::info!("🎉 Indexing complete: {} documents processed ({:.2} MB total)\n", total, total_size_mb);
+        tracing::info!(
+            "🎉 Indexing complete: {} documents processed ({:.2} MB total)\n",
+            total,
+            total_size_mb
+        );
     } else if let Some(id) = index_file(pool, embedder, path, settings).await? {
         indexed_ids.push(id);
     }
@@ -142,12 +155,18 @@ pub async fn index_path_with_config(pool: &PgPool, embedder: &Embedder, path: &s
 }
 
 /// Index a single file
-async fn index_file(pool: &PgPool, embedder: &Embedder, path: &Path, settings: Option<&crate::config::Settings>) -> Result<Option<uuid::Uuid>> {
+async fn index_file(
+    pool: &PgPool,
+    embedder: &Embedder,
+    path: &Path,
+    settings: Option<&crate::config::Settings>,
+) -> Result<Option<uuid::Uuid>> {
     use std::time::Instant;
 
     let path_str = path.to_string_lossy().to_string();
 
-    let extension = path.extension()
+    let extension = path
+        .extension()
         .and_then(|e| e.to_str())
         .unwrap_or("")
         .to_lowercase();
@@ -159,20 +178,25 @@ async fn index_file(pool: &PgPool, embedder: &Embedder, path: &Path, settings: O
 
     // IDEMPOTENCY CHECK 1: Quick check if path exists
     if let Some(existing_id) = db::find_document_by_path(pool, &path_str).await? {
-        tracing::info!("  ⏭️  Skipping {} - already indexed (path exists)", path_str);
+        tracing::info!(
+            "  ⏭️  Skipping {} - already indexed (path exists)",
+            path_str
+        );
         return Ok(Some(existing_id));
     }
 
     let start_total = Instant::now();
 
     // Read file for hashing (idempotent deduplication) - needed regardless of enrichment
-    let file_bytes = tokio::fs::read(path).await
-        .context("Failed to read file")?;
+    let file_bytes = tokio::fs::read(path).await.context("Failed to read file")?;
     let file_hash = compute_sha256_hash(&file_bytes);
 
     // Load settings to check enrichment status
-    let settings = settings.cloned().or_else(|| crate::config::Settings::new().ok());
-    let enrichment_enabled = settings.as_ref()
+    let settings = settings
+        .cloned()
+        .or_else(|| crate::config::Settings::new().ok());
+    let enrichment_enabled = settings
+        .as_ref()
         .map(|s| s.enrichment.enabled)
         .unwrap_or(true);
 
@@ -187,14 +211,15 @@ async fn index_file(pool: &PgPool, embedder: &Embedder, path: &Path, settings: O
         Some(60) // 60 seconds timeout for extraction only
     };
     let enricher = Enricher::with_config(None, timeout, settings.as_ref());
-    
+
     let (content, metadata) = if enrichment_enabled {
         enricher.enrich_file(path).await?
     } else {
         // Skip enrichment: just extract content without LLM processing
         let (content, _) = enricher.extract_file_content(path).await?;
         let basic_metadata = enrichment::DocumentMetadata {
-            title: path.file_stem()
+            title: path
+                .file_stem()
                 .and_then(|s| s.to_str())
                 .map(|s| s.to_string()),
             summary: None,
@@ -227,7 +252,8 @@ async fn index_file(pool: &PgPool, embedder: &Embedder, path: &Path, settings: O
             if let Some(existing_id) = db::find_duplicate_document(pool, &path_str, hash).await? {
                 tracing::info!(
                     "  ⏭️  Skipping {} - duplicate content (matches doc {})",
-                    path_str, existing_id
+                    path_str,
+                    existing_id
                 );
                 return Ok(Some(existing_id));
             }
@@ -243,43 +269,59 @@ async fn index_file(pool: &PgPool, embedder: &Embedder, path: &Path, settings: O
     let stage1_duration = start_stage1.elapsed();
     tracing::info!("  │   ✓ Duration: {:.2}s", stage1_duration.as_secs_f64());
     tracing::debug!("  │   📄 Title: {}", title);
-    tracing::debug!("  │   📝 Summary: {}", metadata.summary.as_deref().unwrap_or("(none)"));
+    tracing::debug!(
+        "  │   📝 Summary: {}",
+        metadata.summary.as_deref().unwrap_or("(none)")
+    );
     tracing::debug!("  │   🔑 Keywords: {:?}", metadata.keywords);
-    tracing::debug!("  │   👥 Entities: {}", serde_json::to_string_pretty(&metadata.entities).unwrap_or_default());
+    tracing::debug!(
+        "  │   👥 Entities: {}",
+        serde_json::to_string_pretty(&metadata.entities).unwrap_or_default()
+    );
 
     // Stage 2: Chunking
     let start_stage2 = Instant::now();
     tracing::info!("  ├─ Stage 2/5: Chunking content...");
 
-    let chunk_size = settings.as_ref().map(|s| s.import.chunk_size_tokens).unwrap_or(DEFAULT_CHUNK_SIZE);
+    let chunk_size = settings
+        .as_ref()
+        .map(|s| s.import.chunk_size_tokens)
+        .unwrap_or(DEFAULT_CHUNK_SIZE);
     let raw_chunks = chunk_text(&content, chunk_size);
     let num_chunks = raw_chunks.len();
 
     let stage2_duration = start_stage2.elapsed();
-    tracing::info!("  │   ✓ Duration: {:.2}s | Created {} chunks", stage2_duration.as_secs_f64(), num_chunks);
+    tracing::info!(
+        "  │   ✓ Duration: {:.2}s | Created {} chunks",
+        stage2_duration.as_secs_f64(),
+        num_chunks
+    );
 
     // Stage 3: Enrich Chunks
     let start_stage3 = Instant::now();
     tracing::info!("  ├─ Stage 3/5: Enriching chunks...");
 
-    let enriched_chunks: Vec<String> = raw_chunks.iter().map(|chunk| {
-        let questions: Vec<String> = metadata.entities["questions"]
-            .as_array()
-            .map(|arr: &Vec<Value>| {
-                arr.iter()
-                .filter_map(|v: &Value| v.as_str().map(String::from))
-                .collect()
-            })
-            .unwrap_or_default();
+    let enriched_chunks: Vec<String> = raw_chunks
+        .iter()
+        .map(|chunk| {
+            let questions: Vec<String> = metadata.entities["questions"]
+                .as_array()
+                .map(|arr: &Vec<Value>| {
+                    arr.iter()
+                        .filter_map(|v: &Value| v.as_str().map(String::from))
+                        .collect()
+                })
+                .unwrap_or_default();
 
-        enrichment::enrich_chunk(
-            &title,
-            metadata.summary.as_deref().unwrap_or(""),
-            &metadata.keywords,
-            &questions,
-            chunk
-        )
-    }).collect();
+            enrichment::enrich_chunk(
+                &title,
+                metadata.summary.as_deref().unwrap_or(""),
+                &metadata.keywords,
+                &questions,
+                chunk,
+            )
+        })
+        .collect();
 
     let stage3_duration = start_stage3.elapsed();
     tracing::info!("  │   ✓ Duration: {:.2}s", stage3_duration.as_secs_f64());
@@ -290,12 +332,13 @@ async fn index_file(pool: &PgPool, embedder: &Embedder, path: &Path, settings: O
 
     // Optimization: Batch embedding requests to avoid overloading Ollama
     // Also fix double-embedding of the first chunk
-    let embedding_batch_size = settings.as_ref()
+    let embedding_batch_size = settings
+        .as_ref()
         .map(|s| s.docling.batch_embedding_limit)
         .unwrap_or(64);
 
     let mut all_embeddings = Vec::new();
-    
+
     // First embedding is for the document itself (using the first enriched chunk as representative)
     // We'll include it in the first batch to save an API call
     let mut texts_to_embed: Vec<&str> = Vec::with_capacity(enriched_chunks.len() + 1);
@@ -314,7 +357,11 @@ async fn index_file(pool: &PgPool, embedder: &Embedder, path: &Path, settings: O
     }
 
     let stage4_duration = start_stage4.elapsed();
-    tracing::info!("  │   ✓ Duration: {:.2}s | Embedded {} items", stage4_duration.as_secs_f64(), all_embeddings.len());
+    tracing::info!(
+        "  │   ✓ Duration: {:.2}s | Embedded {} items",
+        stage4_duration.as_secs_f64(),
+        all_embeddings.len()
+    );
 
     // Stage 5: Store in Database
     let start_stage5 = Instant::now();
@@ -340,7 +387,8 @@ async fn index_file(pool: &PgPool, embedder: &Embedder, path: &Path, settings: O
     });
 
     // Extract content hash for idempotency
-    let content_hash = metadata.document_origin
+    let content_hash = metadata
+        .document_origin
         .as_ref()
         .and_then(|o| o.binary_hash.as_deref());
 
@@ -358,12 +406,15 @@ async fn index_file(pool: &PgPool, embedder: &Embedder, path: &Path, settings: O
     };
 
     // Extract locations from entities
-    let locations = metadata.entities
+    let locations = metadata
+        .entities
         .get("locations")
         .and_then(|v| v.as_array())
-        .map(|arr| arr.iter()
-            .filter_map(|v| v.as_str().map(String::from))
-            .collect());
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        });
 
     // Insert document
     let doc_id = db::insert_document(
@@ -382,8 +433,9 @@ async fn index_file(pool: &PgPool, embedder: &Embedder, path: &Path, settings: O
             category_id,
             metadata: Some(metadata_json),
             content_hash,
-        }
-    ).await?;
+        },
+    )
+    .await?;
 
     // Log category assignment if available
     if let Some(ref category) = metadata.category_name {
@@ -409,11 +461,13 @@ async fn index_file(pool: &PgPool, embedder: &Embedder, path: &Path, settings: O
         tracing::info!("  │   💾 Storing {} extracted images...", images.len());
         for (idx, image) in images.iter().enumerate() {
             // Extract image metadata if available
-            let alt_text = image.get("alt_text")
+            let alt_text = image
+                .get("alt_text")
                 .and_then(|v| v.as_str())
                 .or_else(|| image.get("description").and_then(|v| v.as_str()));
 
-            let page_num = image.get("page_num")
+            let page_num = image
+                .get("page_num")
                 .or_else(|| image.get("page_number"))
                 .and_then(|v| v.as_i64())
                 .map(|n| n as i32);
@@ -426,7 +480,9 @@ async fn index_file(pool: &PgPool, embedder: &Embedder, path: &Path, settings: O
                 alt_text,
                 None,
                 Some(&image),
-            ).await {
+            )
+            .await
+            {
                 Ok(_) => {
                     tracing::debug!("    ✓ Image {} stored", idx + 1);
                 }
@@ -441,35 +497,42 @@ async fn index_file(pool: &PgPool, embedder: &Embedder, path: &Path, settings: O
     let stage5_duration = start_stage5.elapsed();
     let total_duration = start_total.elapsed();
 
-    tracing::info!("      ✓ Duration: {:.2}s | Stored document #{}", stage5_duration.as_secs_f64(), doc_id);
+    tracing::info!(
+        "      ✓ Duration: {:.2}s | Stored document #{}",
+        stage5_duration.as_secs_f64(),
+        doc_id
+    );
     tracing::info!("  ⏱️  Total time: {:.2}s\n", total_duration.as_secs_f64());
 
     Ok(Some(doc_id))
 }
 
 /// Index content from a URL
-pub async fn index_url(pool: &PgPool, embedder: &Embedder, url: &str) -> Result<Option<uuid::Uuid>> {
+pub async fn index_url(
+    pool: &PgPool,
+    embedder: &Embedder,
+    url: &str,
+) -> Result<Option<uuid::Uuid>> {
     index_url_with_config(pool, embedder, url, None).await
 }
 
 /// Index content from a URL with custom settings
-pub async fn index_url_with_config(pool: &PgPool, embedder: &Embedder, url: &str, settings: Option<&crate::config::Settings>) -> Result<Option<uuid::Uuid>> {
+pub async fn index_url_with_config(
+    pool: &PgPool,
+    embedder: &Embedder,
+    url: &str,
+    settings: Option<&crate::config::Settings>,
+) -> Result<Option<uuid::Uuid>> {
     tracing::info!("Processing URL: {}", url);
 
     // Check enrichment status
-    let enrichment_enabled = settings
-        .map(|s| s.enrichment.enabled)
-        .unwrap_or(true);
+    let enrichment_enabled = settings.map(|s| s.enrichment.enabled).unwrap_or(true);
 
     // 1. Enrich Content (Docling + Metadata)
     // Reduce timeout when enrichment is disabled
-    let timeout = if enrichment_enabled {
-        None
-    } else {
-        Some(60)
-    };
+    let timeout = if enrichment_enabled { None } else { Some(60) };
     let enricher = Enricher::with_config(None, timeout, settings);
-    
+
     let (content, metadata) = if enrichment_enabled {
         enricher.enrich_url(url).await?
     } else {
@@ -500,36 +563,42 @@ pub async fn index_url_with_config(pool: &PgPool, embedder: &Embedder, url: &str
         };
         (content, basic_metadata)
     };
-    
+
     let title = metadata.title.clone().unwrap_or_else(|| {
-        url.split('/').next_back()
+        url.split('/')
+            .next_back()
             .map(|s| s.to_string())
             .unwrap_or_else(|| "Web Document".to_string())
     });
 
     // Chunking
-    let chunk_size = settings.map(|s| s.import.chunk_size_tokens).unwrap_or(DEFAULT_CHUNK_SIZE);
+    let chunk_size = settings
+        .map(|s| s.import.chunk_size_tokens)
+        .unwrap_or(DEFAULT_CHUNK_SIZE);
     let raw_chunks = chunk_text(&content, chunk_size);
 
     // Enrich Chunks
-    let enriched_chunks: Vec<String> = raw_chunks.iter().map(|chunk| {
-        let questions: Vec<String> = metadata.entities["questions"]
-            .as_array()
-            .map(|arr: &Vec<Value>| {
-                arr.iter()
-                .filter_map(|v: &Value| v.as_str().map(String::from))
-                .collect()
-            })
-            .unwrap_or_default();
+    let enriched_chunks: Vec<String> = raw_chunks
+        .iter()
+        .map(|chunk| {
+            let questions: Vec<String> = metadata.entities["questions"]
+                .as_array()
+                .map(|arr: &Vec<Value>| {
+                    arr.iter()
+                        .filter_map(|v: &Value| v.as_str().map(String::from))
+                        .collect()
+                })
+                .unwrap_or_default();
 
-        enrichment::enrich_chunk(
-            &title,
-            metadata.summary.as_deref().unwrap_or(""),
-            &metadata.keywords,
-            &questions,
-            chunk
-        )
-    }).collect();
+            enrichment::enrich_chunk(
+                &title,
+                metadata.summary.as_deref().unwrap_or(""),
+                &metadata.keywords,
+                &questions,
+                chunk,
+            )
+        })
+        .collect();
 
     // Embed & Store
     // Batch embed all chunks at once (includes document text)
@@ -542,7 +611,8 @@ pub async fn index_url_with_config(pool: &PgPool, embedder: &Embedder, url: &str
     }
 
     let mut all_embeddings = Vec::new();
-    let embedding_batch_size = settings.as_ref()
+    let embedding_batch_size = settings
+        .as_ref()
         .map(|s| s.docling.batch_embedding_limit)
         .unwrap_or(64);
 
@@ -566,7 +636,8 @@ pub async fn index_url_with_config(pool: &PgPool, embedder: &Embedder, url: &str
     });
 
     // Extract content hash for idempotency (URLs don't have binary_hash usually)
-    let content_hash = metadata.document_origin
+    let content_hash = metadata
+        .document_origin
         .as_ref()
         .and_then(|o| o.binary_hash.as_deref());
 
@@ -584,12 +655,15 @@ pub async fn index_url_with_config(pool: &PgPool, embedder: &Embedder, url: &str
     };
 
     // Extract locations from entities
-    let locations = metadata.entities
+    let locations = metadata
+        .entities
         .get("locations")
         .and_then(|v| v.as_array())
-        .map(|arr| arr.iter()
-            .filter_map(|v| v.as_str().map(String::from))
-            .collect());
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        });
 
     let doc_id = db::insert_document(
         pool,
@@ -607,8 +681,9 @@ pub async fn index_url_with_config(pool: &PgPool, embedder: &Embedder, url: &str
             category_id,
             metadata: Some(metadata_json),
             content_hash,
-        }
-    ).await?;
+        },
+    )
+    .await?;
 
     // Insert chunks in batch
     let mut chunk_params = Vec::with_capacity(raw_chunks.len());
@@ -628,11 +703,13 @@ pub async fn index_url_with_config(pool: &PgPool, embedder: &Embedder, url: &str
     if let Some(ref images) = metadata.images {
         tracing::info!("  💾 Storing {} extracted images...", images.len());
         for (idx, image) in images.iter().enumerate() {
-            let alt_text = image.get("alt_text")
+            let alt_text = image
+                .get("alt_text")
                 .and_then(|v| v.as_str())
                 .or_else(|| image.get("description").and_then(|v| v.as_str()));
 
-            let page_num = image.get("page_num")
+            let page_num = image
+                .get("page_num")
                 .or_else(|| image.get("page_number"))
                 .and_then(|v| v.as_i64())
                 .map(|n| n as i32);
@@ -645,7 +722,9 @@ pub async fn index_url_with_config(pool: &PgPool, embedder: &Embedder, url: &str
                 alt_text,
                 None,
                 Some(&image),
-            ).await {
+            )
+            .await
+            {
                 Ok(_) => {
                     tracing::debug!("    ✓ Image {} stored", idx + 1);
                 }
@@ -661,11 +740,7 @@ pub async fn index_url_with_config(pool: &PgPool, embedder: &Embedder, url: &str
 }
 
 /// Watch folders for changes and auto-index
-pub async fn watch_folders(
-    pool: &PgPool, 
-    embedder: &Embedder, 
-    folders: Vec<String>
-) -> Result<()> {
+pub async fn watch_folders(pool: &PgPool, embedder: &Embedder, folders: Vec<String>) -> Result<()> {
     let (tx, rx) = channel();
 
     let mut watcher = RecommendedWatcher::new(
@@ -719,7 +794,7 @@ mod tests {
         let enriched = enrich_chunk(title, summary, &keywords, &questions, chunk);
 
         let expected = "Title: Test Document\nSummary: This is a summary.\nKeywords: key1, key2\nQuestions:\n- What is this?\n- Why?\n---\nThis is the chunk content.";
-        
+
         assert_eq!(enriched, expected);
     }
 
@@ -734,7 +809,7 @@ mod tests {
         let enriched = enrich_chunk(title, summary, &keywords, &questions, chunk);
 
         let expected = "Title: Test Document\nSummary: This is a summary.\nKeywords: key1\nQuestions:\n\n---\nChunk content.";
-        
+
         assert_eq!(enriched, expected);
     }
 }

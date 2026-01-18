@@ -144,12 +144,7 @@ impl Reranker {
             .context("Failed to parse rerank response")?;
 
         // Parse response: check if it contains "yes" (case-insensitive)
-        let score = if chat_response
-            .message
-            .content
-            .to_lowercase()
-            .contains("yes")
-        {
+        let score = if chat_response.message.content.to_lowercase().contains("yes") {
             1.0
         } else {
             0.0
@@ -193,29 +188,25 @@ impl Reranker {
 
                 let url = format!("{}/api/chat", api_url);
 
-                match client
-                    .post(&url)
-                    .json(&request)
-                    .send()
-                    .await
-                {
+                match client.post(&url).json(&request).send().await {
                     Ok(response) if response.status().is_success() => {
                         match response.json::<ChatResponse>().await {
                             Ok(chat_response) => {
-                                let score = if chat_response
-                                    .message
-                                    .content
-                                    .to_lowercase()
-                                    .contains("yes")
-                                {
-                                    1.0
-                                } else {
-                                    0.0
-                                };
+                                let score =
+                                    if chat_response.message.content.to_lowercase().contains("yes")
+                                    {
+                                        1.0
+                                    } else {
+                                        0.0
+                                    };
                                 (idx, Ok::<f64, anyhow::Error>(score))
                             }
                             Err(e) => {
-                                tracing::warn!("Failed to parse rerank response for doc {}: {}", idx, e);
+                                tracing::warn!(
+                                    "Failed to parse rerank response for doc {}: {}",
+                                    idx,
+                                    e
+                                );
                                 (idx, Ok(0.5)) // Default to neutral score on parse error
                             }
                         }
@@ -260,7 +251,11 @@ impl Reranker {
     }
 
     /// Re-rank and return documents sorted by relevance (highest first)
-    pub async fn rerank_and_sort(&self, query: &str, documents: &[&str]) -> Result<Vec<RankedDocument>> {
+    pub async fn rerank_and_sort(
+        &self,
+        query: &str,
+        documents: &[&str],
+    ) -> Result<Vec<RankedDocument>> {
         let scores = self.rerank_batch(query, documents).await?;
 
         let mut ranked: Vec<RankedDocument> = scores

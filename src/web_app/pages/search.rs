@@ -1,16 +1,15 @@
-use leptos::*;
-use leptos::prelude::*;
-use uuid::Uuid;
+use crate::domain::models::SearchMetadata;
 use crate::web_app::components::{
-    unified_search::UnifiedSearch,
-    results_list::ResultsList,
-    search::SearchDocuments,
     chat_panel::ChatPanel,
     document_preview::DocumentPreview,
-    faceted_filters::{FacetedFilters, get_categories},
+    faceted_filters::{get_categories, FacetedFilters},
+    results_list::ResultsList,
+    search::SearchDocuments,
     stats_bar::StatsBar,
+    unified_search::UnifiedSearch,
 };
-use crate::domain::models::SearchMetadata;
+use leptos::prelude::*;
+use uuid::Uuid;
 
 #[component]
 pub fn SearchPage() -> impl IntoView {
@@ -27,7 +26,8 @@ pub fn SearchPage() -> impl IntoView {
     // Filter state - Load categories on mount
     let categories_resource = Resource::new_blocking(|| (), |_| async { get_categories().await });
     let categories = Signal::derive(move || {
-        categories_resource.get()
+        categories_resource
+            .get()
             .and_then(|res: Result<_, _>| res.ok())
             .unwrap_or_default()
     });
@@ -67,8 +67,12 @@ pub fn SearchPage() -> impl IntoView {
 
         // Check if we have any search criteria
         let has_query = !query_trimmed.is_empty();
-        let has_filters = category.is_some() || !keywords.is_empty() || !concepts.is_empty()
-            || !locations.is_empty() || !persons.is_empty() || !organizations.is_empty()
+        let has_filters = category.is_some()
+            || !keywords.is_empty()
+            || !concepts.is_empty()
+            || !locations.is_empty()
+            || !persons.is_empty()
+            || !organizations.is_empty()
             || !authors.is_empty();
 
         // Require either a query OR filters to proceed
@@ -80,7 +84,9 @@ pub fn SearchPage() -> impl IntoView {
         // If we have filters but NO query, use wildcard to match all documents
         // This enables filter-only search (e.g., "show me all documents from Germany")
         let final_query = if !has_query && has_filters {
-            leptos::logging::log!("SearchPage: using wildcard search with filters (filter-only mode)");
+            leptos::logging::log!(
+                "SearchPage: using wildcard search with filters (filter-only mode)"
+            );
             "*".to_string()
         } else {
             // User has typed something - use their exact query, even with filters
@@ -96,13 +102,37 @@ pub fn SearchPage() -> impl IntoView {
                 bm25_weight: bm25_weight.get(),
                 vector_weight: vector_weight.get(),
                 category_id: category,
-                keywords: if keywords.is_empty() { None } else { Some(keywords) },
-                concepts: if concepts.is_empty() { None } else { Some(concepts) },
-                locations: if locations.is_empty() { None } else { Some(locations) },
-                persons: if persons.is_empty() { None } else { Some(persons) },
-                organizations: if organizations.is_empty() { None } else { Some(organizations) },
-                authors: if authors.is_empty() { None } else { Some(authors) },
-            }
+                keywords: if keywords.is_empty() {
+                    None
+                } else {
+                    Some(keywords)
+                },
+                concepts: if concepts.is_empty() {
+                    None
+                } else {
+                    Some(concepts)
+                },
+                locations: if locations.is_empty() {
+                    None
+                } else {
+                    Some(locations)
+                },
+                persons: if persons.is_empty() {
+                    None
+                } else {
+                    Some(persons)
+                },
+                organizations: if organizations.is_empty() {
+                    None
+                } else {
+                    Some(organizations)
+                },
+                authors: if authors.is_empty() {
+                    None
+                } else {
+                    Some(authors)
+                },
+            },
         });
     };
 
@@ -116,7 +146,8 @@ pub fn SearchPage() -> impl IntoView {
         if let Some(Ok(res)) = search_action.value().get() {
             leptos::logging::log!("SearchPage: Effect received {} results", res.len());
 
-            let unique_documents = res.iter()
+            let unique_documents = res
+                .iter()
                 .map(|r| r.id)
                 .collect::<std::collections::HashSet<_>>()
                 .len();
@@ -159,9 +190,7 @@ pub fn SearchPage() -> impl IntoView {
     });
 
     // ============ RENDER ============
-    let search_error = move || {
-        search_action.value().get().and_then(|res| res.err())
-    };
+    let search_error = move || search_action.value().get().and_then(|res| res.err());
 
     view! {
         <div class="flex flex-col h-screen bg-white">

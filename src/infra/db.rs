@@ -9,10 +9,11 @@ use sqlx::{postgres::PgPoolOptions, PgPool};
 use uuid::Uuid;
 
 use crate::config::DatabaseConfig;
-use crate::domain::models::{Document, DocumentChunk, DocumentAsset, Category, SearchResult, ImportJob, ImportItem};
+use crate::domain::models::{
+    Category, Document, DocumentAsset, DocumentChunk, ImportItem, ImportJob, SearchResult,
+};
 use crate::infra::db_utils::{
-    sanitize_bm25_query, embedding_to_string, has_entity_or_wordcount_filters,
-    extract_unique_ids,
+    embedding_to_string, extract_unique_ids, has_entity_or_wordcount_filters, sanitize_bm25_query,
 };
 
 /// Get embedding dimensions from configuration
@@ -28,8 +29,12 @@ pub async fn create_pool(config: &DatabaseConfig) -> Result<PgPool> {
 
     // Log connection attempt (masking password for security)
     let masked_url = if let Some(start) = config.url.find("://") {
-        if let Some(end) = config.url[start+3..].find('@') {
-            format!("{}://****@{}", &config.url[..start], &config.url[start+3+end+1..])
+        if let Some(end) = config.url[start + 3..].find('@') {
+            format!(
+                "{}://****@{}",
+                &config.url[..start],
+                &config.url[start + 3 + end + 1..]
+            )
         } else {
             "postgres://****@...".to_string()
         }
@@ -93,30 +98,37 @@ fn matches_all_filters(doc: &Document, filters: &SearchFilters) -> bool {
 
 /// Check author filter - pure predicate
 fn matches_author_filter(doc: &Document, authors: &Option<Vec<String>>) -> bool {
-    authors.as_ref()
+    authors
+        .as_ref()
         .map(|filter_authors| {
-            doc.author.as_ref()
+            doc.author
+                .as_ref()
                 .is_some_and(|author| filter_authors.iter().any(|a| a == author))
         })
         .unwrap_or(true)
 }
 
 /// Check array field filter (locations, keywords) - pure predicate
-fn matches_array_filter(doc_array: &Option<Vec<String>>, filter: &Option<Vec<String>>, _field_name: &str) -> bool {
-    let Some(filter_vals) = filter else { return true; };
+fn matches_array_filter(
+    doc_array: &Option<Vec<String>>,
+    filter: &Option<Vec<String>>,
+    _field_name: &str,
+) -> bool {
+    let Some(filter_vals) = filter else {
+        return true;
+    };
 
     doc_array
         .as_ref()
-        .map(|arr| {
-            arr.iter()
-                .any(|s| filter_vals.iter().any(|fv| fv == s))
-        })
+        .map(|arr| arr.iter().any(|s| filter_vals.iter().any(|fv| fv == s)))
         .unwrap_or(false)
 }
 
 /// Check single entity filter - pure predicate
 fn matches_entity_filter(doc: &Document, filter: &Option<Vec<String>>, entity_key: &str) -> bool {
-    let Some(filter_vals) = filter else { return true; };
+    let Some(filter_vals) = filter else {
+        return true;
+    };
 
     doc.entities
         .as_ref()
@@ -167,7 +179,11 @@ pub async fn hybrid_search(
     tracing::info!("Boolean query: {}", boolean_query);
     tracing::info!("Prefix query: {}", prefix_query);
     tracing::info!("BM25 (sanitized): {}", sanitized_query);
-    tracing::info!("Search weights - BM25: {}, Vector: {}", bm25_weight, vector_weight);
+    tracing::info!(
+        "Search weights - BM25: {}, Vector: {}",
+        bm25_weight,
+        vector_weight
+    );
     tracing::info!("=====================================");
 
     // Convert embedding to PostgreSQL vector format
@@ -257,7 +273,10 @@ pub async fn hybrid_search(
                 COALESCE(ar.vector_score, 0.0) * $5
             ))::FLOAT as combined_score,
             NULL::FLOAT as reranker_score,
-            NULL::TEXT as snippet
+            CASE
+                WHEN d.content @@@ $1 THEN paradedb.snippet(d.content, start_tag => '<mark>', end_tag => '</mark>', max_num_chars => 300)
+                ELSE NULL
+            END as snippet
         FROM all_results ar
         JOIN documents d ON ar.result_id = d.id
         LEFT JOIN categories c ON d.category_id = c.id
@@ -294,7 +313,9 @@ pub async fn hybrid_search(
 
     tracing::debug!(
         "Hybrid search: phrase_query='{}', boolean_query='{}', prefix_query='{}'",
-        phrase_query, boolean_query, prefix_query
+        phrase_query,
+        boolean_query,
+        prefix_query
     );
 
     // Apply entity and word count filters using functional composition
@@ -305,7 +326,8 @@ pub async fn hybrid_search(
             docs.iter().map(|d| (d.id, d)).collect();
 
         results.retain(|r| {
-            doc_map.get(&r.id)
+            doc_map
+                .get(&r.id)
                 .map(|doc| matches_all_filters(doc, filters))
                 .unwrap_or(true)
         });
@@ -325,7 +347,8 @@ pub async fn hybrid_search(
 
                 // Re-sort by new combined score
                 results.sort_by(|a, b| {
-                    b.combined_score.partial_cmp(&a.combined_score)
+                    b.combined_score
+                        .partial_cmp(&a.combined_score)
                         .unwrap_or(std::cmp::Ordering::Equal)
                 });
 
@@ -354,7 +377,7 @@ pub async fn get_documents_by_ids(pool: &PgPool, ids: &[Uuid]) -> Result<Vec<Doc
                entities, metadata, embedding::FLOAT4[] as embedding, content_hash
         FROM documents
         WHERE id = ANY($1)
-        "#
+        "#,
     )
     .bind(ids)
     .fetch_all(pool)
@@ -365,11 +388,7 @@ pub async fn get_documents_by_ids(pool: &PgPool, ids: &[Uuid]) -> Result<Vec<Doc
 
 /// Simple BM25-only search
 #[allow(dead_code)]
-pub async fn bm25_search(
-    pool: &PgPool,
-    query: &str,
-    limit: i32,
-) -> Result<Vec<Document>> {
+pub async fn bm25_search(pool: &PgPool, query: &str, limit: i32) -> Result<Vec<Document>> {
     let sanitized_query = sanitize_bm25_query(query);
 
     let results = sqlx::query_as::<_, Document>(
@@ -379,7 +398,7 @@ pub async fn bm25_search(
         WHERE d.id @@@ $1
         ORDER BY paradedb.score(d.id) DESC
         LIMIT $2
-        "#
+        "#,
     )
     .bind(sanitized_query)
     .bind(limit)
@@ -391,11 +410,7 @@ pub async fn bm25_search(
 
 /// Vector-only similarity search
 #[allow(dead_code)]
-pub async fn vector_search(
-    pool: &PgPool,
-    embedding: &[f32],
-    limit: i32,
-) -> Result<Vec<Document>> {
+pub async fn vector_search(pool: &PgPool, embedding: &[f32], limit: i32) -> Result<Vec<Document>> {
     let embedding_str = embedding_to_string(embedding);
 
     let dims = get_embedding_dimensions()?;
@@ -442,10 +457,7 @@ pub struct InsertDocumentParams<'a> {
     pub content_hash: Option<&'a str>,
 }
 
-pub async fn insert_document(
-    pool: &PgPool,
-    params: InsertDocumentParams<'_>,
-) -> Result<Uuid> {
+pub async fn insert_document(pool: &PgPool, params: InsertDocumentParams<'_>) -> Result<Uuid> {
     let embedding_str = embedding_to_string(params.embedding);
 
     let dims = get_embedding_dimensions()?;
@@ -535,7 +547,7 @@ pub async fn insert_chunks_batch(
     }
 
     let dims = get_embedding_dimensions()?;
-    
+
     let mut chunk_indices = Vec::with_capacity(chunks.len());
     let mut contents = Vec::with_capacity(chunks.len());
     let mut embeddings = Vec::with_capacity(chunks.len());
@@ -582,7 +594,7 @@ pub async fn get_document(pool: &PgPool, id: Uuid) -> Result<Option<Document>> {
             category_id, keywords, locations, created_at, status, entities,
             metadata, content_hash, embedding::FLOAT4[] as embedding
         FROM documents WHERE id = $1
-        "#
+        "#,
     )
     .bind(id)
     .fetch_optional(pool)
@@ -593,7 +605,7 @@ pub async fn get_document(pool: &PgPool, id: Uuid) -> Result<Option<Document>> {
 
 pub async fn get_document_assets(pool: &PgPool, document_id: Uuid) -> Result<Vec<DocumentAsset>> {
     let assets = sqlx::query_as::<_, DocumentAsset>(
-        "SELECT * FROM document_assets WHERE document_id = $1 ORDER BY page_number, id"
+        "SELECT * FROM document_assets WHERE document_id = $1 ORDER BY page_number, id",
     )
     .bind(document_id)
     .fetch_all(pool)
@@ -660,11 +672,7 @@ pub async fn insert_assets_batch(
     Ok(inserted)
 }
 
-pub async fn list_documents(
-    pool: &PgPool,
-    limit: i32,
-    offset: i32,
-) -> Result<Vec<Document>> {
+pub async fn list_documents(pool: &PgPool, limit: i32, offset: i32) -> Result<Vec<Document>> {
     let docs = sqlx::query_as::<_, Document>(
         r#"
         SELECT
@@ -672,7 +680,7 @@ pub async fn list_documents(
             category_id, keywords, locations, created_at, status, entities,
             metadata, content_hash, embedding::FLOAT4[] as embedding
         FROM documents ORDER BY created_at DESC LIMIT $1 OFFSET $2
-        "#
+        "#,
     )
     .bind(limit)
     .bind(offset)
@@ -695,7 +703,11 @@ pub async fn filter_only_search(
         ""
     };
 
-    let limit_param = if filters.category_id.is_some() { "$2" } else { "$1" };
+    let limit_param = if filters.category_id.is_some() {
+        "$2"
+    } else {
+        "$1"
+    };
 
     let sql = format!(
         r#"
@@ -709,7 +721,10 @@ pub async fn filter_only_search(
             0.0::FLOAT as vector_score,
             0.0::FLOAT as combined_score,
             NULL::FLOAT as reranker_score,
-            NULL::TEXT as snippet
+            CASE
+                WHEN d.content IS NOT NULL THEN substring(d.content, 1, 300)
+                ELSE NULL
+            END as snippet
         FROM documents d
         LEFT JOIN categories c ON d.category_id = c.id
         WHERE d.status = 'indexed'
@@ -749,11 +764,9 @@ pub async fn filter_only_search(
 }
 
 pub async fn list_categories(pool: &PgPool) -> Result<Vec<Category>> {
-    let categories = sqlx::query_as::<_, Category>(
-        "SELECT * FROM categories ORDER BY name"
-    )
-    .fetch_all(pool)
-    .await?;
+    let categories = sqlx::query_as::<_, Category>("SELECT * FROM categories ORDER BY name")
+        .fetch_all(pool)
+        .await?;
 
     Ok(categories)
 }
@@ -762,12 +775,11 @@ pub async fn list_categories(pool: &PgPool) -> Result<Vec<Category>> {
 /// If the category doesn't exist, it will be created
 pub async fn get_or_create_category(pool: &PgPool, name: &str) -> Result<Uuid> {
     // First, try to get existing category
-    let existing = sqlx::query_scalar::<_, Uuid>(
-        "SELECT id FROM categories WHERE LOWER(name) = LOWER($1)"
-    )
-    .bind(name)
-    .fetch_optional(pool)
-    .await?;
+    let existing =
+        sqlx::query_scalar::<_, Uuid>("SELECT id FROM categories WHERE LOWER(name) = LOWER($1)")
+            .bind(name)
+            .fetch_optional(pool)
+            .await?;
 
     if let Some(id) = existing {
         return Ok(id);
@@ -775,7 +787,7 @@ pub async fn get_or_create_category(pool: &PgPool, name: &str) -> Result<Uuid> {
 
     // Category doesn't exist, create it
     let new_id = sqlx::query_scalar::<_, Uuid>(
-        "INSERT INTO categories (id, name, description) VALUES ($1, $2, NULL) RETURNING id"
+        "INSERT INTO categories (id, name, description) VALUES ($1, $2, NULL) RETURNING id",
     )
     .bind(Uuid::new_v4())
     .bind(name)
@@ -823,7 +835,7 @@ pub async fn get_db_stats(pool: &PgPool) -> Result<crate::domain::models::DbStat
         SELECT
             (SELECT COUNT(*) FROM documents) as document_count,
             (SELECT COUNT(*) FROM document_chunks) as chunk_count
-        "#
+        "#,
     )
     .fetch_one(pool)
     .await?;
@@ -852,7 +864,11 @@ pub async fn delete_document(pool: &PgPool, id: Uuid) -> Result<u64> {
         .execute(pool)
         .await?;
 
-    tracing::info!("Deleted document {}: {} rows affected", id, result.rows_affected());
+    tracing::info!(
+        "Deleted document {}: {} rows affected",
+        id,
+        result.rows_affected()
+    );
     Ok(result.rows_affected())
 }
 
@@ -896,7 +912,7 @@ pub async fn find_duplicate_document(
         SELECT id FROM documents
         WHERE source_path = $1 AND content_hash = $2
         LIMIT 1
-        "#
+        "#,
     )
     .bind(source_path)
     .bind(content_hash)
@@ -907,31 +923,23 @@ pub async fn find_duplicate_document(
 }
 
 /// Check if source_path already exists (for quick skip)
-pub async fn document_exists_by_path(
-    pool: &PgPool,
-    source_path: &str,
-) -> Result<bool> {
-    let exists: (bool,) = sqlx::query_as(
-        "SELECT EXISTS(SELECT 1 FROM documents WHERE source_path = $1)"
-    )
-    .bind(source_path)
-    .fetch_one(pool)
-    .await?;
+pub async fn document_exists_by_path(pool: &PgPool, source_path: &str) -> Result<bool> {
+    let exists: (bool,) =
+        sqlx::query_as("SELECT EXISTS(SELECT 1 FROM documents WHERE source_path = $1)")
+            .bind(source_path)
+            .fetch_one(pool)
+            .await?;
 
     Ok(exists.0)
 }
 
 /// Find document by source path
-pub async fn find_document_by_path(
-    pool: &PgPool,
-    source_path: &str,
-) -> Result<Option<Uuid>> {
-    let existing: Option<(Uuid,)> = sqlx::query_as(
-        "SELECT id FROM documents WHERE source_path = $1 LIMIT 1"
-    )
-    .bind(source_path)
-    .fetch_optional(pool)
-    .await?;
+pub async fn find_document_by_path(pool: &PgPool, source_path: &str) -> Result<Option<Uuid>> {
+    let existing: Option<(Uuid,)> =
+        sqlx::query_as("SELECT id FROM documents WHERE source_path = $1 LIMIT 1")
+            .bind(source_path)
+            .fetch_optional(pool)
+            .await?;
 
     Ok(existing.map(|(id,)| id))
 }
@@ -946,7 +954,7 @@ pub async fn get_aggregation_stats(pool: &PgPool) -> Result<crate::domain::dtos:
         GROUP BY c.id, c.name
         ORDER BY count DESC
         LIMIT 10
-        "#
+        "#,
     )
     .fetch_all(pool)
     .await?;
@@ -963,7 +971,7 @@ pub async fn get_aggregation_stats(pool: &PgPool) -> Result<crate::domain::dtos:
         GROUP BY keyword
         ORDER BY count DESC
         LIMIT 10
-        "#
+        "#,
     )
     .fetch_all(pool)
     .await?;
@@ -980,7 +988,7 @@ pub async fn get_aggregation_stats(pool: &PgPool) -> Result<crate::domain::dtos:
         GROUP BY location
         ORDER BY count DESC
         LIMIT 10
-        "#
+        "#,
     )
     .fetch_all(pool)
     .await?;
@@ -1019,7 +1027,7 @@ pub async fn get_aggregation_stats(pool: &PgPool) -> Result<crate::domain::dtos:
         ) t
         GROUP BY entity_type, entity_value
         ORDER BY entity_type, count DESC
-        "#
+        "#,
     )
     .fetch_all(pool)
     .await?;
@@ -1056,7 +1064,7 @@ pub async fn get_aggregation_stats(pool: &PgPool) -> Result<crate::domain::dtos:
         GROUP BY author
         ORDER BY count DESC
         LIMIT 20
-        "#
+        "#,
     )
     .fetch_all(pool)
     .await?;
@@ -1114,11 +1122,13 @@ pub async fn get_facet_aggregations(
 
     let aggregates = facets
         .into_iter()
-        .map(|(facet_name, facet_value, count)| crate::domain::dtos::FacetAggregate {
-            facet_name,
-            facet_value,
-            count,
-        })
+        .map(
+            |(facet_name, facet_value, count)| crate::domain::dtos::FacetAggregate {
+                facet_name,
+                facet_value,
+                count,
+            },
+        )
         .collect();
 
     Ok(aggregates)
@@ -1187,21 +1197,24 @@ pub async fn search_with_facets(
     let authors = filters.authors.clone();
 
     // Call the SQL function that returns both results and facets
-    let raw_results = sqlx::query_as::<_, (
-        String,  // result_type
-        Option<Uuid>,  // id
-        Option<String>,  // title
-        Option<String>,  // content
-        Option<String>,  // source_path
-        Option<String>,  // category_name
-        Option<f32>,  // bm25_score
-        Option<f32>,  // vector_score
-        Option<f32>,  // combined_score
-        Option<String>,  // snippet
-        Option<String>,  // facet_name
-        Option<String>,  // facet_value
-        Option<i64>,  // facet_count
-    )>(
+    let raw_results = sqlx::query_as::<
+        _,
+        (
+            String,         // result_type
+            Option<Uuid>,   // id
+            Option<String>, // title
+            Option<String>, // content
+            Option<String>, // source_path
+            Option<String>, // category_name
+            Option<f32>,    // bm25_score
+            Option<f32>,    // vector_score
+            Option<f32>,    // combined_score
+            Option<String>, // snippet
+            Option<String>, // facet_name
+            Option<String>, // facet_value
+            Option<i64>,    // facet_count
+        ),
+    >(
         r#"
         SELECT result_type, id, title, content, source_path, category_name,
                bm25_score, vector_score, combined_score, snippet,
@@ -1209,7 +1222,7 @@ pub async fn search_with_facets(
         FROM search_with_facets($1, $2::VECTOR, $3::INT, $4::FLOAT, $5::FLOAT,
                                 $6::UUID, $7::TIMESTAMPTZ, $8::TIMESTAMPTZ,
                                 $9::TEXT[], $10::TEXT[], $11::TEXT[], $12::INT)
-        "#
+        "#,
     )
     .bind(&query)
     .bind(&embedding_str)
@@ -1251,8 +1264,7 @@ pub async fn search_with_facets(
                 }
             }
             "facet" => {
-                if let (Some(facet_name), Some(facet_value), Some(count)) =
-                    (row.10, row.11, row.12)
+                if let (Some(facet_name), Some(facet_value), Some(count)) = (row.10, row.11, row.12)
                 {
                     facets.push(crate::domain::dtos::FacetAggregate {
                         facet_name,
@@ -1322,10 +1334,7 @@ pub async fn search_and_get_documents(
     let doc_ids = extract_unique_ids(&result_ids);
 
     // Step 3: Fetch full documents (limit to requested count)
-    let doc_ids_to_fetch: Vec<Uuid> = doc_ids
-        .into_iter()
-        .take(limit as usize)
-        .collect();
+    let doc_ids_to_fetch: Vec<Uuid> = doc_ids.into_iter().take(limit as usize).collect();
 
     if doc_ids_to_fetch.is_empty() {
         return Ok(vec![]);
@@ -1340,7 +1349,7 @@ pub async fn search_and_get_documents(
         FROM documents
         WHERE id = ANY($1)
         ORDER BY created_at DESC
-        "#
+        "#,
     )
     .bind(&doc_ids_to_fetch)
     .fetch_all(pool)
@@ -1361,12 +1370,10 @@ pub async fn search_and_get_documents(
 
 /// Get import job by ID
 pub async fn get_import_job(pool: &PgPool, job_id: Uuid) -> Result<ImportJob> {
-    let job = sqlx::query_as::<_, ImportJob>(
-        "SELECT * FROM import_jobs WHERE id = $1"
-    )
-    .bind(job_id)
-    .fetch_one(pool)
-    .await?;
+    let job = sqlx::query_as::<_, ImportJob>("SELECT * FROM import_jobs WHERE id = $1")
+        .bind(job_id)
+        .fetch_one(pool)
+        .await?;
 
     Ok(job)
 }
@@ -1386,7 +1393,7 @@ pub async fn list_import_jobs(
         SELECT * FROM import_jobs
         ORDER BY created_at DESC
         LIMIT $1 OFFSET $2
-        "#
+        "#,
     )
     .bind(limit)
     .bind(offset)
@@ -1403,12 +1410,10 @@ pub async fn get_import_items(
     limit: i32,
     offset: i32,
 ) -> Result<(Vec<ImportItem>, i64)> {
-    let total: (i64,) = sqlx::query_as(
-        "SELECT COUNT(*) FROM import_items WHERE job_id = $1"
-    )
-    .bind(job_id)
-    .fetch_one(pool)
-    .await?;
+    let total: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM import_items WHERE job_id = $1")
+        .bind(job_id)
+        .fetch_one(pool)
+        .await?;
 
     let items = sqlx::query_as::<_, ImportItem>(
         r#"
@@ -1416,7 +1421,7 @@ pub async fn get_import_items(
         WHERE job_id = $1
         ORDER BY created_at DESC
         LIMIT $2 OFFSET $3
-        "#
+        "#,
     )
     .bind(job_id)
     .bind(limit)
@@ -1428,16 +1433,13 @@ pub async fn get_import_items(
 }
 
 /// Get failed or skipped items for a job (for retry)
-pub async fn get_failed_items(
-    pool: &PgPool,
-    job_id: Uuid,
-) -> Result<Vec<ImportItem>> {
+pub async fn get_failed_items(pool: &PgPool, job_id: Uuid) -> Result<Vec<ImportItem>> {
     let items = sqlx::query_as::<_, ImportItem>(
         r#"
         SELECT * FROM import_items
         WHERE job_id = $1 AND status IN ('failed', 'skipped')
         ORDER BY created_at
-        "#
+        "#,
     )
     .bind(job_id)
     .fetch_all(pool)
@@ -1457,7 +1459,7 @@ pub async fn get_import_job_stats(pool: &PgPool, job_id: Uuid) -> Result<(i32, i
             COUNT(*)
         FROM import_items
         WHERE job_id = $1
-        "#
+        "#,
     )
     .bind(job_id)
     .fetch_one(pool)
@@ -1468,12 +1470,10 @@ pub async fn get_import_job_stats(pool: &PgPool, job_id: Uuid) -> Result<(i32, i
 
 /// Get a single import item by ID
 pub async fn get_import_item(pool: &PgPool, item_id: Uuid) -> Result<Option<ImportItem>> {
-    let item = sqlx::query_as::<_, ImportItem>(
-        "SELECT * FROM import_items WHERE id = $1"
-    )
-    .bind(item_id)
-    .fetch_optional(pool)
-    .await?;
+    let item = sqlx::query_as::<_, ImportItem>("SELECT * FROM import_items WHERE id = $1")
+        .bind(item_id)
+        .fetch_optional(pool)
+        .await?;
 
     Ok(item)
 }
@@ -1493,11 +1493,7 @@ mod tests {
     use super::*;
     use serde_json::{json, Value};
 
-    fn create_test_document(
-        id: Uuid,
-        author: Option<&str>,
-        entities: Option<Value>,
-    ) -> Document {
+    fn create_test_document(id: Uuid, author: Option<&str>, entities: Option<Value>) -> Document {
         use chrono::Utc;
         Document {
             id,

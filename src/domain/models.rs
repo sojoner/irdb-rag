@@ -1,16 +1,15 @@
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 #[cfg(feature = "ssr")]
 use sqlx::FromRow;
 use uuid::Uuid;
-use chrono::{DateTime, Utc};
 
 #[cfg(feature = "ssr")]
-use crate::config::{LLMProviderConfig, EmbeddingConfig};
+use crate::config::{EmbeddingConfig, LLMProviderConfig};
 
 // ============================================
 // Core Domain Models
 // ============================================
-
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[cfg_attr(feature = "ssr", derive(FromRow))]
@@ -36,7 +35,6 @@ pub struct Document {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-
 #[cfg_attr(feature = "ssr", derive(FromRow))]
 pub struct DocumentChunk {
     pub id: Uuid,
@@ -155,7 +153,7 @@ impl InfraEmbeddingConfig {
 #[cfg_attr(feature = "ssr", derive(FromRow))]
 pub struct ImportJob {
     pub id: Uuid,
-    pub status: String, // pending, running, completed, failed, cancelled
+    pub status: String,      // pending, running, completed, failed, cancelled
     pub source_type: String, // folder, url, file_upload
     pub source_path: Option<String>,
     pub total_items: i32,

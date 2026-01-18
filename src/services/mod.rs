@@ -1,5 +1,5 @@
 #[cfg(feature = "ssr")]
-pub mod indexing;
+pub mod bookmark_parser;
 #[cfg(feature = "ssr")]
 pub mod enrichment;
 #[cfg(feature = "ssr")]
@@ -7,10 +7,10 @@ pub mod enrichment_utils;
 #[cfg(feature = "ssr")]
 pub mod import;
 #[cfg(feature = "ssr")]
-pub mod utils;
-#[cfg(feature = "ssr")]
-pub mod bookmark_parser;
+pub mod indexing;
 #[cfg(feature = "ssr")]
 pub mod job_cleanup;
 #[cfg(feature = "ssr")]
 pub mod startup_scan;
+#[cfg(feature = "ssr")]
+pub mod utils;

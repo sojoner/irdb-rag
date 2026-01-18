@@ -16,9 +16,7 @@ pub fn chunk_text(text: &str, target_tokens: usize) -> Vec<String> {
 
     let splitter = TextSplitter::new(ChunkConfig::new(target_tokens).with_trim(true));
 
-    splitter.chunks(text)
-        .map(|s: &str| s.to_string())
-        .collect()
+    splitter.chunks(text).map(|s: &str| s.to_string()).collect()
 }
 
 /// Check if a file extension is indexable
@@ -73,7 +71,10 @@ pub fn validate_chunk_config(chunk_size: usize, chunk_overlap: usize) -> (bool, 
     }
 
     if chunk_overlap >= chunk_size {
-        return (false, Some("chunk_overlap must be < chunk_size".to_string()));
+        return (
+            false,
+            Some("chunk_overlap must be < chunk_size".to_string()),
+        );
     }
 
     if chunk_size > 8192 {

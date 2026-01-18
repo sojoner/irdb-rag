@@ -1,10 +1,14 @@
 use anyhow::Result;
-use std::time::Instant;
 use rag_chat::config::Settings;
+use std::time::Instant;
 
 #[tokio::test]
 async fn test_docling_parsing_speed() -> Result<()> {
-    if std::env::var("RUN_ENV").is_err() { if std::env::var("RUN_ENV").is_err() { std::env::set_var("RUN_ENV", "test"); } }
+    if std::env::var("RUN_ENV").is_err() {
+        if std::env::var("RUN_ENV").is_err() {
+            std::env::set_var("RUN_ENV", "test");
+        }
+    }
 
     let settings = Settings::new()?;
     let docling_url = settings.docling.url.clone();
@@ -32,10 +36,14 @@ async fn test_docling_parsing_speed() -> Result<()> {
     assert!(response.status().is_success(), "Docling conversion failed");
 
     let result: serde_json::Value = response.json().await?;
-    let content = result["document"]["md_content"].as_str()
+    let content = result["document"]["md_content"]
+        .as_str()
         .ok_or_else(|| anyhow::anyhow!("No content in response"))?;
 
-    println!("✅ Docling parsing completed in {:.2}s", elapsed.as_secs_f64());
+    println!(
+        "✅ Docling parsing completed in {:.2}s",
+        elapsed.as_secs_f64()
+    );
     println!("📄 Content length: {} chars", content.len());
     println!("📊 Content preview (first 200 chars):");
     println!("{}", &content.chars().take(200).collect::<String>());
@@ -43,7 +51,11 @@ async fn test_docling_parsing_speed() -> Result<()> {
     // Verify parsing was reasonably fast
     // Note: First request on GPU may take 60-90s (model warmup + batch loading)
     // Subsequent requests should be 5-15s. Allow generous limit for CI/GPU warmup.
-    assert!(elapsed.as_secs() < 120, "Docling parsing too slow: {:?}", elapsed);
+    assert!(
+        elapsed.as_secs() < 120,
+        "Docling parsing too slow: {:?}",
+        elapsed
+    );
     assert!(!content.is_empty(), "Content should not be empty");
 
     Ok(())
@@ -51,7 +63,11 @@ async fn test_docling_parsing_speed() -> Result<()> {
 
 #[tokio::test]
 async fn test_docling_table_detection() -> Result<()> {
-    if std::env::var("RUN_ENV").is_err() { if std::env::var("RUN_ENV").is_err() { std::env::set_var("RUN_ENV", "test"); } }
+    if std::env::var("RUN_ENV").is_err() {
+        if std::env::var("RUN_ENV").is_err() {
+            std::env::set_var("RUN_ENV", "test");
+        }
+    }
 
     let settings = Settings::new()?;
     let docling_url = settings.docling.url.clone();
@@ -75,7 +91,8 @@ async fn test_docling_table_detection() -> Result<()> {
     let result: serde_json::Value = response.json().await?;
 
     // Check if tables were detected
-    let has_tables = result.get("tables")
+    let has_tables = result
+        .get("tables")
         .and_then(|t| t.as_array())
         .map(|arr| !arr.is_empty())
         .unwrap_or(false);
@@ -98,7 +115,11 @@ async fn test_docling_table_detection() -> Result<()> {
 
 #[tokio::test]
 async fn test_docling_metadata_extraction() -> Result<()> {
-    if std::env::var("RUN_ENV").is_err() { if std::env::var("RUN_ENV").is_err() { std::env::set_var("RUN_ENV", "test"); } }
+    if std::env::var("RUN_ENV").is_err() {
+        if std::env::var("RUN_ENV").is_err() {
+            std::env::set_var("RUN_ENV", "test");
+        }
+    }
 
     let settings = Settings::new()?;
     let docling_url = settings.docling.url.clone();

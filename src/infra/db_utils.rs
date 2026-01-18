@@ -38,7 +38,10 @@ pub fn sanitize_bm25_query(query: &str) -> String {
         "id:__no_match__".to_string()
     } else {
         // Add field qualification for multi-field search
-        format!("(content:({}) OR title:({}) OR summary:({}))", trimmed, trimmed, trimmed)
+        format!(
+            "(content:({}) OR title:({}) OR summary:({}))",
+            trimmed, trimmed, trimmed
+        )
     }
 }
 
@@ -85,7 +88,10 @@ pub fn build_phrase_query(tokens: &[String]) -> String {
             .collect::<Vec<_>>()
             .join(" ");
         // Search phrase in content, title, or summary
-        format!("(content:({}) OR title:({}) OR summary:({}))", quoted, quoted, quoted)
+        format!(
+            "(content:({}) OR title:({}) OR summary:({}))",
+            quoted, quoted, quoted
+        )
     }
 }
 
@@ -105,7 +111,10 @@ pub fn build_prefix_query(query: &str) -> String {
             .collect::<Vec<_>>()
             .join(" ||| ");
         // Search across content, title, or summary
-        format!("(content:({}) OR title:({}) OR summary:({}))", prefix_terms, prefix_terms, prefix_terms)
+        format!(
+            "(content:({}) OR title:({}) OR summary:({}))",
+            prefix_terms, prefix_terms, prefix_terms
+        )
     }
 }
 
@@ -120,7 +129,10 @@ pub fn build_boolean_query(query: &str) -> String {
         // Create AND terms and search multiple fields
         let and_terms = tokens.join(" &&& ");
         // Search for all terms in any field
-        format!("(content:({}) OR title:({}) OR summary:({}))", and_terms, and_terms, and_terms)
+        format!(
+            "(content:({}) OR title:({}) OR summary:({}))",
+            and_terms, and_terms, and_terms
+        )
     }
 }
 
@@ -191,10 +203,7 @@ pub fn matches_word_count_filter(
 /// Check if entity array contains any of the filter values
 ///
 /// Used for filtering by persons, organizations, products, concepts
-pub fn entity_array_matches(
-    entity_array: Option<&[String]>,
-    filter_values: &[String],
-) -> bool {
+pub fn entity_array_matches(entity_array: Option<&[String]>, filter_values: &[String]) -> bool {
     if let Some(entities) = entity_array {
         filter_values.iter().any(|f| entities.contains(f))
     } else {
@@ -337,9 +346,18 @@ mod tests {
 
     #[test]
     fn test_sanitize_valid_queries() {
-        assert_eq!(sanitize_bm25_query("hello"), "(content:(hello) OR title:(hello) OR summary:(hello))");
-        assert_eq!(sanitize_bm25_query("  hello world  "), "(content:(hello world) OR title:(hello world) OR summary:(hello world))");
-        assert_eq!(sanitize_bm25_query("id:(123)"), "(content:(id:(123)) OR title:(id:(123)) OR summary:(id:(123)))");
+        assert_eq!(
+            sanitize_bm25_query("hello"),
+            "(content:(hello) OR title:(hello) OR summary:(hello))"
+        );
+        assert_eq!(
+            sanitize_bm25_query("  hello world  "),
+            "(content:(hello world) OR title:(hello world) OR summary:(hello world))"
+        );
+        assert_eq!(
+            sanitize_bm25_query("id:(123)"),
+            "(content:(id:(123)) OR title:(id:(123)) OR summary:(id:(123)))"
+        );
     }
 
     #[test]
@@ -418,7 +436,11 @@ mod tests {
     fn test_matches_word_count_filter() {
         assert!(matches_word_count_filter(Some(500), Some(100), Some(1000)));
         assert!(!matches_word_count_filter(Some(50), Some(100), Some(1000)));
-        assert!(!matches_word_count_filter(Some(1500), Some(100), Some(1000)));
+        assert!(!matches_word_count_filter(
+            Some(1500),
+            Some(100),
+            Some(1000)
+        ));
         assert!(matches_word_count_filter(Some(500), None, Some(1000)));
         assert!(matches_word_count_filter(Some(500), Some(100), None));
         assert!(!matches_word_count_filter(None, Some(100), Some(1000)));
@@ -427,8 +449,14 @@ mod tests {
     #[test]
     fn test_entity_array_matches() {
         let entities = vec!["Alice".to_string(), "Bob".to_string()];
-        assert!(entity_array_matches(Some(&entities), &["Alice".to_string()]));
-        assert!(!entity_array_matches(Some(&entities), &["Charlie".to_string()]));
+        assert!(entity_array_matches(
+            Some(&entities),
+            &["Alice".to_string()]
+        ));
+        assert!(!entity_array_matches(
+            Some(&entities),
+            &["Charlie".to_string()]
+        ));
         assert!(!entity_array_matches(None, &["Alice".to_string()]));
     }
 
@@ -462,8 +490,7 @@ mod tests {
             "  database  ".to_string(),
             "".to_string(),
             "rust".to_string(), // duplicate
-            "a_very_long_keyword_that_exceeds_fifty_characters_limit_x"
-                .to_string(),
+            "a_very_long_keyword_that_exceeds_fifty_characters_limit_x".to_string(),
         ];
 
         let normalized = normalize_keywords(keywords);
@@ -551,7 +578,10 @@ mod tests {
     #[test]
     fn test_build_phrase_query_single() {
         let tokens = vec!["hello".to_string()];
-        assert_eq!(build_phrase_query(&tokens), "(content:(\"hello\") OR title:(\"hello\") OR summary:(\"hello\"))");
+        assert_eq!(
+            build_phrase_query(&tokens),
+            "(content:(\"hello\") OR title:(\"hello\") OR summary:(\"hello\"))"
+        );
     }
 
     #[test]
@@ -568,7 +598,10 @@ mod tests {
     #[test]
     fn test_build_prefix_query_single() {
         let result = build_prefix_query("hello");
-        assert_eq!(result, "(content:(hello*) OR title:(hello*) OR summary:(hello*))");
+        assert_eq!(
+            result,
+            "(content:(hello*) OR title:(hello*) OR summary:(hello*))"
+        );
     }
 
     #[test]
@@ -587,7 +620,10 @@ mod tests {
     #[test]
     fn test_build_boolean_query_single() {
         let result = build_boolean_query("hello");
-        assert_eq!(result, "(content:(hello) OR title:(hello) OR summary:(hello))");
+        assert_eq!(
+            result,
+            "(content:(hello) OR title:(hello) OR summary:(hello))"
+        );
     }
 
     #[test]

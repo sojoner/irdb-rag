@@ -3,8 +3,8 @@
 use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
-    response::{IntoResponse, Response, sse::Event},
     response::sse::KeepAlive,
+    response::{sse::Event, IntoResponse, Response},
     Json,
 };
 use futures::stream::StreamExt;
@@ -30,8 +30,13 @@ pub async fn search(
     State(state): State<AppState>,
     Json(req): Json<SearchRequest>,
 ) -> Result<Json<Vec<crate::domain::models::SearchResult>>, AppError> {
-    tracing::info!("Received search request: query='{}', limit={}, bm25_weight={}, vector_weight={}",
-        req.query, req.limit, req.bm25_weight, req.vector_weight);
+    tracing::info!(
+        "Received search request: query='{}', limit={}, bm25_weight={}, vector_weight={}",
+        req.query,
+        req.limit,
+        req.bm25_weight,
+        req.vector_weight
+    );
 
     // Reject empty or special-only queries early to avoid embedding service timeout
     let trimmed_query = req.query.trim();
@@ -42,12 +47,10 @@ pub async fn search(
 
     // Generate embedding for query
     tracing::debug!("Generating embedding for query: '{}'", req.query);
-    let embedding = state.embedder.embed(&req.query)
-        .await
-        .map_err(|e| {
-            tracing::error!("Failed to generate embedding: {}", e);
-            AppError::Internal(e.to_string())
-        })?;
+    let embedding = state.embedder.embed(&req.query).await.map_err(|e| {
+        tracing::error!("Failed to generate embedding: {}", e);
+        AppError::Internal(e.to_string())
+    })?;
     tracing::debug!("Generated embedding with dimension: {}", embedding.len());
 
     let filters = db::SearchFilters {
@@ -76,12 +79,17 @@ pub async fn search(
         req.bm25_weight,
         req.vector_weight,
         state.reranker.as_ref(),
-    ).await.map_err(|e| {
+    )
+    .await
+    .map_err(|e| {
         tracing::error!("Hybrid search failed: {}", e);
         AppError::Internal(e.to_string())
     })?;
 
-    tracing::info!("Search completed successfully, returning {} results", results.len());
+    tracing::info!(
+        "Search completed successfully, returning {} results",
+        results.len()
+    );
     Ok(Json(results))
 }
 
@@ -90,17 +98,19 @@ pub async fn chat(
     State(state): State<AppState>,
     Json(req): Json<ChatRequest>,
 ) -> Result<Json<ChatResponse>, AppError> {
-    tracing::info!("Received chat request: message='{}', context_chunks={}, document_ids={:?}",
-        req.message, req.context_chunks, req.document_ids);
+    tracing::info!(
+        "Received chat request: message='{}', context_chunks={}, document_ids={:?}",
+        req.message,
+        req.context_chunks,
+        req.document_ids
+    );
 
     // Generate embedding for the query
     tracing::debug!("Generating embedding for message");
-    let embedding = state.embedder.embed(&req.message)
-        .await
-        .map_err(|e| {
-            tracing::error!("Failed to generate embedding for chat: {}", e);
-            AppError::Internal(e.to_string())
-        })?;
+    let embedding = state.embedder.embed(&req.message).await.map_err(|e| {
+        tracing::error!("Failed to generate embedding for chat: {}", e);
+        AppError::Internal(e.to_string())
+    })?;
 
     // Retrieve relevant chunks
     tracing::debug!("Retrieving {} relevant chunks", req.context_chunks);
@@ -108,20 +118,23 @@ pub async fn chat(
         &state.pool,
         &embedding,
         req.context_chunks,
-        req.document_ids.as_deref()
+        req.document_ids.as_deref(),
     )
-        .await
-        .map_err(|e| {
-            tracing::error!("Failed to retrieve chunks: {}", e);
-            AppError::Internal(e.to_string())
-        })?;
+    .await
+    .map_err(|e| {
+        tracing::error!("Failed to retrieve chunks: {}", e);
+        AppError::Internal(e.to_string())
+    })?;
     tracing::debug!("Retrieved {} chunks", chunks.len());
 
     // Rerank chunks if available
     if let Some(reranker) = state.reranker.as_ref() {
         let chunk_contents: Vec<&str> = chunks.iter().map(|c| c.content.as_str()).collect();
 
-        match reranker.rerank_and_sort(&req.message, &chunk_contents).await {
+        match reranker
+            .rerank_and_sort(&req.message, &chunk_contents)
+            .await
+        {
             Ok(ranked) => {
                 let mut reranked = Vec::new();
                 for doc in ranked {
@@ -139,19 +152,21 @@ pub async fn chat(
     }
 
     // Build context
-    let context: String = chunks.iter()
+    let context: String = chunks
+        .iter()
         .map(|c| format!("---\n{}\n", c.content))
         .collect();
 
     // Build prompt - use system prompt from settings or default
     let default_system_prompt = "You are a helpful assistant answering questions based on the provided context from documents. Answer based ONLY on the context provided. If the context doesn't contain enough information to answer, say so. Be concise and cite specific parts of the context when relevant.";
-    let system_prompt = state.settings.rag.system_prompt.as_deref().unwrap_or(default_system_prompt);
+    let system_prompt = state
+        .settings
+        .rag
+        .system_prompt
+        .as_deref()
+        .unwrap_or(default_system_prompt);
 
-    let user_prompt = format!(
-        "CONTEXT:\n{}\n\nQUESTION:\n{}",
-        context,
-        req.message
-    );
+    let user_prompt = format!("CONTEXT:\n{}\n\nQUESTION:\n{}", context, req.message);
 
     // Call LLM
     tracing::debug!("Calling LLM with context");
@@ -165,18 +180,26 @@ pub async fn chat(
     tracing::debug!("Received LLM response: {} chars", response.len());
 
     // Build sources
-    let sources: Vec<SourceReference> = chunks.iter()
+    let sources: Vec<SourceReference> = chunks
+        .iter()
         .enumerate()
         .map(|(i, c)| SourceReference {
             document_id: c.document_id,
-            title: c.section_title.clone().unwrap_or_else(|| format!("Chunk {}", i + 1)),
+            title: c
+                .section_title
+                .clone()
+                .unwrap_or_else(|| format!("Chunk {}", i + 1)),
             chunk: c.content.chars().take(200).collect::<String>() + "...",
             relevance: 1.0 - (i as f64 * 0.1),
         })
         .collect();
 
     let conversation_id = req.conversation_id.unwrap_or_else(Uuid::new_v4);
-    tracing::info!("Chat completed successfully, conversation_id={}, {} sources", conversation_id, sources.len());
+    tracing::info!(
+        "Chat completed successfully, conversation_id={}, {} sources",
+        conversation_id,
+        sources.len()
+    );
 
     Ok(Json(ChatResponse {
         message: response,
@@ -189,36 +212,44 @@ pub async fn chat(
 pub async fn chat_stream(
     State(state): State<AppState>,
     Json(req): Json<ChatRequest>,
-) -> Result<axum::response::Sse<impl futures::stream::Stream<Item = Result<Event, axum::Error>>>, AppError> {
-    tracing::info!("Received streaming chat request: message='{}', context_chunks={}, document_ids={:?}",
-        req.message, req.context_chunks, req.document_ids);
+) -> Result<
+    axum::response::Sse<impl futures::stream::Stream<Item = Result<Event, axum::Error>>>,
+    AppError,
+> {
+    tracing::info!(
+        "Received streaming chat request: message='{}', context_chunks={}, document_ids={:?}",
+        req.message,
+        req.context_chunks,
+        req.document_ids
+    );
 
     // Generate embedding for the query
-    let embedding = state.embedder.embed(&req.message)
-        .await
-        .map_err(|e| {
-            tracing::error!("Failed to generate embedding for chat: {}", e);
-            AppError::Internal(e.to_string())
-        })?;
+    let embedding = state.embedder.embed(&req.message).await.map_err(|e| {
+        tracing::error!("Failed to generate embedding for chat: {}", e);
+        AppError::Internal(e.to_string())
+    })?;
 
     // Retrieve relevant chunks
     let mut chunks = db::get_relevant_chunks(
         &state.pool,
         &embedding,
         req.context_chunks,
-        req.document_ids.as_deref()
+        req.document_ids.as_deref(),
     )
-        .await
-        .map_err(|e| {
-            tracing::error!("Failed to retrieve chunks: {}", e);
-            AppError::Internal(e.to_string())
-        })?;
+    .await
+    .map_err(|e| {
+        tracing::error!("Failed to retrieve chunks: {}", e);
+        AppError::Internal(e.to_string())
+    })?;
 
     // Rerank chunks if available
     if let Some(reranker) = state.reranker.as_ref() {
         let chunk_contents: Vec<&str> = chunks.iter().map(|c| c.content.as_str()).collect();
 
-        match reranker.rerank_and_sort(&req.message, &chunk_contents).await {
+        match reranker
+            .rerank_and_sort(&req.message, &chunk_contents)
+            .await
+        {
             Ok(ranked) => {
                 let mut reranked = Vec::new();
                 for doc in ranked {
@@ -226,7 +257,10 @@ pub async fn chat_stream(
                         reranked.push(chunk.clone());
                     }
                 }
-                tracing::debug!("Reranked {} chunks for streaming chat context", reranked.len());
+                tracing::debug!(
+                    "Reranked {} chunks for streaming chat context",
+                    reranked.len()
+                );
                 chunks = reranked;
             }
             Err(e) => {
@@ -236,29 +270,36 @@ pub async fn chat_stream(
     }
 
     // Build context
-    let context: String = chunks.iter()
+    let context: String = chunks
+        .iter()
         .map(|c| format!("---\n{}\n", c.content))
         .collect();
 
     let default_system_prompt = "You are a helpful assistant answering questions based on the provided context from documents. Answer based ONLY on the context provided. If the context doesn't contain enough information to answer, say so. Be concise and cite specific parts of the context when relevant.";
-    let system_prompt = state.settings.rag.system_prompt.as_deref().unwrap_or(default_system_prompt).to_string();
+    let system_prompt = state
+        .settings
+        .rag
+        .system_prompt
+        .as_deref()
+        .unwrap_or(default_system_prompt)
+        .to_string();
 
-    let user_prompt = format!(
-        "CONTEXT:\n{}\n\nQUESTION:\n{}",
-        context,
-        req.message
-    );
+    let user_prompt = format!("CONTEXT:\n{}\n\nQUESTION:\n{}", context, req.message);
 
     // Get LLM config
     let config = state.llm_config.read().await.clone();
     let conversation_id = req.conversation_id.unwrap_or_else(Uuid::new_v4);
 
     // Build sources
-    let sources: Vec<SourceReference> = chunks.iter()
+    let sources: Vec<SourceReference> = chunks
+        .iter()
         .enumerate()
         .map(|(i, c)| SourceReference {
             document_id: c.document_id,
-            title: c.section_title.clone().unwrap_or_else(|| format!("Chunk {}", i + 1)),
+            title: c
+                .section_title
+                .clone()
+                .unwrap_or_else(|| format!("Chunk {}", i + 1)),
             chunk: c.content.chars().take(200).collect::<String>() + "...",
             relevance: 1.0 - (i as f64 * 0.1),
         })
@@ -329,7 +370,7 @@ pub async fn list_documents(
     let docs = db::list_documents(&state.pool, query.limit, query.offset)
         .await
         .map_err(|e| AppError::Internal(e.to_string()))?;
-    
+
     Ok(Json(docs))
 }
 
@@ -342,7 +383,7 @@ pub async fn get_document(
         .await
         .map_err(|e| AppError::Internal(e.to_string()))?
         .ok_or(AppError::NotFound)?;
-    
+
     Ok(Json(doc))
 }
 
@@ -354,7 +395,7 @@ pub async fn get_document_assets(
     let assets = db::get_document_assets(&state.pool, id)
         .await
         .map_err(|e| AppError::Internal(e.to_string()))?;
-    
+
     Ok(Json(assets))
 }
 
@@ -383,12 +424,10 @@ pub async fn list_categories(
     State(state): State<AppState>,
 ) -> Result<Json<Vec<crate::domain::models::Category>>, AppError> {
     tracing::debug!("Received request to list categories");
-    let categories = db::list_categories(&state.pool)
-        .await
-        .map_err(|e| {
-            tracing::error!("Failed to list categories: {}", e);
-            AppError::Internal(e.to_string())
-        })?;
+    let categories = db::list_categories(&state.pool).await.map_err(|e| {
+        tracing::error!("Failed to list categories: {}", e);
+        AppError::Internal(e.to_string())
+    })?;
 
     tracing::info!("Returning {} categories", categories.len());
     Ok(Json(categories))
@@ -404,7 +443,7 @@ pub async fn index_document(
             .await
             .map_err(|e| AppError::Internal(e.to_string()))?;
     }
-    
+
     if let Some(url) = req.url {
         indexing::index_url(&state.pool, &state.embedder, &url)
             .await
@@ -415,9 +454,7 @@ pub async fn index_document(
 }
 
 /// Get system status and configuration
-pub async fn get_status(
-    State(state): State<AppState>,
-) -> Result<Json<SystemStatus>, AppError> {
+pub async fn get_status(State(state): State<AppState>) -> Result<Json<SystemStatus>, AppError> {
     let db_stats = db::get_db_stats(&state.pool)
         .await
         .map_err(|e| AppError::Internal(e.to_string()))?;
@@ -458,13 +495,13 @@ pub async fn update_model(
         config.api_key = key;
     }
 
-    Ok(Json(serde_json::json!({ "status": "updated", "config": *config })))
+    Ok(Json(
+        serde_json::json!({ "status": "updated", "config": *config }),
+    ))
 }
 
 /// Get recent logs
-pub async fn get_logs(
-    State(state): State<AppState>,
-) -> Json<Vec<String>> {
+pub async fn get_logs(State(state): State<AppState>) -> Json<Vec<String>> {
     let logs = state.log_buffer.lock().unwrap().clone();
     Json(logs)
 }
@@ -507,7 +544,11 @@ pub async fn faceted_search(
     State(state): State<AppState>,
     Json(req): Json<crate::domain::dtos::FacetedSearchRequest>,
 ) -> Result<Json<crate::domain::dtos::FacetedSearchResponse>, AppError> {
-    tracing::info!("Received faceted search request: query='{}', facet_limit={}", req.query, req.facet_limit);
+    tracing::info!(
+        "Received faceted search request: query='{}', facet_limit={}",
+        req.query,
+        req.facet_limit
+    );
 
     let trimmed_query = req.query.trim();
     if trimmed_query.is_empty() || trimmed_query == "*" {
@@ -521,12 +562,10 @@ pub async fn faceted_search(
 
     // Generate embedding for query
     tracing::debug!("Generating embedding for query: '{}'", req.query);
-    let embedding = state.embedder.embed(&req.query)
-        .await
-        .map_err(|e| {
-            tracing::error!("Failed to generate embedding: {}", e);
-            AppError::Internal(e.to_string())
-        })?;
+    let embedding = state.embedder.embed(&req.query).await.map_err(|e| {
+        tracing::error!("Failed to generate embedding: {}", e);
+        AppError::Internal(e.to_string())
+    })?;
 
     let filters = db::SearchFilters {
         category_id: req.category_id,
@@ -555,13 +594,19 @@ pub async fn faceted_search(
         req.vector_weight,
         req.facet_limit,
         state.reranker.as_ref().map(|r| r.as_ref()),
-    ).await.map_err(|e| {
+    )
+    .await
+    .map_err(|e| {
         tracing::error!("Faceted search failed: {}", e);
         AppError::Internal(e.to_string())
     })?;
 
     let total_results = results.len() as i64;
-    tracing::info!("Faceted search completed: {} results, {} facets", results.len(), facets.len());
+    tracing::info!(
+        "Faceted search completed: {} results, {} facets",
+        results.len(),
+        facets.len()
+    );
 
     Ok(Json(crate::domain::dtos::FacetedSearchResponse {
         results,
@@ -575,7 +620,10 @@ pub async fn get_facet_values(
     State(state): State<AppState>,
     Json(req): Json<crate::domain::dtos::FacetValuesRequest>,
 ) -> Result<Json<crate::domain::dtos::FacetValuesResponse>, AppError> {
-    tracing::info!("Received facet values request for facet_type: '{}'", req.facet_type);
+    tracing::info!(
+        "Received facet values request for facet_type: '{}'",
+        req.facet_type
+    );
 
     let filters = db::SearchFilters {
         category_id: req.category_id,
@@ -599,12 +647,18 @@ pub async fn get_facet_values(
         req.query.as_deref(),
         &filters,
         req.limit,
-    ).await.map_err(|e| {
+    )
+    .await
+    .map_err(|e| {
         tracing::error!("Failed to get facet values: {}", e);
         AppError::Internal(e.to_string())
     })?;
 
-    tracing::info!("Retrieved {} values for facet '{}'", values.len(), req.facet_type);
+    tracing::info!(
+        "Retrieved {} values for facet '{}'",
+        values.len(),
+        req.facet_type
+    );
 
     Ok(Json(crate::domain::dtos::FacetValuesResponse {
         facet_type: req.facet_type,
@@ -667,13 +721,17 @@ pub async fn create_import(
             if let Some(folder) = &req.source_path {
                 match crate::services::import::discover_files(folder) {
                     Ok(files) => {
-                        item_paths = files.into_iter()
+                        item_paths = files
+                            .into_iter()
                             .filter_map(|p| p.to_str().map(|s| s.to_string()))
                             .collect();
                     }
                     Err(e) => {
                         tracing::error!("Failed to discover files in {}: {}", folder, e);
-                        return Err(AppError::Internal(format!("Failed to discover files: {}", e)));
+                        return Err(AppError::Internal(format!(
+                            "Failed to discover files: {}",
+                            e
+                        )));
                     }
                 }
             }
@@ -691,7 +749,10 @@ pub async fn create_import(
             }
         }
         _ => {
-            return Err(AppError::Internal(format!("Invalid source_type: {}", req.source_type)));
+            return Err(AppError::Internal(format!(
+                "Invalid source_type: {}",
+                req.source_type
+            )));
         }
     }
 
@@ -888,19 +949,24 @@ pub async fn delete_import(
     Path(job_id): Path<Uuid>,
     Json(req): Json<DeleteImportRequest>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    use crate::services::import::{ImportJobRunner, ImportConfig};
+    use crate::services::import::{ImportConfig, ImportJobRunner};
 
     let config = ImportConfig::from_env();
     let runner = ImportJobRunner::new(config);
 
-    let rows_affected = runner.delete_job(&state.pool, job_id, req.delete_documents)
+    let rows_affected = runner
+        .delete_job(&state.pool, job_id, req.delete_documents)
         .await
         .map_err(|e| {
             tracing::error!("Failed to delete import job: {}", e);
             AppError::Internal(e.to_string())
         })?;
 
-    tracing::info!("Deleted import job: {} (rows affected: {})", job_id, rows_affected);
+    tracing::info!(
+        "Deleted import job: {} (rows affected: {})",
+        job_id,
+        rows_affected
+    );
 
     Ok(Json(serde_json::json!({
         "status": "deleted",
@@ -975,16 +1041,15 @@ pub async fn add_knowledge_base_paths(
     if let Some(paths) = &req.local_paths {
         for path in paths {
             // Check if already indexed
-            let doc_count: (i64,) = sqlx::query_as(
-                "SELECT COUNT(*) FROM documents WHERE source_path = $1"
-            )
-            .bind(path)
-            .fetch_one(&state.pool)
-            .await
-            .map_err(|e| {
-                tracing::error!("Failed to check document existence: {}", e);
-                AppError::Internal(e.to_string())
-            })?;
+            let doc_count: (i64,) =
+                sqlx::query_as("SELECT COUNT(*) FROM documents WHERE source_path = $1")
+                    .bind(path)
+                    .fetch_one(&state.pool)
+                    .await
+                    .map_err(|e| {
+                        tracing::error!("Failed to check document existence: {}", e);
+                        AppError::Internal(e.to_string())
+                    })?;
 
             if doc_count.0 > 0 {
                 tracing::debug!("Path already indexed: {}", path);
@@ -999,16 +1064,15 @@ pub async fn add_knowledge_base_paths(
     if let Some(urls) = &req.urls {
         for url in urls {
             // Check if already indexed
-            let doc_count: (i64,) = sqlx::query_as(
-                "SELECT COUNT(*) FROM documents WHERE source_path = $1"
-            )
-            .bind(url)
-            .fetch_one(&state.pool)
-            .await
-            .map_err(|e| {
-                tracing::error!("Failed to check URL existence: {}", e);
-                AppError::Internal(e.to_string())
-            })?;
+            let doc_count: (i64,) =
+                sqlx::query_as("SELECT COUNT(*) FROM documents WHERE source_path = $1")
+                    .bind(url)
+                    .fetch_one(&state.pool)
+                    .await
+                    .map_err(|e| {
+                        tracing::error!("Failed to check URL existence: {}", e);
+                        AppError::Internal(e.to_string())
+                    })?;
 
             if doc_count.0 > 0 {
                 tracing::debug!("URL already indexed: {}", url);
@@ -1029,8 +1093,7 @@ pub async fn add_knowledge_base_paths(
     }
 
     // Create import job
-    let settings = crate::config::Settings::new()
-        .map_err(|e| AppError::Internal(e.to_string()))?;
+    let settings = crate::config::Settings::new().map_err(|e| AppError::Internal(e.to_string()))?;
     let runner = ImportJobRunner::new(settings.import.clone());
 
     let job_id = runner
@@ -1052,14 +1115,10 @@ pub async fn add_knowledge_base_paths(
         })?;
 
     // Queue job
-    state
-        .import_job_queue
-        .send(job_id)
-        .await
-        .map_err(|e| {
-            tracing::error!("Failed to queue import job: {}", e);
-            AppError::Internal(e.to_string())
-        })?;
+    state.import_job_queue.send(job_id).await.map_err(|e| {
+        tracing::error!("Failed to queue import job: {}", e);
+        AppError::Internal(e.to_string())
+    })?;
 
     tracing::info!("Created import job {} with {} paths", job_id, sources.len());
 
@@ -1083,14 +1142,16 @@ pub async fn import_chrome_bookmarks(
     use crate::services::bookmark_parser;
     use crate::services::import::ImportJobRunner;
 
-    tracing::info!("Received request to import Chrome bookmarks from: {}", req.path);
+    tracing::info!(
+        "Received request to import Chrome bookmarks from: {}",
+        req.path
+    );
 
     // Parse bookmarks
-    let urls = bookmark_parser::parse_chrome_bookmarks(&req.path)
-        .map_err(|e| {
-            tracing::error!("Failed to parse bookmarks: {}", e);
-            AppError::Internal(e.to_string())
-        })?;
+    let urls = bookmark_parser::parse_chrome_bookmarks(&req.path).map_err(|e| {
+        tracing::error!("Failed to parse bookmarks: {}", e);
+        AppError::Internal(e.to_string())
+    })?;
 
     if urls.is_empty() {
         return Ok(Json(AddKnowledgeBasePathsResponse {
@@ -1106,16 +1167,15 @@ pub async fn import_chrome_bookmarks(
     let mut skipped = 0;
 
     for url in urls {
-        let doc_count: (i64,) = sqlx::query_as(
-            "SELECT COUNT(*) FROM documents WHERE source_path = $1"
-        )
-        .bind(&url)
-        .fetch_one(&state.pool)
-        .await
-        .map_err(|e| {
-            tracing::error!("Failed to check URL existence: {}", e);
-            AppError::Internal(e.to_string())
-        })?;
+        let doc_count: (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM documents WHERE source_path = $1")
+                .bind(&url)
+                .fetch_one(&state.pool)
+                .await
+                .map_err(|e| {
+                    tracing::error!("Failed to check URL existence: {}", e);
+                    AppError::Internal(e.to_string())
+                })?;
 
         if doc_count.0 > 0 {
             skipped += 1;
@@ -1134,8 +1194,7 @@ pub async fn import_chrome_bookmarks(
     }
 
     // Create import job
-    let settings = crate::config::Settings::new()
-        .map_err(|e| AppError::Internal(e.to_string()))?;
+    let settings = crate::config::Settings::new().map_err(|e| AppError::Internal(e.to_string()))?;
     let runner = ImportJobRunner::new(settings.import.clone());
 
     let job_id = runner
@@ -1157,16 +1216,16 @@ pub async fn import_chrome_bookmarks(
         })?;
 
     // Queue job
-    state
-        .import_job_queue
-        .send(job_id)
-        .await
-        .map_err(|e| {
-            tracing::error!("Failed to queue import job: {}", e);
-            AppError::Internal(e.to_string())
-        })?;
+    state.import_job_queue.send(job_id).await.map_err(|e| {
+        tracing::error!("Failed to queue import job: {}", e);
+        AppError::Internal(e.to_string())
+    })?;
 
-    tracing::info!("Created import job {} with {} bookmarks", job_id, filtered_urls.len());
+    tracing::info!(
+        "Created import job {} with {} bookmarks",
+        job_id,
+        filtered_urls.len()
+    );
 
     Ok(Json(AddKnowledgeBasePathsResponse {
         job_id,
@@ -1184,8 +1243,7 @@ pub async fn import_chrome_bookmarks(
 pub async fn trigger_scan(
     State(state): State<AppState>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let settings = crate::config::Settings::new()
-        .map_err(|e| AppError::Internal(e.to_string()))?;
+    let settings = crate::config::Settings::new().map_err(|e| AppError::Internal(e.to_string()))?;
 
     let scanner = crate::services::startup_scan::StartupScanner::new(
         state.pool.clone(),
@@ -1219,9 +1277,7 @@ pub enum AppError {
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
         match self {
-            AppError::NotFound => {
-                (StatusCode::NOT_FOUND, "Not found").into_response()
-            }
+            AppError::NotFound => (StatusCode::NOT_FOUND, "Not found").into_response(),
             AppError::Internal(msg) => {
                 tracing::error!("Internal error: {}", msg);
                 (StatusCode::INTERNAL_SERVER_ERROR, msg).into_response()

@@ -2,11 +2,14 @@
 //!
 //! Handles communication with embedding APIs using async-openai.
 
-use anyhow::{Context, Result};
-use async_openai::{Client, config::{OpenAIConfig, Config as OpenAIConfigTrait}};
-use async_openai::types::CreateEmbeddingRequestArgs;
-use std::sync::Arc;
 use crate::config::EmbeddingConfig;
+use anyhow::{Context, Result};
+use async_openai::types::CreateEmbeddingRequestArgs;
+use async_openai::{
+    config::{Config as OpenAIConfigTrait, OpenAIConfig},
+    Client,
+};
+use std::sync::Arc;
 
 /// Local embedding model wrapper using OpenAI-compatible APIs (LM Studio, OpenRouter, etc.)
 #[derive(Clone)]
@@ -20,16 +23,19 @@ impl Embedder {
     pub fn new(config: &EmbeddingConfig) -> Result<Self> {
         // Configure OpenAI client for OpenAI-compatible APIs
         // Note: async-openai adds /v1 automatically to the base URL
-        let mut openai_config = OpenAIConfig::new()
-            .with_api_base(&config.api_url);
+        let mut openai_config = OpenAIConfig::new().with_api_base(&config.api_url);
 
         // Only set API key if it's not empty
         if !config.api_key.is_empty() {
             openai_config = openai_config.with_api_key(&config.api_key);
         }
 
-        tracing::info!("Initializing Embedder - Base URL: {}, Full API Base: {}, Model: {}",
-            config.api_url, openai_config.api_base(), config.model);
+        tracing::info!(
+            "Initializing Embedder - Base URL: {}, Full API Base: {}, Model: {}",
+            config.api_url,
+            openai_config.api_base(),
+            config.model
+        );
 
         let client = Client::with_config(openai_config);
 
@@ -54,12 +60,14 @@ impl Embedder {
         // If this fails, just warn but don't fail hard
         match self.client.models().list().await {
             Ok(models) => {
-                let model_ids: Vec<String> = models.data.iter()
-                    .map(|m| m.id.clone())
-                    .collect();
+                let model_ids: Vec<String> = models.data.iter().map(|m| m.id.clone()).collect();
 
                 if !model_ids.is_empty() && !model_ids.contains(&self.model_name) {
-                    tracing::warn!("Model '{}' not found in available models: {:?}", self.model_name, model_ids);
+                    tracing::warn!(
+                        "Model '{}' not found in available models: {:?}",
+                        self.model_name,
+                        model_ids
+                    );
                 } else if !model_ids.is_empty() {
                     tracing::info!("Verified model '{}' is available", self.model_name);
                 }
@@ -88,11 +96,16 @@ impl Embedder {
                 let error_msg = e.to_string();
                 // If model is unloaded or doesn't exist, wait and retry
                 if error_msg.contains("Model unloaded") || error_msg.contains("does not exist") {
-                    tracing::warn!("Embedding model needs loading, waiting 5 seconds and retrying...");
+                    tracing::warn!(
+                        "Embedding model needs loading, waiting 5 seconds and retrying..."
+                    );
                     tokio::time::sleep(std::time::Duration::from_secs(5)).await;
 
                     // Retry
-                    self.client.embeddings().create(request).await
+                    self.client
+                        .embeddings()
+                        .create(request)
+                        .await
                         .context("Embedding API error (after retry)")?
                 } else {
                     return Err(e.into());
@@ -101,7 +114,8 @@ impl Embedder {
         };
 
         // Extract the embedding vector
-        let embedding = response.data
+        let embedding = response
+            .data
             .first()
             .context("No embedding data in response")?
             .embedding
@@ -122,7 +136,8 @@ impl Embedder {
         let response = self.client.embeddings().create(request).await?;
 
         // Extract all embeddings and maintain order
-        let embeddings: Vec<Vec<f32>> = response.data
+        let embeddings: Vec<Vec<f32>> = response
+            .data
             .into_iter()
             .map(|item| item.embedding)
             .collect();

@@ -5,15 +5,15 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use std::path::Path;
 use uuid::Uuid;
-use sha2::{Sha256, Digest};
 
 use crate::domain::models::LLMConfig;
 use crate::infra::llm::call_llm_with_timeout;
 use crate::services::enrichment_utils::{
-    parse_keywords_from_string, clean_json_response, extract_author_from_entities,
-    merge_entities, batch_text,
+    batch_text, clean_json_response, extract_author_from_entities, merge_entities,
+    parse_keywords_from_string,
 };
 
 /// Structured metadata response from LLM
@@ -187,14 +187,14 @@ impl Enricher {
     /// Enrich a file by extracting content and generating metadata
     pub async fn enrich_file(&self, path: &Path) -> Result<(String, DocumentMetadata)> {
         // Read file for hashing (idempotent deduplication)
-        let file_bytes = tokio::fs::read(path).await
-            .context("Failed to read file")?;
+        let file_bytes = tokio::fs::read(path).await.context("Failed to read file")?;
         let file_hash = compute_sha256_hash(&file_bytes);
 
         // Extract text content from file and get full Docling response
         let (content, docling_response) = self.extract_file_content(path).await?;
 
-        let title_hint = path.file_stem()
+        let title_hint = path
+            .file_stem()
             .and_then(|s| s.to_str())
             .unwrap_or("Unknown");
 
@@ -255,12 +255,18 @@ impl Enricher {
     /// Returns (content, full_docling_response)
     pub async fn extract_file_content(&self, path: &Path) -> Result<(String, Value)> {
         let docling_url = &self.docling_url;
-        let file_name = path.file_name()
+        let file_name = path
+            .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("document");
 
         // 1. Pre-flight check for PDFs
-        if path.extension().and_then(|e| e.to_str()).map(|e| e.to_lowercase()) == Some("pdf".to_string()) {
+        if path
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.to_lowercase())
+            == Some("pdf".to_string())
+        {
             match check_pdf_integrity(path) {
                 Ok(true) => {
                     tracing::debug!("✅ PDF pre-flight check passed for {}", file_name);
@@ -270,15 +276,18 @@ impl Enricher {
                     return self.extract_file_content_fallback(path).await;
                 }
                 Err(e) => {
-                    tracing::warn!("⚠️ PDF pre-flight check error for {}: {}. Using fallback parser.", file_name, e);
+                    tracing::warn!(
+                        "⚠️ PDF pre-flight check error for {}: {}. Using fallback parser.",
+                        file_name,
+                        e
+                    );
                     return self.extract_file_content_fallback(path).await;
                 }
             }
         }
 
         // Read file bytes
-        let file_bytes = tokio::fs::read(path).await
-            .context("Failed to read file")?;
+        let file_bytes = tokio::fs::read(path).await.context("Failed to read file")?;
 
         // Docling doesn't support .txt, treat as .md
         // Also sanitize filename to avoid issues with special characters
@@ -304,9 +313,15 @@ impl Enricher {
             "timeout": 60.0,  // Reduced from 120s
             "concurrency": 4, // Reduced from 8 to prevent Docling container overload
             "prompt": "Describe this image in a few sentences."
-        }).to_string();
+        })
+        .to_string();
 
-        tracing::info!("🚀 Sending request to Docling at {} for file: {} (timeout: {}s)", docling_url, file_name, request_timeout_secs);
+        tracing::info!(
+            "🚀 Sending request to Docling at {} for file: {} (timeout: {}s)",
+            docling_url,
+            file_name,
+            request_timeout_secs
+        );
         tracing::debug!("VLM API configuration: {}", picture_description_api);
 
         // Create multipart form with VLM options
@@ -318,14 +333,13 @@ impl Enricher {
         let form = reqwest::multipart::Form::new()
             .part(
                 "files",
-                reqwest::multipart::Part::bytes(file_bytes)
-                    .file_name(file_name_to_send)
+                reqwest::multipart::Part::bytes(file_bytes).file_name(file_name_to_send),
             )
             .text("do_picture_description", "true")
             .text("do_picture_classification", "true")
             .text("picture_description_api", picture_description_api)
             .text("document_timeout", docling_doc_timeout.to_string())
-            .text("wait_for_completion", "true");  // Force sync mode - blocks until done
+            .text("wait_for_completion", "true"); // Force sync mode - blocks until done
 
         // Use synchronous endpoint - much faster than async polling
         // This will block until Docling completes processing (up to request_timeout_secs)
@@ -338,7 +352,10 @@ impl Enricher {
         let response = match response_result {
             Ok(resp) => resp,
             Err(e) => {
-                tracing::error!("❌ Failed to connect to Docling service: {}. Using fallback parser.", e);
+                tracing::error!(
+                    "❌ Failed to connect to Docling service: {}. Using fallback parser.",
+                    e
+                );
                 return self.extract_file_content_fallback(path).await;
             }
         };
@@ -346,16 +363,26 @@ impl Enricher {
         if !response.status().is_success() {
             let status = response.status();
             let error_text = response.text().await.unwrap_or_default();
-            tracing::error!("❌ Docling service error ({}): {}. Using fallback parser.", status, error_text);
+            tracing::error!(
+                "❌ Docling service error ({}): {}. Using fallback parser.",
+                status,
+                error_text
+            );
             return self.extract_file_content_fallback(path).await;
         }
 
-        tracing::info!("✅ Docling response received successfully for {}", file_name);
+        tracing::info!(
+            "✅ Docling response received successfully for {}",
+            file_name
+        );
 
         let json: Value = match response.json().await {
             Ok(j) => j,
             Err(e) => {
-                tracing::error!("❌ Failed to parse Docling response: {}. Using fallback parser.", e);
+                tracing::error!(
+                    "❌ Failed to parse Docling response: {}. Using fallback parser.",
+                    e
+                );
                 return self.extract_file_content_fallback(path).await;
             }
         };
@@ -368,7 +395,10 @@ impl Enricher {
         match content {
             Some(c) if !c.trim().is_empty() => Ok((c, json)),
             _ => {
-                tracing::warn!("⚠️ Docling returned empty content for {}. Using fallback parser.", file_name);
+                tracing::warn!(
+                    "⚠️ Docling returned empty content for {}. Using fallback parser.",
+                    file_name
+                );
                 self.extract_file_content_fallback(path).await
             }
         }
@@ -376,19 +406,26 @@ impl Enricher {
 
     /// Fallback content extraction using lopdf for PDFs or basic text reading
     async fn extract_file_content_fallback(&self, path: &Path) -> Result<(String, Value)> {
-        let extension = path.extension().and_then(|e| e.to_str()).map(|e| e.to_lowercase());
-        
+        let extension = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.to_lowercase());
+
         let content = if extension == Some("pdf".to_string()) {
             tracing::info!("🔄 Using lopdf fallback for {:?}", path);
             extract_text_from_pdf(path)?
         } else {
             tracing::info!("🔄 Using basic text fallback for {:?}", path);
-            tokio::fs::read_to_string(path).await
+            tokio::fs::read_to_string(path)
+                .await
                 .context("Failed to read file as text")?
         };
 
         if content.trim().is_empty() {
-            anyhow::bail!("Fallback extraction returned empty content for file: {:?}", path);
+            anyhow::bail!(
+                "Fallback extraction returned empty content for file: {:?}",
+                path
+            );
         }
 
         // Create a minimal Docling-like response structure so downstream code doesn't break
@@ -408,7 +445,10 @@ impl Enricher {
     /// Extract text content from a URL
     pub async fn extract_url_content(&self, url: &str) -> Result<String> {
         let client = reqwest::Client::new();
-        let response = client.get(url).send().await
+        let response = client
+            .get(url)
+            .send()
+            .await
             .context("Failed to fetch URL")?;
 
         if !response.status().is_success() {
@@ -430,7 +470,8 @@ impl Enricher {
         docling_response: &Value,
         title_hint: &str,
     ) {
-        if let Some(doc_metadata) = docling_response.get("document")
+        if let Some(doc_metadata) = docling_response
+            .get("document")
             .and_then(|d| d.get("metadata"))
         {
             metadata.docling_metadata = Some(doc_metadata.clone());
@@ -438,14 +479,23 @@ impl Enricher {
             // Extract and apply metadata fields using pure functions
             extract_string_field(doc_metadata, &["title"], &mut metadata.title, title_hint);
             extract_string_field(doc_metadata, &["author"], &mut metadata.author, "");
-            extract_string_field(doc_metadata, &["created", "creation_date", "CreationDate"],
-                               &mut metadata.creation_date, "");
-            extract_string_field(doc_metadata, &["modified", "modification_date", "ModDate"],
-                               &mut metadata.modification_date, "");
+            extract_string_field(
+                doc_metadata,
+                &["created", "creation_date", "CreationDate"],
+                &mut metadata.creation_date,
+                "",
+            );
+            extract_string_field(
+                doc_metadata,
+                &["modified", "modification_date", "ModDate"],
+                &mut metadata.modification_date,
+                "",
+            );
         }
 
         // Extract page count
-        metadata.page_count = docling_response.get("document")
+        metadata.page_count = docling_response
+            .get("document")
             .and_then(|d| d.get("pages"))
             .and_then(|p| p.as_array())
             .map(|pages| pages.len() as i32);
@@ -457,12 +507,17 @@ impl Enricher {
     }
 
     /// Extract metadata from content using LLM with SLIM NER format
-    pub async fn extract_metadata(&self, content: &str, title_hint: &str) -> Result<DocumentMetadata> {
+    pub async fn extract_metadata(
+        &self,
+        content: &str,
+        title_hint: &str,
+    ) -> Result<DocumentMetadata> {
         // Split content into sentences for better processing
         let sentences = split_into_sentences(content);
 
         // Use first ~3000 chars (approx 750 tokens) for richer context
-        let context = sentences.iter()
+        let context = sentences
+            .iter()
             .scan(0, |len, sentence| {
                 *len += sentence.len();
                 if *len <= 3000 {
@@ -519,19 +574,27 @@ impl Enricher {
 
     /// Generate a concise summary of the content
     async fn generate_summary(&self, content: &str, title: &str) -> Result<String> {
-        let system = "You are a document summarization assistant. Create concise, informative summaries.";
+        let system =
+            "You are a document summarization assistant. Create concise, informative summaries.";
         let user = format!(
             "Summarize this document in 2-3 sentences. Focus on the main topic and key points.\n\nTitle: {}\n\nContent:\n{}",
             title, content
         );
 
-        let response = call_llm_with_timeout(&self.llm_config, system, &user, Some(150), Some(0.3), self.llm_timeout_seconds)
-            .await
-            .map_err(|e| {
-                eprintln!("❌ LLM Error in generate_summary: {:?}", e);
-                e
-            })
-            .context("Failed to generate summary")?;
+        let response = call_llm_with_timeout(
+            &self.llm_config,
+            system,
+            &user,
+            Some(150),
+            Some(0.3),
+            self.llm_timeout_seconds,
+        )
+        .await
+        .map_err(|e| {
+            eprintln!("❌ LLM Error in generate_summary: {:?}", e);
+            e
+        })
+        .context("Failed to generate summary")?;
 
         Ok(response.trim().to_string())
     }
@@ -546,9 +609,16 @@ impl Enricher {
             content_preview
         );
 
-        let response = call_llm_with_timeout(&self.llm_config, system, &user, Some(100), Some(0.2), self.llm_timeout_seconds)
-            .await
-            .context("Failed to extract keywords")?;
+        let response = call_llm_with_timeout(
+            &self.llm_config,
+            system,
+            &user,
+            Some(100),
+            Some(0.2),
+            self.llm_timeout_seconds,
+        )
+        .await
+        .context("Failed to extract keywords")?;
 
         // Parse comma-separated keywords using pure function
         let keywords = parse_keywords_from_string(&response);
@@ -569,7 +639,8 @@ impl Enricher {
         let (element_types, sections) = extract_document_structure(docling_response);
         let table_count = count_array_items(docling_response, &["tables"]) as i32;
         let figure_count = count_array_items(docling_response, &["pictures"])
-            .max(count_array_items(docling_response, &["document", "images"])) as i32;
+            .max(count_array_items(docling_response, &["document", "images"]))
+            as i32;
         let has_formulas = has_formulas_in_document(docling_response);
 
         metadata.document_structure = Some(DocumentStructure {
@@ -602,7 +673,7 @@ impl Enricher {
                 if let Ok(modified) = file_metadata.modified() {
                     if let Ok(duration) = modified.duration_since(std::time::UNIX_EPOCH) {
                         let datetime = chrono::DateTime::<chrono::Utc>::from(
-                            std::time::SystemTime::UNIX_EPOCH + duration
+                            std::time::SystemTime::UNIX_EPOCH + duration,
                         );
                         metadata.modification_date = Some(datetime.to_rfc3339());
                     }
@@ -614,7 +685,7 @@ impl Enricher {
                     if let Ok(created) = file_metadata.created() {
                         if let Ok(duration) = created.duration_since(std::time::UNIX_EPOCH) {
                             let datetime = chrono::DateTime::<chrono::Utc>::from(
-                                std::time::SystemTime::UNIX_EPOCH + duration
+                                std::time::SystemTime::UNIX_EPOCH + duration,
                             );
                             metadata.creation_date = Some(datetime.to_rfc3339());
                         }
@@ -667,16 +738,23 @@ Respond ONLY with a JSON object in this exact format (no markdown, no explanatio
             concepts
         );
 
-        match call_llm_with_timeout(&self.llm_config, system, &user, Some(150), Some(0.3), self.llm_timeout_seconds).await {
-            Ok(response) => {
-                match self.parse_category_classification(&response) {
-                    Ok(category) => Ok(Some(category)),
-                    Err(e) => {
-                        tracing::warn!("Failed to parse category classification: {}", e);
-                        Ok(None)
-                    }
+        match call_llm_with_timeout(
+            &self.llm_config,
+            system,
+            &user,
+            Some(150),
+            Some(0.3),
+            self.llm_timeout_seconds,
+        )
+        .await
+        {
+            Ok(response) => match self.parse_category_classification(&response) {
+                Ok(category) => Ok(Some(category)),
+                Err(e) => {
+                    tracing::warn!("Failed to parse category classification: {}", e);
+                    Ok(None)
                 }
-            }
+            },
             Err(e) => {
                 tracing::warn!("Failed to classify document category: {}", e);
                 Ok(None)
@@ -758,8 +836,8 @@ Text: {}"#,
                         &ner_config,
                         &system,
                         &user,
-                        Some(500),  // Max tokens for entity extraction
-                        Some(0.2),  // Temperature
+                        Some(500), // Max tokens for entity extraction
+                        Some(0.2), // Temperature
                         timeout,
                     )
                     .await
@@ -787,8 +865,8 @@ Text: {}"#,
         let cleaned = clean_json_response(response);
 
         // Try to parse as JSON
-        let parsed: Value = serde_json::from_str(&cleaned)
-            .context("Failed to parse entity extraction JSON")?;
+        let parsed: Value =
+            serde_json::from_str(&cleaned).context("Failed to parse entity extraction JSON")?;
 
         // Ensure all expected fields exist with empty arrays using pure function
         use crate::services::enrichment_utils::ensure_entity_fields;
@@ -840,12 +918,7 @@ fn split_into_sentences(text: &str) -> Vec<String> {
 // Pure helper functions for metadata extraction (functional programming patterns)
 
 /// Extract a string field from JSON using a prioritized list of keys
-fn extract_string_field(
-    source: &Value,
-    keys: &[&str],
-    target: &mut Option<String>,
-    hint: &str,
-) {
+fn extract_string_field(source: &Value, keys: &[&str], target: &mut Option<String>, hint: &str) {
     if target.is_none() || target.as_deref() == Some(hint) {
         for key in keys {
             if let Some(value) = source.get(key).and_then(|v| v.as_str()) {
@@ -879,9 +952,18 @@ fn extract_document_origin(docling_response: &Value) -> Option<DocumentOrigin> {
         .get("document")
         .and_then(|d| d.get("metadata"))
         .map(|origin| DocumentOrigin {
-            mimetype: origin.get("mimetype").and_then(|v| v.as_str()).map(String::from),
-            filename: origin.get("filename").and_then(|v| v.as_str()).map(String::from),
-            binary_hash: origin.get("binary_hash").and_then(|v| v.as_str()).map(String::from),
+            mimetype: origin
+                .get("mimetype")
+                .and_then(|v| v.as_str())
+                .map(String::from),
+            filename: origin
+                .get("filename")
+                .and_then(|v| v.as_str())
+                .map(String::from),
+            binary_hash: origin
+                .get("binary_hash")
+                .and_then(|v| v.as_str())
+                .map(String::from),
             uri: origin.get("uri").and_then(|v| v.as_str()).map(String::from),
         })
 }
@@ -942,10 +1024,22 @@ fn has_formulas_in_document(docling_response: &Value) -> bool {
 }
 
 /// Calculate extraction quality metrics using pure function
-fn calculate_extraction_quality(has_content: bool, has_structure: bool, has_metadata: bool) -> ExtractionQuality {
+fn calculate_extraction_quality(
+    has_content: bool,
+    has_structure: bool,
+    has_metadata: bool,
+) -> ExtractionQuality {
     ExtractionQuality {
-        confidence_score: if has_content && has_structure { 0.9 } else { 0.6 },
-        completeness: if has_content && has_structure && has_metadata { 0.95 } else { 0.7 },
+        confidence_score: if has_content && has_structure {
+            0.9
+        } else {
+            0.6
+        },
+        completeness: if has_content && has_structure && has_metadata {
+            0.95
+        } else {
+            0.7
+        },
         layout_preserved: has_structure,
     }
 }
@@ -962,35 +1056,42 @@ fn sanitize_filename_for_docling(filename: &str) -> String {
 
     // Replace problematic Unicode characters that cause Docling failures
     // Em-dash variants
-    sanitized = sanitized.replace('\u{2014}', "-");  // U+2014 em-dash
-    sanitized = sanitized.replace('\u{2013}', "-");  // U+2013 en-dash
-    sanitized = sanitized.replace('\u{2015}', "-");  // U+2015 horizontal bar
+    sanitized = sanitized.replace('\u{2014}', "-"); // U+2014 em-dash
+    sanitized = sanitized.replace('\u{2013}', "-"); // U+2013 en-dash
+    sanitized = sanitized.replace('\u{2015}', "-"); // U+2015 horizontal bar
 
     // Quotes
     sanitized = sanitized.replace('\u{201C}', "\""); // U+201C left double quote
     sanitized = sanitized.replace('\u{201D}', "\""); // U+201D right double quote
-    sanitized = sanitized.replace('\u{2018}', "'");  // U+2018 left single quote
-    sanitized = sanitized.replace('\u{2019}', "'");  // U+2019 right single quote
+    sanitized = sanitized.replace('\u{2018}', "'"); // U+2018 left single quote
+    sanitized = sanitized.replace('\u{2019}', "'"); // U+2019 right single quote
 
     // Other problematic characters
-    sanitized = sanitized.replace('|', "_");  // Pipe character
-    sanitized = sanitized.replace(':', "_");  // Colon (problematic on some systems)
-    sanitized = sanitized.replace('?', "");   // Question mark
-    sanitized = sanitized.replace('*', "");   // Asterisk
-    sanitized = sanitized.replace('<', "");   // Less than
-    sanitized = sanitized.replace('>', "");   // Greater than
+    sanitized = sanitized.replace('|', "_"); // Pipe character
+    sanitized = sanitized.replace(':', "_"); // Colon (problematic on some systems)
+    sanitized = sanitized.replace('?', ""); // Question mark
+    sanitized = sanitized.replace('*', ""); // Asterisk
+    sanitized = sanitized.replace('<', ""); // Less than
+    sanitized = sanitized.replace('>', ""); // Greater than
 
     // Additional problematic characters from various encodings
-    sanitized = sanitized.replace('\u{00A0}', " ");  // Non-breaking space
-    sanitized = sanitized.replace('\u{202F}', " ");  // Narrow no-break space
+    sanitized = sanitized.replace('\u{00A0}', " "); // Non-breaking space
+    sanitized = sanitized.replace('\u{202F}', " "); // Narrow no-break space
 
     // Aggressive ASCII conversion for maximum compatibility
     // Also replace spaces with underscores for better compatibility
-    sanitized = sanitized.chars()
-        .map(|c| if c.is_ascii() { 
-            if c == ' ' { '_' } else { c }
-        } else { 
-            '_' 
+    sanitized = sanitized
+        .chars()
+        .map(|c| {
+            if c.is_ascii() {
+                if c == ' ' {
+                    '_'
+                } else {
+                    c
+                }
+            } else {
+                '_'
+            }
         })
         .collect();
 
@@ -1000,7 +1101,10 @@ fn sanitize_filename_for_docling(filename: &str) -> String {
         sanitized = sanitized.chars().skip(1).collect();
     }
     while sanitized.ends_with('.') || sanitized.ends_with('_') {
-        sanitized = sanitized.chars().take(sanitized.chars().count() - 1).collect();
+        sanitized = sanitized
+            .chars()
+            .take(sanitized.chars().count() - 1)
+            .collect();
     }
 
     // Ensure filename is not empty after sanitization
@@ -1016,14 +1120,14 @@ fn sanitize_filename_for_docling(filename: &str) -> String {
 fn check_pdf_integrity(path: &Path) -> Result<bool> {
     #[cfg(feature = "ssr")]
     {
-        let doc = lopdf::Document::load(path)
-            .context("Failed to load PDF with lopdf")?;
-        
+        let doc = lopdf::Document::load(path).context("Failed to load PDF with lopdf")?;
+
         for page_id in doc.get_pages().values() {
-            let page = doc.get_object(*page_id)
+            let page = doc
+                .get_object(*page_id)
                 .and_then(|obj| obj.as_dict())
                 .context("Failed to get page dictionary")?;
-            
+
             let has_dimensions = page.has(b"MediaBox") || page.has(b"CropBox");
             if !has_dimensions {
                 return Ok(false);
@@ -1041,19 +1145,18 @@ fn check_pdf_integrity(path: &Path) -> Result<bool> {
 fn extract_text_from_pdf(path: &Path) -> Result<String> {
     #[cfg(feature = "ssr")]
     {
-        let doc = lopdf::Document::load(path)
-            .context("Failed to load PDF with lopdf")?;
-        
+        let doc = lopdf::Document::load(path).context("Failed to load PDF with lopdf")?;
+
         let mut content = String::new();
         let pages = doc.get_pages();
-        
+
         for page_num in 1..=pages.len() {
             if let Ok(text) = doc.extract_text(&[page_num as u32]) {
                 content.push_str(&text);
                 content.push('\n');
             }
         }
-        
+
         Ok(content)
     }
     #[cfg(not(feature = "ssr"))]

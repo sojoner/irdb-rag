@@ -1,8 +1,7 @@
-use leptos::*;
+use crate::domain::dtos::AggregationStats;
+use crate::domain::models::Category;
 use leptos::prelude::*;
 use uuid::Uuid;
-use crate::domain::models::Category;
-use crate::domain::dtos::AggregationStats;
 
 #[server(GetAggregationStats, "/api")]
 pub async fn get_aggregation_stats() -> Result<AggregationStats, ServerFnError> {
@@ -12,7 +11,8 @@ pub async fn get_aggregation_stats() -> Result<AggregationStats, ServerFnError> 
     let state = use_context::<AppState>()
         .ok_or_else(|| ServerFnError::new("AppState not found in context"))?;
 
-    let stats = db::get_aggregation_stats(&state.pool).await
+    let stats = db::get_aggregation_stats(&state.pool)
+        .await
         .map_err(|e| ServerFnError::new(format!("Failed to get aggregation stats: {}", e)))?;
 
     Ok(stats)
@@ -26,7 +26,8 @@ pub async fn get_categories() -> Result<Vec<Category>, ServerFnError> {
     let state = use_context::<AppState>()
         .ok_or_else(|| ServerFnError::new("AppState not found in context"))?;
 
-    let categories = db::list_categories(&state.pool).await
+    let categories = db::list_categories(&state.pool)
+        .await
         .map_err(|e| ServerFnError::new(format!("Failed to get categories: {}", e)))?;
 
     Ok(categories)
@@ -60,11 +61,9 @@ pub fn FacetedFilters(
 
     // Load aggregation stats using server function
     let stats_resource = Resource::new_blocking(|| (), |_| async { get_aggregation_stats().await });
-    let stats = move || {
-        match stats_resource.get() {
-            Some(Ok(data)) => Some(data),
-            _ => None,
-        }
+    let stats = move || match stats_resource.get() {
+        Some(Ok(data)) => Some(data),
+        _ => None,
     };
 
     let toggle_keyword = move |keyword: String| {

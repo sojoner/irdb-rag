@@ -1,7 +1,7 @@
-use leptos::*;
+use crate::domain::dtos::{ImportItemResponse, ImportJobResponse};
 use leptos::prelude::*;
+use leptos::*;
 use uuid::Uuid;
-use crate::domain::dtos::{ImportJobResponse, ImportItemResponse};
 
 #[server]
 pub async fn create_import_job(
@@ -9,8 +9,10 @@ pub async fn create_import_job(
     source_path: String,
 ) -> Result<ImportJobResponse, ServerFnError> {
     use crate::api::state::AppState;
-    use crate::services::import::{ImportJobRunner, ImportConfig, ImportItemManager, discover_files};
     use crate::infra::db;
+    use crate::services::import::{
+        discover_files, ImportConfig, ImportItemManager, ImportJobRunner,
+    };
 
     let state = use_context::<AppState>()
         .ok_or_else(|| ServerFnError::new("AppState not found in context"))?;
@@ -19,11 +21,10 @@ pub async fn create_import_job(
     let runner = ImportJobRunner::new(config);
 
     // Create the job
-    let job_id = runner.create_job(
-        &state.pool,
-        &source_type,
-        Some(&source_path),
-    ).await.map_err(|e| ServerFnError::new(e.to_string()))?;
+    let job_id = runner
+        .create_job(&state.pool, &source_type, Some(&source_path))
+        .await
+        .map_err(|e| ServerFnError::new(e.to_string()))?;
 
     // Discover files based on source type
     let files = if source_type == "folder" {
@@ -31,7 +32,8 @@ pub async fn create_import_job(
             .map_err(|e| ServerFnError::new(format!("Failed to discover files: {}", e)))?
     } else if source_type == "url" {
         // For URLs, split by newline and trim
-        source_path.lines()
+        source_path
+            .lines()
             .map(|line| line.trim())
             .filter(|line| !line.is_empty())
             .map(std::path::PathBuf::from)
@@ -42,24 +44,27 @@ pub async fn create_import_job(
 
     // Create import items for discovered files
     let item_manager = ImportItemManager;
-    let file_paths: Vec<&str> = files.iter()
-        .filter_map(|p| p.to_str())
-        .collect();
+    let file_paths: Vec<&str> = files.iter().filter_map(|p| p.to_str()).collect();
 
     if !file_paths.is_empty() {
-        item_manager.create_items(&state.pool, job_id, file_paths)
+        item_manager
+            .create_items(&state.pool, job_id, file_paths)
             .await
             .map_err(|e| ServerFnError::new(format!("Failed to create import items: {}", e)))?;
     }
 
     // Update total_items count
     let total_items = files.len() as i32;
-    runner.update_job_progress(&state.pool, job_id, total_items, 0, 0, 0)
+    runner
+        .update_job_progress(&state.pool, job_id, total_items, 0, 0, 0)
         .await
         .map_err(|e| ServerFnError::new(e.to_string()))?;
 
     // Enqueue job for immediate processing
-    state.import_job_queue.send(job_id).await
+    state
+        .import_job_queue
+        .send(job_id)
+        .await
         .map_err(|e| ServerFnError::new(format!("Failed to enqueue import job: {}", e)))?;
     tracing::info!("Enqueued import job {} for processing", job_id);
 
@@ -99,8 +104,9 @@ pub async fn list_import_jobs(
         .await
         .map_err(|e| ServerFnError::new(e.to_string()))?;
 
-    let job_responses: Vec<ImportJobResponse> = jobs.into_iter().map(|job| {
-        ImportJobResponse {
+    let job_responses: Vec<ImportJobResponse> = jobs
+        .into_iter()
+        .map(|job| ImportJobResponse {
             id: job.id,
             status: job.status,
             source_type: job.source_type,
@@ -113,16 +119,14 @@ pub async fn list_import_jobs(
             started_at: job.started_at.map(|t| t.to_rfc3339()),
             completed_at: job.completed_at.map(|t| t.to_rfc3339()),
             error_message: job.error_message,
-        }
-    }).collect();
+        })
+        .collect();
 
     Ok((job_responses, total))
 }
 
 #[server]
-pub async fn get_import_job_details(
-    job_id: Uuid,
-) -> Result<ImportJobResponse, ServerFnError> {
+pub async fn get_import_job_details(job_id: Uuid) -> Result<ImportJobResponse, ServerFnError> {
     use crate::api::state::AppState;
     use crate::infra::db;
 
@@ -165,8 +169,9 @@ pub async fn get_import_job_items(
         .await
         .map_err(|e| ServerFnError::new(e.to_string()))?;
 
-    let item_responses: Vec<ImportItemResponse> = items.into_iter().map(|item| {
-        ImportItemResponse {
+    let item_responses: Vec<ImportItemResponse> = items
+        .into_iter()
+        .map(|item| ImportItemResponse {
             id: item.id,
             job_id: item.job_id,
             source_path: item.source_path,
@@ -175,19 +180,17 @@ pub async fn get_import_job_items(
             error_message: item.error_message,
             error_type: item.error_type,
             document_id: item.document_id,
-        }
-    }).collect();
+        })
+        .collect();
 
     Ok((item_responses, total))
 }
 
 #[server]
-pub async fn resume_import_job(
-    job_id: Uuid,
-) -> Result<ImportJobResponse, ServerFnError> {
+pub async fn resume_import_job(job_id: Uuid) -> Result<ImportJobResponse, ServerFnError> {
     use crate::api::state::AppState;
     use crate::infra::db;
-    use crate::services::import::{ImportJobRunner, ImportConfig};
+    use crate::services::import::{ImportConfig, ImportJobRunner};
 
     let state = use_context::<AppState>()
         .ok_or_else(|| ServerFnError::new("AppState not found in context"))?;
@@ -196,7 +199,8 @@ pub async fn resume_import_job(
     let runner = ImportJobRunner::new(config);
 
     // Update job status to running
-    runner.update_job_status(&state.pool, job_id, "running")
+    runner
+        .update_job_status(&state.pool, job_id, "running")
         .await
         .map_err(|e| ServerFnError::new(e.to_string()))?;
 
@@ -221,12 +225,9 @@ pub async fn resume_import_job(
 }
 
 #[server]
-pub async fn delete_import_job(
-    job_id: Uuid,
-    delete_documents: bool,
-) -> Result<(), ServerFnError> {
+pub async fn delete_import_job(job_id: Uuid, delete_documents: bool) -> Result<(), ServerFnError> {
     use crate::api::state::AppState;
-    use crate::services::import::{ImportJobRunner, ImportConfig};
+    use crate::services::import::{ImportConfig, ImportJobRunner};
 
     let state = use_context::<AppState>()
         .ok_or_else(|| ServerFnError::new("AppState not found in context"))?;
@@ -234,7 +235,8 @@ pub async fn delete_import_job(
     let config = ImportConfig::from_env();
     let runner = ImportJobRunner::new(config);
 
-    runner.delete_job(&state.pool, job_id, delete_documents)
+    runner
+        .delete_job(&state.pool, job_id, delete_documents)
         .await
         .map_err(|e| ServerFnError::new(e.to_string()))?;
 
@@ -249,8 +251,8 @@ pub async fn delete_import_item(
     use crate::api::state::AppState;
     use crate::infra::db;
 
-    let state = use_context::<AppState>()
-        .ok_or_else(|| ServerFnError::new("AppState not found"))?;
+    let state =
+        use_context::<AppState>().ok_or_else(|| ServerFnError::new("AppState not found"))?;
 
     // If delete_document is true, first get the document ID and delete it
     if delete_document {
@@ -354,19 +356,20 @@ pub fn ImportPage() -> impl IntoView {
     });
 
     let jobs_list = move || {
-        list_action.value().get()
+        list_action
+            .value()
+            .get()
             .and_then(|res| res.ok())
             .map(|(jobs, _total)| jobs)
             .unwrap_or_default()
     };
 
-    let job_details = move || {
-        details_action.value().get()
-            .and_then(|res| res.ok())
-    };
+    let job_details = move || details_action.value().get().and_then(|res| res.ok());
 
     let job_items = move || {
-        items_action.value().get()
+        items_action
+            .value()
+            .get()
             .and_then(|res| res.ok())
             .map(|(items, _total)| items)
             .unwrap_or_default()
@@ -414,7 +417,10 @@ pub fn ImportPage() -> impl IntoView {
     let handle_bulk_delete = move |delete_documents: bool| {
         let jobs_to_delete: Vec<Uuid> = selected_jobs.get().into_iter().collect();
         for job_id in jobs_to_delete {
-            delete_action.dispatch(DeleteImportJob { job_id, delete_documents });
+            delete_action.dispatch(DeleteImportJob {
+                job_id,
+                delete_documents,
+            });
         }
         set_selected_jobs.set(std::collections::HashSet::new());
         set_show_bulk_delete_modal.set(false);

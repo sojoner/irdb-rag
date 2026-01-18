@@ -1,7 +1,6 @@
-use leptos::*;
+use crate::domain::models::Category;
 use leptos::prelude::*;
 use uuid::Uuid;
-use crate::domain::models::Category;
 
 #[component]
 pub fn Filters(
@@ -29,7 +28,7 @@ pub fn Filters(
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
                 </svg>
             </button>
-            
+
             <Show when=move || show_filters.get()>
                 <div class="px-4 pb-4 border-t border-gray-100 bg-gray-50/50">
                     <div class="grid grid-cols-2 gap-4 mt-3">

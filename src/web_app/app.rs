@@ -1,11 +1,11 @@
+use crate::web_app::pages::import::ImportPage;
+use crate::web_app::pages::search::SearchPage;
 use leptos::prelude::*;
 use leptos_meta::*;
 use leptos_router::{
     components::{Route, Router, Routes},
     StaticSegment,
 };
-use crate::web_app::pages::search::SearchPage;
-use crate::web_app::pages::import::ImportPage;
 
 #[component]
 pub fn App() -> impl IntoView {

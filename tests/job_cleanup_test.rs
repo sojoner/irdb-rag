@@ -19,7 +19,11 @@ fn init_tracing() {
 async fn test_job_cleanup_deletes_old_jobs() {
     init_tracing();
     if std::env::var("RUN_ENV").is_err() {
-        if std::env::var("RUN_ENV").is_err() { if std::env::var("RUN_ENV").is_err() { std::env::set_var("RUN_ENV", "test"); } }
+        if std::env::var("RUN_ENV").is_err() {
+            if std::env::var("RUN_ENV").is_err() {
+                std::env::set_var("RUN_ENV", "test");
+            }
+        }
     }
 
     let settings = Settings::new().expect("Failed to load settings");
@@ -41,7 +45,7 @@ async fn test_job_cleanup_deletes_old_jobs() {
 
     sqlx::query(
         "INSERT INTO import_jobs (id, source_type, source_path, status, created_at, completed_at)
-         VALUES ($1, 'test', '/cleanup_test/old', 'completed', $2, $2)"
+         VALUES ($1, 'test', '/cleanup_test/old', 'completed', $2, $2)",
     )
     .bind(old_job_id)
     .bind(old_timestamp)
@@ -55,7 +59,7 @@ async fn test_job_cleanup_deletes_old_jobs() {
 
     sqlx::query(
         "INSERT INTO import_jobs (id, source_type, source_path, status, created_at, completed_at)
-         VALUES ($1, 'test', '/cleanup_test/recent', 'completed', $2, $2)"
+         VALUES ($1, 'test', '/cleanup_test/recent', 'completed', $2, $2)",
     )
     .bind(recent_job_id)
     .bind(recent_timestamp)
@@ -63,11 +67,15 @@ async fn test_job_cleanup_deletes_old_jobs() {
     .await
     .expect("Failed to create recent test job");
 
-    tracing::info!("Created test jobs: old={}, recent={}", old_job_id, recent_job_id);
+    tracing::info!(
+        "Created test jobs: old={}, recent={}",
+        old_job_id,
+        recent_job_id
+    );
 
     // Verify both jobs exist
     let count_before: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM import_jobs WHERE source_path LIKE '/cleanup_test/%'"
+        "SELECT COUNT(*) FROM import_jobs WHERE source_path LIKE '/cleanup_test/%'",
     )
     .fetch_one(&pool)
     .await
@@ -85,30 +93,28 @@ async fn test_job_cleanup_deletes_old_jobs() {
     tracing::info!("Cleanup deleted {} jobs in {:?}", deleted, cleanup_duration);
 
     // Verify old job was deleted
-    let old_exists: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM import_jobs WHERE id = $1)"
-    )
-    .bind(old_job_id)
-    .fetch_one(&pool)
-    .await
-    .unwrap();
+    let old_exists: bool =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM import_jobs WHERE id = $1)")
+            .bind(old_job_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
 
     assert!(!old_exists, "Old job should be deleted");
 
     // Verify recent job still exists
-    let recent_exists: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM import_jobs WHERE id = $1)"
-    )
-    .bind(recent_job_id)
-    .fetch_one(&pool)
-    .await
-    .unwrap();
+    let recent_exists: bool =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM import_jobs WHERE id = $1)")
+            .bind(recent_job_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
 
     assert!(recent_exists, "Recent job should still exist");
 
     // Verify total count
     let count_after: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM import_jobs WHERE source_path LIKE '/cleanup_test/%'"
+        "SELECT COUNT(*) FROM import_jobs WHERE source_path LIKE '/cleanup_test/%'",
     )
     .fetch_one(&pool)
     .await
@@ -133,7 +139,11 @@ async fn test_job_cleanup_deletes_old_jobs() {
 async fn test_job_cleanup_respects_retention_period() {
     init_tracing();
     if std::env::var("RUN_ENV").is_err() {
-        if std::env::var("RUN_ENV").is_err() { if std::env::var("RUN_ENV").is_err() { std::env::set_var("RUN_ENV", "test"); } }
+        if std::env::var("RUN_ENV").is_err() {
+            if std::env::var("RUN_ENV").is_err() {
+                std::env::set_var("RUN_ENV", "test");
+            }
+        }
     }
 
     let settings = Settings::new().expect("Failed to load settings");
@@ -154,7 +164,7 @@ async fn test_job_cleanup_respects_retention_period() {
     let test_cases = vec![
         (retention_hours + 1, true),  // Should be deleted
         (retention_hours - 1, false), // Should be kept
-        (1, false),                    // Should be kept
+        (1, false),                   // Should be kept
     ];
 
     let mut job_ids = Vec::new();
@@ -175,7 +185,11 @@ async fn test_job_cleanup_respects_retention_period() {
         .unwrap();
 
         job_ids.push((job_id, should_delete));
-        tracing::info!("Created job {} hours old (should_delete={})", hours_ago, should_delete);
+        tracing::info!(
+            "Created job {} hours old (should_delete={})",
+            hours_ago,
+            should_delete
+        );
     }
 
     // Run cleanup
@@ -183,17 +197,20 @@ async fn test_job_cleanup_respects_retention_period() {
         .await
         .expect("Cleanup failed");
 
-    tracing::info!("Deleted {} jobs (retention period: {} hours)", deleted, retention_hours);
+    tracing::info!(
+        "Deleted {} jobs (retention period: {} hours)",
+        deleted,
+        retention_hours
+    );
 
     // Verify each job
     for (job_id, should_delete) in job_ids {
-        let exists: bool = sqlx::query_scalar(
-            "SELECT EXISTS(SELECT 1 FROM import_jobs WHERE id = $1)"
-        )
-        .bind(job_id)
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+        let exists: bool =
+            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM import_jobs WHERE id = $1)")
+                .bind(job_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
 
         if *should_delete {
             assert!(!exists, "Job {} should have been deleted", job_id);
@@ -213,7 +230,11 @@ async fn test_job_cleanup_respects_retention_period() {
 async fn test_job_cleanup_performance_with_many_jobs() {
     init_tracing();
     if std::env::var("RUN_ENV").is_err() {
-        if std::env::var("RUN_ENV").is_err() { if std::env::var("RUN_ENV").is_err() { std::env::set_var("RUN_ENV", "test"); } }
+        if std::env::var("RUN_ENV").is_err() {
+            if std::env::var("RUN_ENV").is_err() {
+                std::env::set_var("RUN_ENV", "test");
+            }
+        }
     }
 
     let settings = Settings::new().expect("Failed to load settings");
@@ -235,7 +256,11 @@ async fn test_job_cleanup_performance_with_many_jobs() {
     let old_timestamp = chrono::Utc::now() - chrono::Duration::hours(48); // Use 48h to be safe
     let recent_timestamp = chrono::Utc::now() - chrono::Duration::hours(1);
 
-    tracing::info!("Creating {} old jobs and {} recent jobs", old_count, recent_count);
+    tracing::info!(
+        "Creating {} old jobs and {} recent jobs",
+        old_count,
+        recent_count
+    );
     let setup_start = std::time::Instant::now();
 
     for i in 0..old_count {
@@ -272,13 +297,16 @@ async fn test_job_cleanup_performance_with_many_jobs() {
         "SELECT COUNT(*) FROM import_jobs 
          WHERE (completed_at < $1 OR (completed_at IS NULL AND created_at < $1))
          AND status IN ('completed', 'completed_with_errors', 'failed', 'cancelled')
-         AND source_path LIKE '/perf_cleanup_test/%'"
+         AND source_path LIKE '/perf_cleanup_test/%'",
     )
-    .bind(chrono::Utc::now() - chrono::Duration::hours(settings.import.cleanup.retention_hours as i64))
+    .bind(
+        chrono::Utc::now()
+            - chrono::Duration::hours(settings.import.cleanup.retention_hours as i64),
+    )
     .fetch_one(&pool)
     .await
     .unwrap();
-    
+
     tracing::info!("Eligible jobs for cleanup: {}", eligible_count);
 
     // Run cleanup
@@ -292,19 +320,33 @@ async fn test_job_cleanup_performance_with_many_jobs() {
     tracing::info!("Total jobs created: {}", old_count + recent_count);
     tracing::info!("Jobs deleted: {}", deleted);
     tracing::info!("Cleanup time: {:?}", cleanup_duration);
-    tracing::info!("Throughput: {:.2} jobs/sec", deleted as f64 / cleanup_duration.as_secs_f64());
+    tracing::info!(
+        "Throughput: {:.2} jobs/sec",
+        deleted as f64 / cleanup_duration.as_secs_f64()
+    );
 
     // Verify counts
     let remaining: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM import_jobs WHERE source_path LIKE '/perf_cleanup_test/%'"
+        "SELECT COUNT(*) FROM import_jobs WHERE source_path LIKE '/perf_cleanup_test/%'",
     )
     .fetch_one(&pool)
     .await
     .unwrap();
 
-    assert!(remaining >= recent_count as i64, "Should have at least {} recent jobs remaining", recent_count);
-    assert!(deleted > 0, "Should have deleted some old jobs (deleted: {})", deleted);
-    assert!(cleanup_duration.as_secs() < 10, "Cleanup should complete within 10 seconds");
+    assert!(
+        remaining >= recent_count as i64,
+        "Should have at least {} recent jobs remaining",
+        recent_count
+    );
+    assert!(
+        deleted > 0,
+        "Should have deleted some old jobs (deleted: {})",
+        deleted
+    );
+    assert!(
+        cleanup_duration.as_secs() < 10,
+        "Cleanup should complete within 10 seconds"
+    );
 
     // Cleanup
     sqlx::query("DELETE FROM import_jobs WHERE source_path LIKE '/perf_cleanup_test/%'")
@@ -317,7 +359,11 @@ async fn test_job_cleanup_performance_with_many_jobs() {
 async fn test_job_cleanup_background_task() {
     init_tracing();
     if std::env::var("RUN_ENV").is_err() {
-        if std::env::var("RUN_ENV").is_err() { if std::env::var("RUN_ENV").is_err() { std::env::set_var("RUN_ENV", "test"); } }
+        if std::env::var("RUN_ENV").is_err() {
+            if std::env::var("RUN_ENV").is_err() {
+                std::env::set_var("RUN_ENV", "test");
+            }
+        }
     }
 
     let settings = Settings::new().expect("Failed to load settings");
@@ -339,7 +385,7 @@ async fn test_job_cleanup_background_task() {
 
     sqlx::query(
         "INSERT INTO import_jobs (id, source_type, source_path, status, created_at, completed_at)
-         VALUES ($1, 'test', '/background_cleanup_test/old', 'completed', $2, $2)"
+         VALUES ($1, 'test', '/background_cleanup_test/old', 'completed', $2, $2)",
     )
     .bind(old_job_id)
     .bind(old_timestamp)
@@ -353,9 +399,7 @@ async fn test_job_cleanup_background_task() {
 
     let cleanup_pool = pool.clone();
     let task = job_cleanup::JobCleanupTask::new(cleanup_pool, test_config);
-    let cleanup_handle = tokio::spawn(async move {
-        task.run().await
-    });
+    let cleanup_handle = tokio::spawn(async move { task.run().await });
 
     tracing::info!("Background cleanup task started, waiting for job to be deleted...");
 
@@ -366,13 +410,12 @@ async fn test_job_cleanup_background_task() {
     while attempts < 10 {
         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
 
-        let exists: bool = sqlx::query_scalar(
-            "SELECT EXISTS(SELECT 1 FROM import_jobs WHERE id = $1)"
-        )
-        .bind(old_job_id)
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+        let exists: bool =
+            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM import_jobs WHERE id = $1)")
+                .bind(old_job_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
 
         if !exists {
             job_deleted = true;
@@ -386,7 +429,10 @@ async fn test_job_cleanup_background_task() {
     // Cancel the background task
     cleanup_handle.abort();
 
-    assert!(job_deleted, "Background cleanup task should have deleted the old job");
+    assert!(
+        job_deleted,
+        "Background cleanup task should have deleted the old job"
+    );
 
     // Cleanup
     sqlx::query("DELETE FROM import_jobs WHERE source_path LIKE '/background_cleanup_test/%'")

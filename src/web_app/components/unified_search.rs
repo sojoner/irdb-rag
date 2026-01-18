@@ -1,6 +1,5 @@
-use leptos::*;
-use leptos::prelude::*;
 use crate::domain::models::SearchResult;
+use leptos::prelude::*;
 
 #[component]
 pub fn UnifiedSearch(
@@ -29,7 +28,7 @@ pub fn UnifiedSearch(
     let trigger_search = move |ai_mode: bool| {
         let q = query.get();
         leptos::logging::log!("Triggering search. Query: '{}', AI Mode: {}", q, ai_mode);
-        
+
         if q.trim().is_empty() {
             set_results.set(vec![]);
             return;

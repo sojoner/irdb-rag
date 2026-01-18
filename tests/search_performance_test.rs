@@ -14,8 +14,9 @@ use uuid::Uuid;
 
 // Test database connection setup
 async fn get_test_pool() -> PgPool {
-    let database_url = std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://rag_user:rag_password@localhost:15432/rag_chat".to_string());
+    let database_url = std::env::var("DATABASE_URL").unwrap_or_else(|_| {
+        "postgres://rag_user:rag_password@localhost:15432/rag_chat".to_string()
+    });
 
     PgPool::connect(&database_url)
         .await
@@ -39,7 +40,7 @@ where
 // ============================================
 
 #[tokio::test]
-#[ignore]  // Run with: cargo test --test search_performance_test -- --ignored
+#[ignore] // Run with: cargo test --test search_performance_test -- --ignored
 async fn test_database_statistics() {
     let pool = get_test_pool().await;
 
@@ -62,12 +63,10 @@ async fn test_database_statistics() {
     .await;
 
     let (indexed_count, _): (i64, _) = measure_query("Counting indexed documents", async {
-        sqlx::query_scalar::<_, i64>(
-            "SELECT COUNT(*) FROM documents WHERE status = 'indexed'",
-        )
-        .fetch_one(&pool)
-        .await
-        .unwrap_or(0)
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM documents WHERE status = 'indexed'")
+            .fetch_one(&pool)
+            .await
+            .unwrap_or(0)
     })
     .await;
 
@@ -86,7 +85,7 @@ async fn test_database_statistics() {
 // ============================================
 
 #[tokio::test]
-#[ignore]  // Run with: cargo test --test search_performance_test bm25 -- --ignored
+#[ignore] // Run with: cargo test --test search_performance_test bm25 -- --ignored
 async fn test_bm25_search_basic() {
     let pool = get_test_pool().await;
 
@@ -95,21 +94,18 @@ async fn test_bm25_search_basic() {
     let query = "programming";
     println!("  🔍 Query: '{}'", query);
 
-    let (results, elapsed): (Vec<(Uuid, String, f64)>, _) = measure_query(
-        "BM25 search",
-        async {
-            sqlx::query_as::<_, (Uuid, String, f64)>(
-                "SELECT d.id, d.title, paradedb.score(d.id) as score
+    let (results, elapsed): (Vec<(Uuid, String, f64)>, _) = measure_query("BM25 search", async {
+        sqlx::query_as::<_, (Uuid, String, f64)>(
+            "SELECT d.id, d.title, paradedb.score(d.id) as score
                  FROM documents d
                  WHERE d.id @@@ $1
                  LIMIT 10",
-            )
-            .bind(query)
-            .fetch_all(&pool)
-            .await
-            .unwrap_or_default()
-        },
-    )
+        )
+        .bind(query)
+        .fetch_all(&pool)
+        .await
+        .unwrap_or_default()
+    })
     .await;
 
     println!("  📈 Results found: {}", results.len());
@@ -136,9 +132,8 @@ async fn test_bm25_search_empty_query() {
     let query = "";
     println!("  🔍 Query: '{}'", query);
 
-    let (results, elapsed): (Vec<String>, _) = measure_query(
-        "BM25 search with empty query",
-        async {
+    let (results, elapsed): (Vec<String>, _) =
+        measure_query("BM25 search with empty query", async {
             sqlx::query_scalar::<_, String>(
                 "SELECT d.title
                  FROM documents d
@@ -149,9 +144,8 @@ async fn test_bm25_search_empty_query() {
             .fetch_all(&pool)
             .await
             .unwrap_or_default()
-        },
-    )
-    .await;
+        })
+        .await;
 
     println!("  📈 Results found: {}", results.len());
     println!("  ✅ Empty query handled gracefully");
@@ -168,23 +162,20 @@ async fn test_keywords_facet_performance() {
 
     println!("\n=== Keywords Facet - Array Performance ===");
 
-    let (facets, elapsed): (Vec<(String, i64)>, _) = measure_query(
-        "Keywords aggregation",
-        async {
-            sqlx::query_as::<_, (String, i64)>(
-                "SELECT keyword, COUNT(*) as count
+    let (facets, elapsed): (Vec<(String, i64)>, _) = measure_query("Keywords aggregation", async {
+        sqlx::query_as::<_, (String, i64)>(
+            "SELECT keyword, COUNT(*) as count
                  FROM documents,
                       LATERAL UNNEST(keywords) as keyword
                  WHERE keywords IS NOT NULL
                  GROUP BY keyword
                  ORDER BY count DESC
                  LIMIT 20",
-            )
-            .fetch_all(&pool)
-            .await
-            .unwrap_or_default()
-        },
-    )
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap_or_default()
+    })
     .await;
 
     println!("  📊 Keywords found: {}", facets.len());
@@ -208,23 +199,20 @@ async fn test_entities_facet_persons_performance() {
 
     println!("\n=== Entity Facet - Persons (JSONB GIN) ===");
 
-    let (facets, elapsed): (Vec<(String, i64)>, _) = measure_query(
-        "Persons aggregation",
-        async {
-            sqlx::query_as::<_, (String, i64)>(
-                "SELECT jsonb_array_elements(entities->'persons')::text as person,
+    let (facets, elapsed): (Vec<(String, i64)>, _) = measure_query("Persons aggregation", async {
+        sqlx::query_as::<_, (String, i64)>(
+            "SELECT jsonb_array_elements(entities->'persons')::text as person,
                         COUNT(*) as count
                  FROM documents
                  WHERE entities->'persons' IS NOT NULL
                  GROUP BY person
                  ORDER BY count DESC
                  LIMIT 20",
-            )
-            .fetch_all(&pool)
-            .await
-            .unwrap_or_default()
-        },
-    )
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap_or_default()
+    })
     .await;
 
     println!("  👥 Persons found: {}", facets.len());
@@ -247,9 +235,8 @@ async fn test_entities_facet_organizations_performance() {
 
     println!("\n=== Entity Facet - Organizations (JSONB GIN) ===");
 
-    let (facets, elapsed): (Vec<(String, i64)>, _) = measure_query(
-        "Organizations aggregation",
-        async {
+    let (facets, elapsed): (Vec<(String, i64)>, _) =
+        measure_query("Organizations aggregation", async {
             sqlx::query_as::<_, (String, i64)>(
                 "SELECT jsonb_array_elements(entities->'organizations')::text as org,
                         COUNT(*) as count
@@ -262,9 +249,8 @@ async fn test_entities_facet_organizations_performance() {
             .fetch_all(&pool)
             .await
             .unwrap_or_default()
-        },
-    )
-    .await;
+        })
+        .await;
 
     println!("  🏢 Organizations found: {}", facets.len());
     for (i, (org, count)) in facets.iter().enumerate().take(5) {
@@ -286,23 +272,20 @@ async fn test_entities_facet_concepts_performance() {
 
     println!("\n=== Entity Facet - Concepts (JSONB GIN) ===");
 
-    let (facets, elapsed): (Vec<(String, i64)>, _) = measure_query(
-        "Concepts aggregation",
-        async {
-            sqlx::query_as::<_, (String, i64)>(
-                "SELECT jsonb_array_elements(entities->'concepts')::text as concept,
+    let (facets, elapsed): (Vec<(String, i64)>, _) = measure_query("Concepts aggregation", async {
+        sqlx::query_as::<_, (String, i64)>(
+            "SELECT jsonb_array_elements(entities->'concepts')::text as concept,
                         COUNT(*) as count
                  FROM documents
                  WHERE entities->'concepts' IS NOT NULL
                  GROUP BY concept
                  ORDER BY count DESC
                  LIMIT 20",
-            )
-            .fetch_all(&pool)
-            .await
-            .unwrap_or_default()
-        },
-    )
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap_or_default()
+    })
     .await;
 
     println!("  💡 Concepts found: {}", facets.len());
@@ -325,9 +308,8 @@ async fn test_locations_facet_performance() {
 
     println!("\n=== Locations Facet - Array Performance ===");
 
-    let (facets, elapsed): (Vec<(String, i64)>, _) = measure_query(
-        "Locations aggregation",
-        async {
+    let (facets, elapsed): (Vec<(String, i64)>, _) =
+        measure_query("Locations aggregation", async {
             sqlx::query_as::<_, (String, i64)>(
                 "SELECT location, COUNT(*) as count
                  FROM documents,
@@ -340,9 +322,8 @@ async fn test_locations_facet_performance() {
             .fetch_all(&pool)
             .await
             .unwrap_or_default()
-        },
-    )
-    .await;
+        })
+        .await;
 
     println!("  📍 Locations found: {}", facets.len());
     for (i, (location, count)) in facets.iter().enumerate().take(5) {
@@ -368,20 +349,17 @@ async fn test_date_range_filter_performance() {
 
     println!("\n=== Date Range Filter Performance ===");
 
-    let (results, elapsed): (Vec<(Uuid, String)>, _) = measure_query(
-        "Date range filter",
-        async {
-            sqlx::query_as::<_, (Uuid, String)>(
-                "SELECT d.id, d.title
+    let (results, elapsed): (Vec<(Uuid, String)>, _) = measure_query("Date range filter", async {
+        sqlx::query_as::<_, (Uuid, String)>(
+            "SELECT d.id, d.title
                  FROM documents d
                  WHERE d.created_at BETWEEN NOW() - INTERVAL '365 days' AND NOW()
                  LIMIT 20",
-            )
-            .fetch_all(&pool)
-            .await
-            .unwrap_or_default()
-        },
-    )
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap_or_default()
+    })
     .await;
 
     println!("  📅 Documents in range: {}", results.len());
@@ -400,22 +378,19 @@ async fn test_combined_filters_performance() {
 
     println!("\n=== Combined Filters Performance ===");
 
-    let (results, elapsed): (Vec<(Uuid, String)>, _) = measure_query(
-        "Combined filters",
-        async {
-            sqlx::query_as::<_, (Uuid, String)>(
-                "SELECT DISTINCT d.id, d.title
+    let (results, elapsed): (Vec<(Uuid, String)>, _) = measure_query("Combined filters", async {
+        sqlx::query_as::<_, (Uuid, String)>(
+            "SELECT DISTINCT d.id, d.title
                  FROM documents d
                  WHERE d.created_at BETWEEN NOW() - INTERVAL '365 days' AND NOW()
                    AND d.keywords && ARRAY['important', 'urgent']
                    AND d.entities->'persons' IS NOT NULL
                  LIMIT 20",
-            )
-            .fetch_all(&pool)
-            .await
-            .unwrap_or_default()
-        },
-    )
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap_or_default()
+    })
     .await;
 
     println!("  🔗 Combined filter results: {}", results.len());
@@ -446,9 +421,8 @@ async fn test_document_chunk_retrieval_performance() {
         .flatten();
 
     if let Some(doc_id) = doc_id {
-        let (chunks, elapsed): (Vec<(i32, String)>, _) = measure_query(
-            "Chunk retrieval by document",
-            async {
+        let (chunks, elapsed): (Vec<(i32, String)>, _) =
+            measure_query("Chunk retrieval by document", async {
                 sqlx::query_as::<_, (i32, String)>(
                     "SELECT chunk_index, content
                      FROM document_chunks
@@ -459,9 +433,8 @@ async fn test_document_chunk_retrieval_performance() {
                 .fetch_all(&pool)
                 .await
                 .unwrap_or_default()
-            },
-        )
-        .await;
+            })
+            .await;
 
         println!("  📦 Chunks retrieved: {}", chunks.len());
         assert!(
@@ -482,20 +455,17 @@ async fn test_batch_chunk_retrieval_performance() {
 
     println!("\n=== Batch Chunk Retrieval Performance ===");
 
-    let (chunks, elapsed): (Vec<(Uuid, i32)>, _) = measure_query(
-        "Batch chunk retrieval",
-        async {
-            sqlx::query_as::<_, (Uuid, i32)>(
-                "SELECT dc.document_id, dc.chunk_index
+    let (chunks, elapsed): (Vec<(Uuid, i32)>, _) = measure_query("Batch chunk retrieval", async {
+        sqlx::query_as::<_, (Uuid, i32)>(
+            "SELECT dc.document_id, dc.chunk_index
                  FROM document_chunks dc
                  WHERE dc.document_id IN (SELECT id FROM documents LIMIT 10)
                  ORDER BY dc.document_id, dc.chunk_index",
-            )
-            .fetch_all(&pool)
-            .await
-            .unwrap_or_default()
-        },
-    )
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap_or_default()
+    })
     .await;
 
     println!("  📦 Total chunks retrieved: {}", chunks.len());
@@ -518,11 +488,9 @@ async fn test_index_usage_statistics() {
 
     println!("\n=== Index Usage Statistics ===");
 
-    let (stats, _): (Vec<(String, i64, i64, i64)>, _) = measure_query(
-        "Index statistics",
-        async {
-            sqlx::query_as::<_, (String, i64, i64, i64)>(
-                "SELECT
+    let (stats, _): (Vec<(String, i64, i64, i64)>, _) = measure_query("Index statistics", async {
+        sqlx::query_as::<_, (String, i64, i64, i64)>(
+            "SELECT
                     relname as index_name,
                     idx_scan as scans,
                     idx_tup_read as tuples_read,
@@ -530,12 +498,11 @@ async fn test_index_usage_statistics() {
                  FROM pg_stat_user_indexes
                  WHERE schemaname = 'public'
                  ORDER BY idx_scan DESC",
-            )
-            .fetch_all(&pool)
-            .await
-            .unwrap_or_default()
-        },
-    )
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap_or_default()
+    })
     .await;
 
     println!("  📊 Index usage (top 10):");
@@ -562,9 +529,8 @@ async fn test_bm25_index_health() {
 
     println!("\n=== BM25 Index Health Check ===");
 
-    let (health, _): (Vec<(Option<i64>, Option<i64>, Option<i64>)>, _) = measure_query(
-        "Index health",
-        async {
+    let (health, _): (Vec<(Option<i64>, Option<i64>, Option<i64>)>, _) =
+        measure_query("Index health", async {
             sqlx::query_as::<_, (Option<i64>, Option<i64>, Option<i64>)>(
                 "SELECT num_docs, num_deleted, mutable
                  FROM paradedb.index_info('documents_search_idx')",
@@ -572,9 +538,8 @@ async fn test_bm25_index_health() {
             .fetch_all(&pool)
             .await
             .unwrap_or_default()
-        },
-    )
-    .await;
+        })
+        .await;
 
     if let Some((num_docs, num_deleted, mutable)) = health.first() {
         println!("  📊 BM25 Index Status:");
@@ -611,93 +576,78 @@ async fn test_comprehensive_search_performance() {
 
     // Test 1: BM25 search
     println!("\n[1/5] Testing BM25 Search...");
-    let (bm25_results, bm25_time): (Vec<_>, _) = measure_query(
-        "BM25 search",
-        async {
-            sqlx::query_as::<_, (Uuid, f64)>(
-                "SELECT d.id, paradedb.score(d.id)
+    let (bm25_results, bm25_time): (Vec<_>, _) = measure_query("BM25 search", async {
+        sqlx::query_as::<_, (Uuid, f64)>(
+            "SELECT d.id, paradedb.score(d.id)
                  FROM documents d
                  WHERE d.id @@@ 'test'
                  LIMIT 10",
-            )
-            .fetch_all(&pool)
-            .await
-            .unwrap_or_default()
-        },
-    )
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap_or_default()
+    })
     .await;
     println!("  Results: {}", bm25_results.len());
 
     // Test 2: Keywords facet
     println!("\n[2/5] Testing Keywords Facet...");
-    let (keywords, keywords_time): (Vec<_>, _) = measure_query(
-        "Keywords facet",
-        async {
-            sqlx::query_as::<_, (String, i64)>(
-                "SELECT keyword, COUNT(*) FROM documents,
+    let (keywords, keywords_time): (Vec<_>, _) = measure_query("Keywords facet", async {
+        sqlx::query_as::<_, (String, i64)>(
+            "SELECT keyword, COUNT(*) FROM documents,
                         LATERAL UNNEST(keywords) as keyword
                  WHERE keywords IS NOT NULL
                  GROUP BY keyword LIMIT 20",
-            )
-            .fetch_all(&pool)
-            .await
-            .unwrap_or_default()
-        },
-    )
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap_or_default()
+    })
     .await;
     println!("  Keywords: {}", keywords.len());
 
     // Test 3: Entity facets
     println!("\n[3/5] Testing Entity Facets...");
-    let (persons, persons_time): (Vec<_>, _) = measure_query(
-        "Persons facet",
-        async {
-            sqlx::query_as::<_, (String, i64)>(
-                "SELECT jsonb_array_elements(entities->'persons')::text,
+    let (persons, persons_time): (Vec<_>, _) = measure_query("Persons facet", async {
+        sqlx::query_as::<_, (String, i64)>(
+            "SELECT jsonb_array_elements(entities->'persons')::text,
                         COUNT(*)
                  FROM documents
                  WHERE entities->'persons' IS NOT NULL
                  GROUP BY jsonb_array_elements(entities->'persons')
                  LIMIT 20",
-            )
-            .fetch_all(&pool)
-            .await
-            .unwrap_or_default()
-        },
-    )
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap_or_default()
+    })
     .await;
     println!("  Persons: {}", persons.len());
 
     // Test 4: Date range
     println!("\n[4/5] Testing Date Range Filter...");
-    let (recent, date_time): (Vec<_>, _) = measure_query(
-        "Date range filter",
-        async {
-            sqlx::query_as::<_, (Uuid,)>(
-                "SELECT id FROM documents
+    let (recent, date_time): (Vec<_>, _) = measure_query("Date range filter", async {
+        sqlx::query_as::<_, (Uuid,)>(
+            "SELECT id FROM documents
                  WHERE created_at > NOW() - INTERVAL '30 days'",
-            )
-            .fetch_all(&pool)
-            .await
-            .unwrap_or_default()
-        },
-    )
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap_or_default()
+    })
     .await;
     println!("  Recent documents: {}", recent.len());
 
     // Test 5: Chunk retrieval
     println!("\n[5/5] Testing Chunk Retrieval...");
-    let (chunks, chunk_time): (Vec<_>, _) = measure_query(
-        "Chunk retrieval",
-        async {
-            sqlx::query_as::<_, (Uuid, i32)>(
-                "SELECT document_id, chunk_index FROM document_chunks LIMIT 100",
-            )
-            .fetch_all(&pool)
-            .await
-            .unwrap_or_default()
-        },
-    )
+    let (chunks, chunk_time): (Vec<_>, _) = measure_query("Chunk retrieval", async {
+        sqlx::query_as::<_, (Uuid, i32)>(
+            "SELECT document_id, chunk_index FROM document_chunks LIMIT 100",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap_or_default()
+    })
     .await;
     println!("  Chunks: {}", chunks.len());
 
@@ -717,7 +667,10 @@ async fn test_comprehensive_search_performance() {
 
     // Assertions
     // Note: First query may be slower due to compilation/warmup
-    assert!(bm25_time < 2000, "BM25 should be < 2000ms (includes warmup)");
+    assert!(
+        bm25_time < 2000,
+        "BM25 should be < 2000ms (includes warmup)"
+    );
     assert!(keywords_time < 1000, "Keywords facet should be < 1000ms");
     assert!(persons_time < 1000, "Persons facet should be < 1000ms");
     assert!(date_time < 500, "Date filter should be < 500ms");

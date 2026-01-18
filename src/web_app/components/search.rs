@@ -1,7 +1,7 @@
-use leptos::prelude::*;
 use crate::domain::models::SearchResult;
-use uuid::Uuid;
+use leptos::prelude::*;
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
@@ -31,9 +31,7 @@ pub struct SearchRequest {
 }
 
 #[server(SearchDocuments, "/api")]
-pub async fn search_documents(
-    request: SearchRequest,
-) -> Result<Vec<SearchResult>, ServerFnError> {
+pub async fn search_documents(request: SearchRequest) -> Result<Vec<SearchResult>, ServerFnError> {
     let SearchRequest {
         query,
         limit,
@@ -47,9 +45,9 @@ pub async fn search_documents(
         organizations,
         authors,
     } = request;
+    use crate::api::state::AppState;
     use crate::infra::db;
     use crate::infra::db_utils;
-    use crate::api::state::AppState;
     use tracing::info;
 
     info!("========== SEARCH DEBUG START ==========");
@@ -82,13 +80,13 @@ pub async fn search_documents(
     // Check if we have any search criteria
     let trimmed_query = query.trim();
     let has_query = !trimmed_query.is_empty() && trimmed_query != "*";
-    let has_filters = category_id.is_some() ||
-        (keywords.as_ref().map_or(false, |k| !k.is_empty())) ||
-        (concepts.as_ref().map_or(false, |c| !c.is_empty())) ||
-        (locations.as_ref().map_or(false, |l| !l.is_empty())) ||
-        (persons.as_ref().map_or(false, |p| !p.is_empty())) ||
-        (organizations.as_ref().map_or(false, |o| !o.is_empty())) ||
-        (authors.as_ref().map_or(false, |a| !a.is_empty()));
+    let has_filters = category_id.is_some()
+        || (keywords.as_ref().map_or(false, |k| !k.is_empty()))
+        || (concepts.as_ref().map_or(false, |c| !c.is_empty()))
+        || (locations.as_ref().map_or(false, |l| !l.is_empty()))
+        || (persons.as_ref().map_or(false, |p| !p.is_empty()))
+        || (organizations.as_ref().map_or(false, |o| !o.is_empty()))
+        || (authors.as_ref().map_or(false, |a| !a.is_empty()));
 
     if !has_query && !has_filters {
         info!("SERVER: No query or filters provided, returning empty results");
@@ -115,7 +113,10 @@ pub async fn search_documents(
     // If we have a query, use hybrid search; otherwise use filter-only search
     if has_query {
         // Generate embedding for the query
-        let embedding = state.embedder.embed(&query).await
+        let embedding = state
+            .embedder
+            .embed(&query)
+            .await
             .map_err(|e| ServerFnError::new(format!("Embedding failed: {}", e)))?;
 
         let results = db::hybrid_search(
@@ -127,19 +128,22 @@ pub async fn search_documents(
             bm25_weight,
             vector_weight,
             state.reranker.as_ref(),
-        ).await.map_err(|e| ServerFnError::new(format!("Search failed: {}", e)))?;
+        )
+        .await
+        .map_err(|e| ServerFnError::new(format!("Search failed: {}", e)))?;
 
         info!("SERVER: Hybrid search returned {} results", results.len());
         Ok(results)
     } else {
         // Filter-only search (no text/semantic search, pure filter matching)
-        let results = db::filter_only_search(
-            &state.pool,
-            &db_filters,
-            limit,
-        ).await.map_err(|e| ServerFnError::new(format!("Search failed: {}", e)))?;
+        let results = db::filter_only_search(&state.pool, &db_filters, limit)
+            .await
+            .map_err(|e| ServerFnError::new(format!("Search failed: {}", e)))?;
 
-        info!("SERVER: Filter-only search returned {} results", results.len());
+        info!(
+            "SERVER: Filter-only search returned {} results",
+            results.len()
+        );
         Ok(results)
     }
 }
@@ -148,8 +152,8 @@ pub async fn search_documents(
 pub async fn delete_document(doc_id: Uuid) -> Result<u64, ServerFnError> {
     use crate::api::state::AppState;
 
-    let state = use_context::<AppState>()
-        .ok_or_else(|| ServerFnError::new("AppState not found"))?;
+    let state =
+        use_context::<AppState>().ok_or_else(|| ServerFnError::new("AppState not found"))?;
 
     let rows = crate::infra::db::delete_document(&state.pool, doc_id)
         .await
@@ -162,8 +166,8 @@ pub async fn delete_document(doc_id: Uuid) -> Result<u64, ServerFnError> {
 pub async fn delete_documents_batch(doc_ids: Vec<Uuid>) -> Result<u64, ServerFnError> {
     use crate::api::state::AppState;
 
-    let state = use_context::<AppState>()
-        .ok_or_else(|| ServerFnError::new("AppState not found"))?;
+    let state =
+        use_context::<AppState>().ok_or_else(|| ServerFnError::new("AppState not found"))?;
 
     let rows = crate::infra::db::delete_documents_batch(&state.pool, &doc_ids)
         .await

@@ -62,9 +62,14 @@ async fn test_enrich_file_integration() {
     if let Err(e) = &result {
         eprintln!("Enrichment error: {:?}", e);
     }
-    assert!(result.is_ok(), "Enrichment should succeed: {:?}", result.as_ref().err());
+    assert!(
+        result.is_ok(),
+        "Enrichment should succeed: {:?}",
+        result.as_ref().err()
+    );
 
-    let (content, metadata): (String, rag_chat::services::enrichment::DocumentMetadata) = result.unwrap();
+    let (content, metadata): (String, rag_chat::services::enrichment::DocumentMetadata) =
+        result.unwrap();
 
     // Verify content was extracted
     assert!(!content.is_empty(), "Content should not be empty");
@@ -78,10 +83,19 @@ async fn test_enrich_file_integration() {
     println!("Generated summary: {}", summary);
 
     // Keywords should be extracted
-    assert!(!metadata.keywords.is_empty(), "Keywords should be extracted");
+    assert!(
+        !metadata.keywords.is_empty(),
+        "Keywords should be extracted"
+    );
     println!("Generated keywords: {:?}", metadata.keywords);
 
     // Entities should have proper structure even if empty
-    assert!(metadata.entities.is_object(), "Entities should be an object");
-    println!("Extracted entities: {}", serde_json::to_string_pretty(&metadata.entities).unwrap());
+    assert!(
+        metadata.entities.is_object(),
+        "Entities should be an object"
+    );
+    println!(
+        "Extracted entities: {}",
+        serde_json::to_string_pretty(&metadata.entities).unwrap()
+    );
 }

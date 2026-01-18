@@ -1,7 +1,7 @@
-use leptos::*;
-use leptos::prelude::*;
-use uuid::Uuid;
 use crate::domain::models::SearchResult;
+use leptos::prelude::*;
+use leptos::*;
+use uuid::Uuid;
 
 #[component]
 pub fn ChatPanel(
@@ -58,10 +58,15 @@ pub fn ChatPanel(
             });
 
             leptos::task::spawn_local(async move {
-                let result = fetch_stream("/api/chat/stream", &request_body.to_string(), move |chunk| {
-                    set_response_text.update(|text| text.push_str(&chunk));
-                }).await;
-                
+                let result = fetch_stream(
+                    "/api/chat/stream",
+                    &request_body.to_string(),
+                    move |chunk| {
+                        set_response_text.update(|text| text.push_str(&chunk));
+                    },
+                )
+                .await;
+
                 match result {
                     Ok(_) => {
                         set_is_streaming.set(false);
@@ -82,7 +87,11 @@ pub fn ChatPanel(
                 let current_results = results.get();
                 let query = search_query.get();
 
-                if !query.is_empty() && !current_results.is_empty() && !is_streaming.get() && response_text.get().is_empty() {
+                if !query.is_empty()
+                    && !current_results.is_empty()
+                    && !is_streaming.get()
+                    && response_text.get().is_empty()
+                {
                     // Manually trigger synthesis without needing MouseEvent
                     #[cfg(target_arch = "wasm32")]
                     {
@@ -110,9 +119,14 @@ pub fn ChatPanel(
                         });
 
                         leptos::task::spawn_local(async move {
-                            let result = fetch_stream("/api/chat/stream", &request_body.to_string(), move |chunk| {
-                                set_response_text.update(|text| text.push_str(&chunk));
-                            }).await;
+                            let result = fetch_stream(
+                                "/api/chat/stream",
+                                &request_body.to_string(),
+                                move |chunk| {
+                                    set_response_text.update(|text| text.push_str(&chunk));
+                                },
+                            )
+                            .await;
 
                             match result {
                                 Ok(_) => {
@@ -189,12 +203,16 @@ pub fn ChatPanel(
 }
 
 #[cfg(target_arch = "wasm32")]
-async fn fetch_stream(url: &str, body: &str, on_chunk: impl Fn(String) + 'static) -> Result<(), String> {
+async fn fetch_stream(
+    url: &str,
+    body: &str,
+    on_chunk: impl Fn(String) + 'static,
+) -> Result<(), String> {
     use futures::StreamExt;
-    use wasm_streams::ReadableStream;
     use wasm_bindgen::JsCast;
-    use wasm_bindgen_futures::JsFuture;
     use wasm_bindgen::JsValue;
+    use wasm_bindgen_futures::JsFuture;
+    use wasm_streams::ReadableStream;
 
     let window = web_sys::window().ok_or("No window")?;
 
@@ -206,15 +224,15 @@ async fn fetch_stream(url: &str, body: &str, on_chunk: impl Fn(String) + 'static
     let request = web_sys::Request::new_with_str_and_init(url, &init)
         .map_err(|_| "Failed to create request".to_string())?;
 
-    request.headers().set("Content-Type", "application/json")
+    request
+        .headers()
+        .set("Content-Type", "application/json")
         .map_err(|_| "Failed to set header".to_string())?;
 
     // Fetch and convert Promise to Future
     let promise = window.fetch_with_request(&request);
     let resp_promise: JsFuture = promise.into();
-    let resp = resp_promise
-        .await
-        .map_err(|_| "Fetch failed".to_string())?;
+    let resp = resp_promise.await.map_err(|_| "Fetch failed".to_string())?;
 
     let resp = web_sys::Response::from(resp);
 
@@ -222,8 +240,7 @@ async fn fetch_stream(url: &str, body: &str, on_chunk: impl Fn(String) + 'static
         return Err(format!("HTTP {}", resp.status()));
     }
 
-    let body = resp.body()
-        .ok_or("No response body")?;
+    let body = resp.body().ok_or("No response body")?;
     let stream = ReadableStream::from_raw(body.unchecked_into()).into_stream();
     let mut stream = stream.map(|chunk| {
         let chunk = chunk.map_err(|_| "Stream error")?;
@@ -246,10 +263,12 @@ async fn fetch_stream(url: &str, body: &str, on_chunk: impl Fn(String) + 'static
                     if let Some(data) = line.strip_prefix("data: ") {
                         if let Ok(json) = serde_json::from_str::<serde_json::Value>(data) {
                             if let Some("chunk") = json.get("type").and_then(|t| t.as_str()) {
-                                if let Some(content) = json.get("content").and_then(|c| c.as_str()) {
+                                if let Some(content) = json.get("content").and_then(|c| c.as_str())
+                                {
                                     on_chunk(content.to_string());
                                 }
-                            } else if let Some("error") = json.get("type").and_then(|t| t.as_str()) {
+                            } else if let Some("error") = json.get("type").and_then(|t| t.as_str())
+                            {
                                 if let Some(msg) = json.get("message").and_then(|m| m.as_str()) {
                                     return Err(msg.to_string());
                                 }
@@ -266,6 +285,10 @@ async fn fetch_stream(url: &str, body: &str, on_chunk: impl Fn(String) + 'static
 
 #[cfg(not(target_arch = "wasm32"))]
 #[allow(dead_code)]
-async fn fetch_stream(_url: &str, _body: &str, _on_chunk: impl Fn(String) + 'static) -> Result<(), String> {
+async fn fetch_stream(
+    _url: &str,
+    _body: &str,
+    _on_chunk: impl Fn(String) + 'static,
+) -> Result<(), String> {
     Err("Client-side only".to_string())
 }

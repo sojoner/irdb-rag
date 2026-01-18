@@ -1,7 +1,7 @@
-use leptos::*;
-use leptos::prelude::*;
-use uuid::Uuid;
 use crate::domain::models::SearchResult;
+use leptos::prelude::*;
+use leptos::*;
+use uuid::Uuid;
 
 #[component]
 pub fn ResultsList(
@@ -31,7 +31,10 @@ pub fn ResultsList(
     let handle_delete_click = move |id: Uuid| {
         if let Some(callback) = on_delete {
             if web_sys::window()
-                .and_then(|w| w.confirm_with_message("Delete this document permanently?").ok())
+                .and_then(|w| {
+                    w.confirm_with_message("Delete this document permanently?")
+                        .ok()
+                })
                 .unwrap_or(false)
             {
                 callback.run(id);
@@ -68,11 +71,11 @@ pub fn ResultsList(
                         let id = res.id;
                         let is_selected = move || selected_context.get().contains(&id);
                         let category_name = res.category_name.clone();
-                        let snippet = create_rw_signal(res.snippet.clone());
+                        let snippet = RwSignal::new(res.snippet.clone());
                         let snippet_get = move || snippet.get();
 
                         let category_name_clone = category_name.clone();
-                        
+
                         view! {
                             <div class="group bg-white rounded-lg border border-gray-200 shadow-sm hover:shadow-md transition-all overflow-hidden"
                                  class:ring-2=is_selected

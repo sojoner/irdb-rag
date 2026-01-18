@@ -77,18 +77,13 @@ async fn fetch_db_stats() -> Option<DbStats> {
     let origin = window.location().origin().ok()?;
     let url = format!("{}/api/stats/db", origin);
 
-    let response = gloo_net::http::Request::get(&url)
-        .send()
-        .await
-        .ok()?;
+    let response = gloo_net::http::Request::get(&url).send().await.ok()?;
 
-    response
-        .json::<DbStats>()
-        .await
-        .ok()
+    response.json::<DbStats>().await.ok()
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+#[allow(dead_code)]
 async fn fetch_db_stats() -> Option<DbStats> {
     // SSR fallback - return None to trigger loading state
     None

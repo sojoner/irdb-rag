@@ -1,17 +1,18 @@
-use leptos::*;
-use leptos::prelude::*;
-use uuid::Uuid;
 use crate::domain::models::Document;
+use leptos::prelude::*;
+use leptos::*;
+use uuid::Uuid;
 
 #[server(GetDocument, "/api")]
 pub async fn get_document(id: Uuid) -> Result<Option<Document>, ServerFnError> {
-    use crate::infra::db;
     use crate::api::state::AppState;
+    use crate::infra::db;
 
-    let state = use_context::<AppState>()
-        .ok_or_else(|| ServerFnError::new("AppState not found"))?;
+    let state =
+        use_context::<AppState>().ok_or_else(|| ServerFnError::new("AppState not found"))?;
 
-    let doc = db::get_document(&state.pool, id).await
+    let doc = db::get_document(&state.pool, id)
+        .await
         .map_err(|e| ServerFnError::new(e.to_string()))?;
 
     Ok(doc)
@@ -29,7 +30,7 @@ pub fn DocumentPreview(
                 Some(id) => get_document(id).await,
                 None => Ok(None),
             }
-        }
+        },
     );
 
     view! {
@@ -70,10 +71,10 @@ pub fn DocumentPreview(
 fn DocumentDetails(doc: Document) -> impl IntoView {
     let summary_check = doc.summary.clone();
     let summary_view = doc.summary.clone();
-    
+
     let keywords_check = doc.keywords.clone();
     let keywords_view = doc.keywords.clone();
-    
+
     let locations_check = doc.locations.clone();
     let locations_view = doc.locations.clone();
 

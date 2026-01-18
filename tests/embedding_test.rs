@@ -30,7 +30,11 @@ async fn is_vllm_available() -> bool {
 
 /// Generate embedding for a single text using direct HTTP API
 async fn generate_embedding(text: &str) -> Result<Vec<f32>> {
-    if std::env::var("RUN_ENV").is_err() { if std::env::var("RUN_ENV").is_err() { std::env::set_var("RUN_ENV", "test"); } }
+    if std::env::var("RUN_ENV").is_err() {
+        if std::env::var("RUN_ENV").is_err() {
+            std::env::set_var("RUN_ENV", "test");
+        }
+    }
 
     let settings = Settings::new()?;
     let api_url = settings.embedding.api_url.clone();
@@ -103,7 +107,11 @@ async fn test_basic_embedding_generation() -> Result<()> {
         elapsed.as_secs_f64()
     );
 
-    println!("✅ Generated embedding with {} dimensions in {:.2}s", embedding.len(), elapsed.as_secs_f64());
+    println!(
+        "✅ Generated embedding with {} dimensions in {:.2}s",
+        embedding.len(),
+        elapsed.as_secs_f64()
+    );
 
     Ok(())
 }
@@ -147,7 +155,10 @@ async fn test_embedding_similarity() -> Result<()> {
         sim_unrelated
     );
 
-    println!("✅ Semantic similarity verified (related: {:.4}, unrelated: {:.4})", sim_related, sim_unrelated);
+    println!(
+        "✅ Semantic similarity verified (related: {:.4}, unrelated: {:.4})",
+        sim_related, sim_unrelated
+    );
 
     Ok(())
 }
@@ -189,7 +200,12 @@ async fn test_embedding_determinism() -> Result<()> {
         max_diff
     );
 
-    println!("✅ Embeddings are stable (diffs: {}/{}, max: {:.6})", differences, emb1.len(), max_diff);
+    println!(
+        "✅ Embeddings are stable (diffs: {}/{}, max: {:.6})",
+        differences,
+        emb1.len(),
+        max_diff
+    );
 
     Ok(())
 }
@@ -201,7 +217,11 @@ async fn test_batch_embedding_speed() -> Result<()> {
         return Ok(());
     }
 
-    if std::env::var("RUN_ENV").is_err() { if std::env::var("RUN_ENV").is_err() { std::env::set_var("RUN_ENV", "test"); } }
+    if std::env::var("RUN_ENV").is_err() {
+        if std::env::var("RUN_ENV").is_err() {
+            std::env::set_var("RUN_ENV", "test");
+        }
+    }
 
     let settings = Settings::new()?;
     let api_url = settings.embedding.api_url.clone();
@@ -246,8 +266,12 @@ async fn test_batch_embedding_speed() -> Result<()> {
     );
 
     let speedup = individual_time.as_secs_f64() / batch_time.as_secs_f64();
-    println!("✅ Batch is {:.2}x faster ({:.2}s individual vs {:.2}s batch)",
-        speedup, individual_time.as_secs_f64(), batch_time.as_secs_f64());
+    println!(
+        "✅ Batch is {:.2}x faster ({:.2}s individual vs {:.2}s batch)",
+        speedup,
+        individual_time.as_secs_f64(),
+        batch_time.as_secs_f64()
+    );
 
     Ok(())
 }
@@ -259,7 +283,11 @@ async fn test_batch_embedding_api() -> Result<()> {
         return Ok(());
     }
 
-    if std::env::var("RUN_ENV").is_err() { if std::env::var("RUN_ENV").is_err() { std::env::set_var("RUN_ENV", "test"); } }
+    if std::env::var("RUN_ENV").is_err() {
+        if std::env::var("RUN_ENV").is_err() {
+            std::env::set_var("RUN_ENV", "test");
+        }
+    }
 
     let settings = Settings::new()?;
     let api_url = settings.embedding.api_url.clone();
@@ -301,7 +329,8 @@ async fn test_batch_embedding_api() -> Result<()> {
     );
 
     let json: serde_json::Value = response.json().await?;
-    let data = json["data"].as_array()
+    let data = json["data"]
+        .as_array()
         .ok_or_else(|| anyhow::anyhow!("Invalid batch response format: {}", json))?;
 
     anyhow::ensure!(
@@ -326,7 +355,11 @@ async fn test_batch_embedding_api() -> Result<()> {
         );
     }
 
-    println!("✅ Batch API returned {} correct embeddings in {:.2}s", data.len(), elapsed.as_secs_f64());
+    println!(
+        "✅ Batch API returned {} correct embeddings in {:.2}s",
+        data.len(),
+        elapsed.as_secs_f64()
+    );
 
     Ok(())
 }
