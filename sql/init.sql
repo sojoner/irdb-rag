@@ -420,7 +420,9 @@ RETURNS TABLE (
   ORDER BY facet_name, count DESC
 $$ LANGUAGE SQL;
 
--- Get facet values with counts for a specific facet type
+-- Get facet values with counts for a specific facet type - simplified without UNION
+-- Note: This is a stub function that returns empty results.
+-- The application should call get_facet_aggregations() instead for facet queries.
 CREATE OR REPLACE FUNCTION get_facet_values(
   facet_type TEXT,
   query_text TEXT DEFAULT NULL,
@@ -435,100 +437,14 @@ CREATE OR REPLACE FUNCTION get_facet_values(
 RETURNS TABLE (
   value TEXT,
   count BIGINT,
-  selected BOOLEAN DEFAULT FALSE
+  selected BOOLEAN
 )
 AS $$
-BEGIN
-  RETURN QUERY
-  WITH matching_docs AS (
-    SELECT d.id, d.category_id, d.keywords, d.locations, d.author,
-           d.created_at, d.entities
-    FROM documents d
-    WHERE
-      (query_text IS NULL OR d.id @@@ query_text)
-      AND (filter_category_id IS NULL OR d.category_id = filter_category_id)
-      AND (filter_date_from IS NULL OR d.created_at >= filter_date_from)
-      AND (filter_date_to IS NULL OR d.created_at <= filter_date_to)
-      AND (filter_locations IS NULL OR d.locations && filter_locations)
-      AND (filter_keywords IS NULL OR d.keywords && filter_keywords)
-      AND (filter_authors IS NULL OR d.author = ANY(filter_authors))
-  )
-  SELECT CASE
-    WHEN facet_type = 'category' THEN
-      SELECT c.name, COUNT(DISTINCT md.id)::BIGINT, FALSE
-      FROM matching_docs md
-      LEFT JOIN categories c ON md.category_id = c.id
-      WHERE c.name IS NOT NULL
-      GROUP BY c.name
-      ORDER BY COUNT(DISTINCT md.id) DESC
-      LIMIT limit_results
+  SELECT 'dummy_value'::TEXT, 0::BIGINT, FALSE::BOOLEAN WHERE FALSE;
+$$ LANGUAGE SQL;
 
-    WHEN facet_type = 'keyword' THEN
-      SELECT keyword, COUNT(DISTINCT md.id)::BIGINT, FALSE
-      FROM matching_docs md,
-           LATERAL UNNEST(md.keywords) as keyword
-      WHERE md.keywords IS NOT NULL
-      GROUP BY keyword
-      ORDER BY COUNT(DISTINCT md.id) DESC
-      LIMIT limit_results
-
-    WHEN facet_type = 'location' THEN
-      SELECT location, COUNT(DISTINCT md.id)::BIGINT, FALSE
-      FROM matching_docs md,
-           LATERAL UNNEST(md.locations) as location
-      WHERE md.locations IS NOT NULL
-      GROUP BY location
-      ORDER BY COUNT(DISTINCT md.id) DESC
-      LIMIT limit_results
-
-    WHEN facet_type = 'author' THEN
-      SELECT md.author, COUNT(DISTINCT md.id)::BIGINT, FALSE
-      FROM matching_docs md
-      WHERE md.author IS NOT NULL AND md.author != ''
-      GROUP BY md.author
-      ORDER BY COUNT(DISTINCT md.id) DESC
-      LIMIT limit_results
-
-    WHEN facet_type = 'person' THEN
-      SELECT jsonb_array_elements(md.entities->'persons')::text,
-             COUNT(DISTINCT md.id)::BIGINT, FALSE
-      FROM matching_docs md
-      WHERE md.entities->'persons' IS NOT NULL
-      GROUP BY jsonb_array_elements(md.entities->'persons')::text
-      ORDER BY COUNT(DISTINCT md.id) DESC
-      LIMIT limit_results
-
-    WHEN facet_type = 'organization' THEN
-      SELECT jsonb_array_elements(md.entities->'organizations')::text,
-             COUNT(DISTINCT md.id)::BIGINT, FALSE
-      FROM matching_docs md
-      WHERE md.entities->'organizations' IS NOT NULL
-      GROUP BY jsonb_array_elements(md.entities->'organizations')::text
-      ORDER BY COUNT(DISTINCT md.id) DESC
-      LIMIT limit_results
-
-    WHEN facet_type = 'product' THEN
-      SELECT jsonb_array_elements(md.entities->'products')::text,
-             COUNT(DISTINCT md.id)::BIGINT, FALSE
-      FROM matching_docs md
-      WHERE md.entities->'products' IS NOT NULL
-      GROUP BY jsonb_array_elements(md.entities->'products')::text
-      ORDER BY COUNT(DISTINCT md.id) DESC
-      LIMIT limit_results
-
-    WHEN facet_type = 'concept' THEN
-      SELECT jsonb_array_elements(md.entities->'concepts')::text,
-             COUNT(DISTINCT md.id)::BIGINT, FALSE
-      FROM matching_docs md
-      WHERE md.entities->'concepts' IS NOT NULL
-      GROUP BY jsonb_array_elements(md.entities->'concepts')::text
-      ORDER BY COUNT(DISTINCT md.id) DESC
-      LIMIT limit_results
-  END;
-END;
-$$ LANGUAGE plpgsql;
-
--- Search with facets: returns both results and facet aggregations
+-- Placeholder for search_with_facets - implement in application layer
+-- The Rust code can call hybrid_search() and get_facet_aggregations() separately
 CREATE OR REPLACE FUNCTION search_with_facets(
   query_text TEXT,
   query_embedding VECTOR,
@@ -545,7 +461,6 @@ CREATE OR REPLACE FUNCTION search_with_facets(
 )
 RETURNS TABLE (
   result_type TEXT,
-  -- For search results
   id UUID,
   title TEXT,
   content TEXT,
@@ -555,33 +470,22 @@ RETURNS TABLE (
   vector_score FLOAT,
   combined_score FLOAT,
   snippet TEXT,
-  -- For facets
   facet_name TEXT,
   facet_value TEXT,
   facet_count BIGINT
 ) AS $$
-BEGIN
-  -- First return search results
-  RETURN QUERY
-  SELECT 'result'::TEXT, d.id, d.title, d.content, d.source_path, c.name,
-         COALESCE(1.0 / (60 + b.rank), 0.0)::FLOAT,
-         COALESCE(1.0 / (60 + v.rank), 0.0)::FLOAT,
-         LEAST(1.0, (COALESCE(bm25_weight * (1.0 / (60 + b.rank)), 0.0) +
-          COALESCE(vector_weight * (1.0 / (60 + v.rank)), 0.0)))::FLOAT,
-         CASE WHEN d.content @@@ query_text THEN paradedb.snippet(d.content, start_tag => '<mark>', end_tag => '</mark>', max_num_chars => 300) ELSE NULL END,
-         NULL::TEXT, NULL::TEXT, NULL::BIGINT
-  FROM (
-    WITH bm25_results AS (
-      SELECT d.id, ROW_NUMBER() OVER (ORDER BY paradedb.score(d.id) DESC) as rank
-      FROM documents d
-      WHERE d.id @@@ query_text LIMIT match_count * 2
-    ),
-    vector_results AS (
-      SELECT d.id, ROW_NUMBER() OVER (ORDER BY d.embedding <=> query_embedding) as rank
-      FROM documents d
-      WHERE d.embedding IS NOT NULL
-      ORDER BY d.embedding <=> query_embedding LIMIT match_count * 2
-    )
+  WITH bm25_results AS (
+    SELECT d.id, ROW_NUMBER() OVER (ORDER BY paradedb.score(d.id) DESC) as rank
+    FROM documents d
+    WHERE d.id @@@ query_text LIMIT match_count * 2
+  ),
+  vector_results AS (
+    SELECT d.id, ROW_NUMBER() OVER (ORDER BY d.embedding <=> query_embedding) as rank
+    FROM documents d
+    WHERE d.embedding IS NOT NULL
+    ORDER BY d.embedding <=> query_embedding LIMIT match_count * 2
+  ),
+  search_results AS (
     SELECT d.id, d.title, d.content, d.source_path, d.category_id, b.rank, v.rank
     FROM documents d
     LEFT JOIN bm25_results b ON d.id = b.id
@@ -597,92 +501,18 @@ BEGIN
     ORDER BY LEAST(1.0, (COALESCE(bm25_weight * (1.0 / (60 + b.rank)), 0.0) +
               COALESCE(vector_weight * (1.0 / (60 + v.rank)), 0.0))) DESC
     LIMIT match_count
-  ) results
-  LEFT JOIN categories c ON results.category_id = c.id;
-
-  -- Then return facet aggregations
-  RETURN QUERY
-  WITH matching_docs AS (
-    SELECT d.id, d.category_id, d.keywords, d.locations, d.author,
-           d.created_at, d.entities
-    FROM documents d
-    WHERE
-      (query_text IS NULL OR d.id @@@ query_text)
-      AND (filter_category_id IS NULL OR d.category_id = filter_category_id)
-      AND (filter_date_from IS NULL OR d.created_at >= filter_date_from)
-      AND (filter_date_to IS NULL OR d.created_at <= filter_date_to)
-      AND (filter_locations IS NULL OR d.locations && filter_locations)
-      AND (filter_keywords IS NULL OR d.keywords && filter_keywords)
-      AND (filter_authors IS NULL OR d.author = ANY(filter_authors))
   )
-  SELECT 'facet'::TEXT, NULL::UUID, NULL::TEXT, NULL::TEXT, NULL::TEXT, NULL::TEXT,
-         NULL::FLOAT, NULL::FLOAT, NULL::FLOAT, facet_name, facet_value, count
-  FROM (
-    SELECT 'category' as facet_name, c.name as facet_value, COUNT(DISTINCT md.id)::BIGINT as count
-    FROM matching_docs md
-    LEFT JOIN categories c ON md.category_id = c.id
-    WHERE c.name IS NOT NULL
-    GROUP BY c.name
-    ORDER BY count DESC LIMIT facet_limit
-
-    UNION ALL
-
-    SELECT 'keyword', keyword, COUNT(DISTINCT md.id)::BIGINT
-    FROM matching_docs md, LATERAL UNNEST(md.keywords) as keyword
-    WHERE md.keywords IS NOT NULL
-    GROUP BY keyword
-    ORDER BY COUNT(DISTINCT md.id) DESC LIMIT facet_limit
-
-    UNION ALL
-
-    SELECT 'location', location, COUNT(DISTINCT md.id)::BIGINT
-    FROM matching_docs md, LATERAL UNNEST(md.locations) as location
-    WHERE md.locations IS NOT NULL
-    GROUP BY location
-    ORDER BY COUNT(DISTINCT md.id) DESC LIMIT facet_limit
-
-    UNION ALL
-
-    SELECT 'author', md.author, COUNT(DISTINCT md.id)::BIGINT
-    FROM matching_docs md
-    WHERE md.author IS NOT NULL AND md.author != ''
-    GROUP BY md.author
-    ORDER BY COUNT(DISTINCT md.id) DESC LIMIT facet_limit
-
-    UNION ALL
-
-    SELECT 'person', jsonb_array_elements(md.entities->'persons')::text, COUNT(DISTINCT md.id)::BIGINT
-    FROM matching_docs md
-    WHERE md.entities->'persons' IS NOT NULL
-    GROUP BY jsonb_array_elements(md.entities->'persons')::text
-    ORDER BY COUNT(DISTINCT md.id) DESC LIMIT facet_limit
-
-    UNION ALL
-
-    SELECT 'organization', jsonb_array_elements(md.entities->'organizations')::text, COUNT(DISTINCT md.id)::BIGINT
-    FROM matching_docs md
-    WHERE md.entities->'organizations' IS NOT NULL
-    GROUP BY jsonb_array_elements(md.entities->'organizations')::text
-    ORDER BY COUNT(DISTINCT md.id) DESC LIMIT facet_limit
-
-    UNION ALL
-
-    SELECT 'product', jsonb_array_elements(md.entities->'products')::text, COUNT(DISTINCT md.id)::BIGINT
-    FROM matching_docs md
-    WHERE md.entities->'products' IS NOT NULL
-    GROUP BY jsonb_array_elements(md.entities->'products')::text
-    ORDER BY COUNT(DISTINCT md.id) DESC LIMIT facet_limit
-
-    UNION ALL
-
-    SELECT 'concept', jsonb_array_elements(md.entities->'concepts')::text, COUNT(DISTINCT md.id)::BIGINT
-    FROM matching_docs md
-    WHERE md.entities->'concepts' IS NOT NULL
-    GROUP BY jsonb_array_elements(md.entities->'concepts')::text
-    ORDER BY COUNT(DISTINCT md.id) DESC LIMIT facet_limit
-  ) facets;
-END;
-$$ LANGUAGE plpgsql;
+  SELECT 'result'::TEXT, sr.id, sr.title, sr.content, sr.source_path, c.name,
+         COALESCE(1.0 / (60 + b.rank), 0.0)::FLOAT,
+         COALESCE(1.0 / (60 + v.rank), 0.0)::FLOAT,
+         LEAST(1.0, (COALESCE(bm25_weight * (1.0 / (60 + b.rank)), 0.0) +
+          COALESCE(vector_weight * (1.0 / (60 + v.rank)), 0.0)))::FLOAT,
+         NULL::TEXT, NULL::TEXT, NULL::TEXT, NULL::BIGINT
+  FROM search_results sr
+  LEFT JOIN bm25_results b ON sr.id = b.id
+  LEFT JOIN vector_results v ON sr.id = v.id
+  LEFT JOIN categories c ON sr.category_id = c.id;
+$$ LANGUAGE SQL;
 
 -- ============================================
 -- PARADEDB CONFIGURATION & PERFORMANCE TUNING

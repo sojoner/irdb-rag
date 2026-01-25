@@ -288,3 +288,31 @@ impl ImportProgress {
         }
     }
 }
+
+// ============================================
+// Dynamic Query Builder Models
+// ============================================
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FieldMetadata {
+    pub name: String,                  // "persons", "locations", etc.
+    pub display_name: String,          // "People", "Places"
+    pub field_type: FieldType,         // Text, Number, Date, etc.
+    pub total_unique_values: i64,      // For UI: "234 unique values"
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", content = "params")]
+pub enum FieldType {
+    Text,
+    Number { min: Option<f64>, max: Option<f64> },
+    Date { min: Option<String>, max: Option<String> },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FieldValueAutocomplete {
+    pub field: String,
+    pub query: String,                 // Partial text for matching
+    pub values: Vec<(String, i64)>,    // (value, doc_count)
+    pub total_matching: i64,
+}

@@ -13,7 +13,7 @@ use uuid::Uuid;
 use crate::api::state::AppState;
 use crate::domain::dtos::*;
 
-use crate::infra::{db, llm};
+use crate::infra::{db, llm, metadata};
 use crate::services::indexing;
 
 // ============================================
@@ -182,6 +182,73 @@ pub async fn search_vector(
         })?;
 
     tracing::info!("Vector search completed successfully, returning {} results", results.len());
+    Ok(Json(results))
+}
+
+/// Dynamic query builder search endpoint
+/// Accepts structured filter conditions from the query builder UI
+pub async fn search_dynamic(
+    State(state): State<AppState>,
+    Json(req): Json<crate::domain::dtos::DynamicQueryRequest>,
+) -> Result<Json<Vec<crate::domain::models::SearchResult>>, AppError> {
+    tracing::info!(
+        "Received dynamic query request: has_query={}, has_filters={}, limit={}",
+        req.query.is_some(),
+        req.filters.is_some(),
+        req.limit
+    );
+
+    // At least one of query or filters must be provided
+    if req.query.is_none() && req.filters.is_none() {
+        tracing::warn!("Dynamic query rejected: no query or filters provided");
+        return Ok(Json(Vec::new()));
+    }
+
+    // If we have a text query, generate embedding for it
+    let embedding = if let Some(query) = req.query.as_ref() {
+        let trimmed = query.trim();
+        if trimmed.is_empty() || trimmed == "*" {
+            tracing::info!("Query rejected: empty or special character only");
+            return Ok(Json(Vec::new()));
+        }
+        tracing::debug!("Generating embedding for query: '{}'", query);
+        Some(
+            state.embedder.embed(query).await.map_err(|e| {
+                tracing::error!("Failed to generate embedding: {}", e);
+                AppError::Internal(e.to_string())
+            })?,
+        )
+    } else {
+        None
+    };
+
+    // Build the WHERE clause from filter conditions
+    let where_clause = if let Some(filters) = req.filters.as_ref() {
+        crate::infra::query_compiler::QueryCompiler::compile_where_clause(filters)
+    } else {
+        String::new()
+    };
+
+    // Execute search with dynamic filters
+    let results = db::dynamic_search(
+        &state.pool,
+        req.query.as_deref(),
+        embedding.as_deref(),
+        &where_clause,
+        req.limit,
+        req.bm25_weight,
+        req.vector_weight,
+    )
+    .await
+    .map_err(|e| {
+        tracing::error!("Dynamic search failed: {}", e);
+        AppError::Internal(e.to_string())
+    })?;
+
+    tracing::info!(
+        "Dynamic search completed successfully, returning {} results",
+        results.len()
+    );
     Ok(Json(results))
 }
 
@@ -1751,6 +1818,63 @@ pub async fn trigger_scan(
         "status": "scanning",
         "message": "Knowledge base scan started in background"
     })))
+}
+
+// ============================================
+// Dynamic Query Builder Handlers
+// ============================================
+
+/// Discover all metadata fields in documents
+pub async fn get_field_metadata(
+    State(state): State<AppState>,
+) -> Result<Json<Vec<crate::domain::models::FieldMetadata>>, AppError> {
+    tracing::info!("Received request to discover field metadata");
+
+    let fields = metadata::discover_fields(&state.pool)
+        .await
+        .map_err(|e| {
+            tracing::error!("Failed to discover fields: {}", e);
+            AppError::Internal(e.to_string())
+        })?;
+
+    tracing::info!("Discovered {} metadata fields", fields.len());
+    Ok(Json(fields))
+}
+
+/// Autocomplete field values using BM25 search
+pub async fn get_field_values(
+    State(state): State<AppState>,
+    Json(req): Json<FieldValueRequest>,
+) -> Result<Json<crate::domain::models::FieldValueAutocomplete>, AppError> {
+    tracing::debug!(
+        "Received field values request: field='{}', query='{}', limit={}",
+        req.field,
+        req.query,
+        req.limit
+    );
+
+    let values = metadata::discover_field_values(&state.pool, &req.field, &req.query, req.limit)
+        .await
+        .map_err(|e| {
+            tracing::error!("Failed to discover field values: {}", e);
+            AppError::Internal(e.to_string())
+        })?;
+
+    let total_matching = values.len() as i64;
+
+    tracing::debug!(
+        "Discovered {} values for field '{}' matching '{}'",
+        values.len(),
+        req.field,
+        req.query
+    );
+
+    Ok(Json(crate::domain::models::FieldValueAutocomplete {
+        field: req.field,
+        query: req.query,
+        values,
+        total_matching,
+    }))
 }
 
 // ============================================

@@ -230,9 +230,9 @@ gpu-up:
 	@echo ""
 	@echo "Step 1: Cleaning up old containers and data..."
 	RUN_ENV=test-gpu docker compose -f docker-compose-gpu.yml down -v 2>/dev/null || true
-	#@sudo rm -rf /data/postgres
-	#@echo "✅ Cleaned old data"
-	#@echo ""
+	@sudo rm -rf /data/postgres
+	@echo "✅ Cleaned old data"
+	@echo ""
 	@echo "Step 2: Preparing data directories..."
 	@sudo mkdir -p /data/docling_models /data/docling_scratch /data/ollama /data/postgres /data/backups
 	@sudo chown 999:999 /data/postgres

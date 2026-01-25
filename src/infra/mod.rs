@@ -8,3 +8,7 @@ pub mod embedder;
 pub mod llm;
 #[cfg(feature = "ssr")]
 pub mod reranker;
+#[cfg(feature = "ssr")]
+pub mod metadata;
+#[cfg(feature = "ssr")]
+pub mod query_compiler;

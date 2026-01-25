@@ -19,6 +19,7 @@ pub fn create_router(state: AppState) -> Router {
         .route("/api/search", post(handlers::search))
         .route("/api/search/bm25", post(handlers::search_bm25))
         .route("/api/search/vector", post(handlers::search_vector))
+        .route("/api/search/dynamic", post(handlers::search_dynamic))
         .route("/api/search/faceted", post(handlers::faceted_search))
         .route("/api/facets/values", post(handlers::get_facet_values))
         .route("/api/chat", post(handlers::chat))
@@ -76,6 +77,9 @@ pub fn create_router(state: AppState) -> Router {
             post(handlers::import_chrome_bookmarks),
         )
         .route("/api/knowledge-base/scan", post(handlers::trigger_scan))
+        // Dynamic query builder metadata routes
+        .route("/api/metadata/fields", get(handlers::get_field_metadata))
+        .route("/api/metadata/field-values", post(handlers::get_field_values))
         // Handle server functions
         .route(
             "/api/{*fn_name}",

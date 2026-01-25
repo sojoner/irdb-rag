@@ -71,7 +71,10 @@
       "Bash(sudo pkill:*)",
       "Bash(timeout 180 bash:*)",
       "Bash(./test_search_performance.sh:*)",
-      "Bash(./test_dedicated_search.sh:*)"
+      "Bash(./test_dedicated_search.sh:*)",
+      "Bash(test -f:*)",
+      "Bash(RUN_ENV=test-gpu docker compose:*)",
+      "Bash(RUN_ENV=test-gpu EMBEDDING_DIMENSIONS=768 docker compose:*)"
     ],
     "additionalDirectories": [
       "/tmp"

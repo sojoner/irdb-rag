@@ -45,8 +45,6 @@ services:
   # Updated to use Sojoner Database image while maintaining RAG naming/config
   db:
     image: docker.io/sojoner/database:latest
-    build:
-      context: .
     container_name: rag-db
     environment:
       RUN_ENV: production
@@ -57,7 +55,7 @@ services:
     ports:
       - "15432:5432"
     volumes:
-      - ./data/postgres:/var/lib/postgresql/data
+      - ./data/postgres:/var/lib/postgresql
       - ./sql/init.sql:/docker-entrypoint-initdb.d/01_init.sql:ro
       - ./config:/config:ro
     healthcheck:

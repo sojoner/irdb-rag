@@ -3,6 +3,7 @@ pub mod conversation_list;
 pub mod document_preview;
 pub mod faceted_filters;
 pub mod navbar;
+pub mod query_builder;
 pub mod results_list;
 pub mod search;
 pub mod stats_bar;

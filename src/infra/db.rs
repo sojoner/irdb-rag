@@ -731,6 +731,169 @@ pub async fn vector_search(
     Ok(results)
 }
 
+/// Dynamic search with structured filter conditions from query builder
+/// Supports combinations of text search, vector search, and structured metadata filters
+pub async fn dynamic_search(
+    pool: &PgPool,
+    query: Option<&str>,
+    embedding: Option<&[f32]>,
+    where_clause: &str,
+    limit: i32,
+    bm25_weight: f64,
+    vector_weight: f64,
+) -> Result<Vec<SearchResult>> {
+    tracing::info!(
+        "Dynamic search: has_query={}, has_embedding={}, limit={}",
+        query.is_some(),
+        embedding.is_some(),
+        limit
+    );
+
+    if where_clause.is_empty() && query.is_none() && embedding.is_none() {
+        tracing::warn!("Dynamic search: no search criteria provided");
+        return Ok(Vec::new());
+    }
+
+    let dims = get_embedding_dimensions()?;
+
+    // Build the main search SQL based on what we have
+    let mut results = Vec::new();
+
+    // If we have a text query, do BM25 search
+    if let Some(q) = query {
+        let tokens = crate::infra::db_utils::tokenize_query(q);
+        let bm25_query = if tokens.is_empty() {
+            "id:__no_match__".to_string()
+        } else {
+            format!("content:({})", tokens.join(" &&& "))
+        };
+
+        let filter_where = if where_clause.is_empty() {
+            String::new()
+        } else {
+            format!("AND {}", where_clause)
+        };
+
+        let sql = format!(
+            r#"
+            SELECT
+                d.id,
+                d.title,
+                d.content,
+                d.source_path,
+                c.name as category_name,
+                paradedb.score(dc.id)::FLOAT as bm25_score,
+                0.0::FLOAT as vector_score,
+                paradedb.score(dc.id)::FLOAT as combined_score,
+                NULL::FLOAT as reranker_score,
+                NULL as snippet
+            FROM document_chunks dc
+            JOIN documents d ON dc.document_id = d.id
+            LEFT JOIN categories c ON d.category_id = c.id
+            WHERE dc.id @@@ $1
+                {filter_where}
+            ORDER BY paradedb.score(dc.id) DESC
+            LIMIT $2
+            "#
+        );
+
+        results = sqlx::query_as::<_, SearchResult>(&sql)
+            .bind(&bm25_query)
+            .bind(limit)
+            .fetch_all(pool)
+            .await?;
+    }
+
+    // If we have an embedding, do vector search and combine results
+    if let Some(emb) = embedding {
+        let embedding_str = embedding_to_string(emb);
+
+        let filter_where = if where_clause.is_empty() {
+            String::new()
+        } else {
+            format!("AND {}", where_clause)
+        };
+
+        let sql = format!(
+            r#"
+            WITH vector_results AS (
+                SELECT
+                    d.id,
+                    1.0 - (dc.embedding <=> $1::vector({})) AS similarity,
+                    ROW_NUMBER() OVER (PARTITION BY d.id ORDER BY dc.embedding <=> $1::vector({}) ASC) as rank_per_doc
+                FROM documents d
+                JOIN document_chunks dc ON d.id = dc.document_id
+                WHERE dc.embedding IS NOT NULL
+                    {filter_where}
+                ORDER BY dc.embedding <=> $1::vector({})
+                LIMIT $2 * 2
+            )
+            SELECT
+                d.id,
+                d.title,
+                d.content,
+                d.source_path,
+                c.name as category_name,
+                0.0::FLOAT as bm25_score,
+                vr.similarity::FLOAT as vector_score,
+                vr.similarity::FLOAT as combined_score,
+                NULL::FLOAT as reranker_score,
+                NULL as snippet
+            FROM vector_results vr
+            JOIN documents d ON vr.id = d.id
+            LEFT JOIN categories c ON d.category_id = c.id
+            WHERE vr.rank_per_doc = 1
+            ORDER BY vr.similarity DESC
+            LIMIT $2
+            "#,
+            dims, dims, dims
+        );
+
+        let vector_results = sqlx::query_as::<_, SearchResult>(&sql)
+            .bind(&embedding_str)
+            .bind(limit)
+            .fetch_all(pool)
+            .await?;
+
+        // If we have both BM25 and vector results, prefer vector results
+        // In a production system, you might implement RRF fusion here
+        if !vector_results.is_empty() {
+            results = vector_results;
+        }
+    } else if results.is_empty() && !where_clause.is_empty() {
+        // If we only have filters, do a filter-only search
+        let filter_where = format!("WHERE {}", where_clause);
+
+        let sql = format!(
+            r#"
+            SELECT
+                d.id,
+                d.title,
+                d.content,
+                d.source_path,
+                c.name as category_name,
+                0.0::FLOAT as bm25_score,
+                0.0::FLOAT as vector_score,
+                0.0::FLOAT as combined_score,
+                NULL::FLOAT as reranker_score,
+                NULL as snippet
+            FROM documents d
+            LEFT JOIN categories c ON d.category_id = c.id
+            {filter_where}
+            LIMIT $1
+            "#
+        );
+
+        results = sqlx::query_as::<_, SearchResult>(&sql)
+            .bind(limit)
+            .fetch_all(pool)
+            .await?;
+    }
+
+    tracing::info!("Dynamic search completed: {} results", results.len());
+    Ok(results)
+}
+
 // ============================================
 // CRUD Operations
 // ============================================

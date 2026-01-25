@@ -57,6 +57,21 @@ fn default_vector_weight() -> f64 {
     0.5
 }
 
+/// Search request using dynamic query builder with structured filters
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct DynamicQueryRequest {
+    /// Free-text search query (optional)
+    pub query: Option<String>,
+    /// Structured filter conditions from query builder
+    pub filters: Option<crate::domain::query_builder_types::FilterCondition>,
+    #[serde(default = "default_limit")]
+    pub limit: i32,
+    #[serde(default = "default_bm25_weight")]
+    pub bm25_weight: f64,
+    #[serde(default = "default_vector_weight")]
+    pub vector_weight: f64,
+}
+
 // Chat message in a conversation
 #[cfg_attr(not(target_arch = "wasm32"), derive(sqlx::FromRow))]
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
@@ -401,4 +416,20 @@ pub struct CreateConversationRequest {
 pub struct CreateConversationResponse {
     pub id: Uuid,
     pub title: Option<String>,
+}
+
+// ============================================
+// Dynamic Query Builder DTOs
+// ============================================
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct FieldValueRequest {
+    pub field: String,
+    pub query: String,
+    #[serde(default = "default_autocomplete_limit")]
+    pub limit: usize,
+}
+
+fn default_autocomplete_limit() -> usize {
+    20
 }
