@@ -151,3 +151,59 @@ pub async fn delete_documents_batch(doc_ids: Vec<Uuid>) -> Result<u64, ServerFnE
 
     Ok(rows)
 }
+
+#[server(SearchDocumentsDynamic, "/api")]
+pub async fn search_documents_dynamic(
+    request: crate::domain::dtos::DynamicQueryRequest,
+) -> Result<Vec<SearchResult>, ServerFnError> {
+    use crate::api::state::AppState;
+    use crate::infra::db;
+    use crate::infra::query_compiler::QueryCompiler;
+    use tracing::info;
+
+    let query = request.query.clone();
+    let limit = request.limit;
+    let bm25_weight = request.bm25_weight;
+    let vector_weight = request.vector_weight;
+
+    info!("========== DYNAMIC QUERY SEARCH ==========");
+    info!("Query: {:?}, Filters: {:?}", query, request.filters);
+
+    // Extract the AppState from context
+    let state = use_context::<AppState>()
+        .ok_or_else(|| ServerFnError::new("AppState not found in context"))?;
+
+    // Check if we have any search criteria
+    let has_query = query.as_ref().map_or(false, |q| !q.trim().is_empty());
+    let has_filters = request.filters.is_some();
+
+    if !has_query && !has_filters {
+        info!("SERVER: No query or filters provided, returning empty results");
+        return Ok(Vec::new());
+    }
+
+    // Compile filter condition to SQL WHERE clause
+    let where_clause = if let Some(filter_condition) = &request.filters {
+        let compiled = QueryCompiler::compile_where_clause(filter_condition);
+        info!("Compiled WHERE clause: {}", compiled);
+        compiled
+    } else {
+        String::new()
+    };
+
+    // Use the dynamic_search function from db
+    let results = db::dynamic_search(
+        &state.pool,
+        query.as_deref(),
+        None, // No embedding for now, text-only search
+        &where_clause,
+        limit,
+        bm25_weight,
+        vector_weight,
+    )
+    .await
+    .map_err(|e| ServerFnError::new(format!("Search failed: {}", e)))?;
+
+    info!("SERVER: Dynamic search returned {} results", results.len());
+    Ok(results)
+}

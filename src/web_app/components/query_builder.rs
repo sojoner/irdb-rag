@@ -3,8 +3,6 @@ use crate::domain::query_builder_types::FilterCondition;
 use crate::domain::dtos::FieldValueRequest;
 use leptos::prelude::*;
 use uuid::Uuid;
-use tokio::time::sleep;
-use std::time::Duration;
 
 // ============================================
 // Server Functions
@@ -408,11 +406,7 @@ fn FilterRow(
                                             }
                                             on:focus=move |_| set_show_suggestions.set(true)
                                             on:blur=move |_| {
-                                                leptos::task::spawn_local(async move {
-                                                    // Delay to allow click on suggestion
-                                                    sleep(Duration::from_millis(100)).await;
-                                                    set_show_suggestions.set(false);
-                                                });
+                                                set_show_suggestions.set(false);
                                             }
                                         />
                                         // Autocomplete suggestions

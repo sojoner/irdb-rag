@@ -1,11 +1,12 @@
 use crate::domain::models::SearchMetadata;
+use crate::domain::query_builder_types::FilterCondition;
 use crate::web_app::components::{
     chat::Chat,
     conversation_list::ConversationList,
     document_preview::DocumentPreview,
-    faceted_filters::{get_categories, FacetedFilters},
+    query_builder::QueryBuilder,
     results_list::ResultsList,
-    search::SearchDocuments,
+    search::SearchDocumentsDynamic,
     stats_bar::StatsBar,
     unified_search::UnifiedSearch,
 };
@@ -29,25 +30,11 @@ pub fn SearchPage() -> impl IntoView {
         "summary".to_string(),
     ]);
 
-    // Filter state - Load categories on mount
-    let categories_resource = Resource::new_blocking(|| (), |_| async { get_categories().await });
-    let categories = Signal::derive(move || {
-        categories_resource
-            .get()
-            .and_then(|res: Result<_, _>| res.ok())
-            .unwrap_or_default()
-    });
-
-    let (selected_category, set_selected_category) = signal(None::<Uuid>);
-    let (selected_keywords, set_selected_keywords) = signal(Vec::<String>::new());
-    let (selected_concepts, set_selected_concepts) = signal(Vec::<String>::new());
-    let (selected_locations, set_selected_locations) = signal(Vec::<String>::new());
-    let (selected_persons, set_selected_persons) = signal(Vec::<String>::new());
-    let (selected_organizations, set_selected_organizations) = signal(Vec::<String>::new());
-    let (selected_authors, set_selected_authors) = signal(Vec::<String>::new());
+    // Filter state - QueryBuilder filter condition
+    let (query_filter, set_query_filter) = signal(None::<FilterCondition>);
 
     // Server Action for Search
-    let search_action = ServerAction::<SearchDocuments>::new();
+    let search_action = ServerAction::<SearchDocumentsDynamic>::new();
 
     // Server Action for Delete
     let delete_action = ServerAction::<crate::web_app::components::search::DeleteDocument>::new();
@@ -60,26 +47,12 @@ pub fn SearchPage() -> impl IntoView {
     let execute_search = move |_| {
         let query = search_query.get();
         let query_trimmed = query.trim();
+        let filter_condition = query_filter.get();
         leptos::logging::log!("SearchPage: executing search for '{}'", query);
-
-        // Collect filter values
-        let keywords = selected_keywords.get();
-        let concepts = selected_concepts.get();
-        let locations = selected_locations.get();
-        let persons = selected_persons.get();
-        let organizations = selected_organizations.get();
-        let authors = selected_authors.get();
-        let category = selected_category.get();
 
         // Check if we have any search criteria
         let has_query = !query_trimmed.is_empty();
-        let has_filters = category.is_some()
-            || !keywords.is_empty()
-            || !concepts.is_empty()
-            || !locations.is_empty()
-            || !persons.is_empty()
-            || !organizations.is_empty()
-            || !authors.is_empty();
+        let has_filters = filter_condition.is_some();
 
         // Require either a query OR filters to proceed
         if !has_query && !has_filters {
@@ -87,58 +60,19 @@ pub fn SearchPage() -> impl IntoView {
             return;
         }
 
-        // If we have filters but NO query, use wildcard to match all documents
-        // This enables filter-only search (e.g., "show me all documents from Germany")
-        let final_query = if !has_query && has_filters {
-            leptos::logging::log!(
-                "SearchPage: using wildcard search with filters (filter-only mode)"
-            );
-            "*".to_string()
-        } else {
-            // User has typed something - use their exact query, even with filters
-            query.to_string()
-        };
+        use crate::domain::dtos::DynamicQueryRequest;
 
-        use crate::web_app::components::search::SearchRequest;
-
-        search_action.dispatch(SearchDocuments {
-            request: SearchRequest {
-                query: final_query,
+        search_action.dispatch(SearchDocumentsDynamic {
+            request: DynamicQueryRequest {
+                query: if query_trimmed.is_empty() {
+                    None
+                } else {
+                    Some(query)
+                },
+                filters: filter_condition,
                 limit: 20,
-                search_fields: search_fields.get(),
                 bm25_weight: 1.0,
                 vector_weight: 0.0,
-                category_id: category,
-                keywords: if keywords.is_empty() {
-                    None
-                } else {
-                    Some(keywords)
-                },
-                concepts: if concepts.is_empty() {
-                    None
-                } else {
-                    Some(concepts)
-                },
-                locations: if locations.is_empty() {
-                    None
-                } else {
-                    Some(locations)
-                },
-                persons: if persons.is_empty() {
-                    None
-                } else {
-                    Some(persons)
-                },
-                organizations: if organizations.is_empty() {
-                    None
-                } else {
-                    Some(organizations)
-                },
-                authors: if authors.is_empty() {
-                    None
-                } else {
-                    Some(authors)
-                },
             },
         });
     };
@@ -330,30 +264,15 @@ pub fn SearchPage() -> impl IntoView {
                         />
                     </div>
 
-                    // Filters and Results
-                    <div class="flex-1 flex gap-3 overflow-hidden p-3">
-                        // Filters (collapsible)
-                        <div class="w-48 flex flex-col bg-gray-50 rounded border border-gray-200 overflow-y-auto flex-shrink-0 z-0">
-                            <div class="px-3 py-2 border-b border-gray-200 bg-white">
-                                <h3 class="text-xs font-bold text-gray-700">"Filters"</h3>
-                            </div>
-                            <FacetedFilters
-                                categories=categories
-                                selected_category=selected_category.into()
-                                set_selected_category=set_selected_category
-                                selected_keywords=selected_keywords.into()
-                                set_selected_keywords=set_selected_keywords
-                                selected_concepts=selected_concepts.into()
-                                set_selected_concepts=set_selected_concepts
-                                selected_locations=selected_locations.into()
-                                set_selected_locations=set_selected_locations
-                                selected_persons=selected_persons.into()
-                                set_selected_persons=set_selected_persons
-                                selected_organizations=selected_organizations.into()
-                                set_selected_organizations=set_selected_organizations
-                                selected_authors=selected_authors.into()
-                                set_selected_authors=set_selected_authors
-                                on_change=Callback::new(move |_| execute_search(()))
+                    // Query Builder + Results
+                    <div class="flex-1 flex flex-col gap-3 overflow-hidden p-3">
+                        // Query Builder
+                        <div class="flex-shrink-0 bg-gray-50 rounded border border-gray-200 p-3">
+                            <QueryBuilder
+                                on_filter_change=Callback::new(move |condition: Option<FilterCondition>| {
+                                    set_query_filter.set(condition);
+                                    execute_search(());
+                                })
                             />
                         </div>
 

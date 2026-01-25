@@ -186,7 +186,11 @@ pub fn Chat(
 
                 // Capture signal values before entering async context
                 let current_messages_raw = messages.get();
-                let current_conv_id = conversation_id.get();
+                let current_conv_id = if let Some(selected_conv_id) = selected_conversation_id {
+                    selected_conv_id.get()
+                } else {
+                    None
+                };
 
                 let current_messages: Vec<dtos::ChatMessage> = current_messages_raw
                     .into_iter()
