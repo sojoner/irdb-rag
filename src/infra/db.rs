@@ -60,7 +60,7 @@ pub async fn create_pool(config: &DatabaseConfig) -> Result<PgPool> {
 }
 
 // ============================================
-// Hybrid Search
+// Search Filters
 // ============================================
 
 #[derive(Debug, Clone)]
@@ -235,7 +235,6 @@ pub async fn fast_bm25_search(
             (COALESCE(p.phrase_score, 0.0) * 0.3) +
             (COALESCE(bool.boolean_score, 0.0) * 0.2) +
             (1.0 / (60 + COALESCE(pr.prefix_rank, 1000)) * 0.5))::FLOAT8 as combined_score,
-            NULL::FLOAT8 as reranker_score,
             CASE
                 WHEN d.content @@@ $3 THEN paradedb.snippet(d.content, start_tag => '<mark>', end_tag => '</mark>', max_num_chars => 300)
                 ELSE NULL
@@ -291,247 +290,6 @@ pub async fn fast_bm25_search(
     Ok(results.into_iter().take(limit as usize).collect())
 }
 
-/// Perform advanced hybrid search combining multiple strategies for better F-measure
-///
-/// This improved search combines:
-/// 1. Phrase matching (exact sequences, high weight)
-/// 2. Boolean AND matching (all terms required, high precision)
-/// 3. BM25 full-text search (standard lexical matching)
-/// 4. Prefix/fuzzy matching (handles typos and partial matches)
-/// 5. Vector semantic search (contextual similarity, lower weight)
-///
-/// Weights can be tuned based on corpus characteristics:
-/// - More technical docs: increase bm25_weight to 0.7
-/// - More conversational: increase vector_weight to 0.4
-#[allow(clippy::too_many_arguments)]
-pub async fn hybrid_search(
-    pool: &PgPool,
-    query: &str,
-    embedding: &[f32],
-    filters: &SearchFilters,
-    limit: i32,
-    bm25_weight: f64,
-    vector_weight: f64,
-    reranker: Option<&std::sync::Arc<crate::infra::reranker::Reranker>>,
-) -> Result<Vec<SearchResult>> {
-    // Build enhanced queries using improved tokenization
-    let tokens = crate::infra::db_utils::tokenize_query(query);
-
-    // For document_chunks: simple content-only queries
-    let chunk_phrase_query = if tokens.is_empty() {
-        "id:__no_match__".to_string()
-    } else {
-        let quoted = tokens.iter().map(|t| format!("\"{}\"", t)).collect::<Vec<_>>().join(" ");
-        format!("content:({})", quoted)
-    };
-
-    let chunk_boolean_query = if tokens.is_empty() {
-        "id:__no_match__".to_string()
-    } else {
-        format!("content:({})", tokens.join(" &&& "))
-    };
-
-    let chunk_prefix_query = if tokens.is_empty() {
-        "id:__no_match__".to_string()
-    } else {
-        let prefix_terms = tokens.iter().map(|t| format!("{}*", t)).collect::<Vec<_>>().join(" ||| ");
-        format!("content:({})", prefix_terms)
-    };
-
-    let chunk_sanitized = if query.trim().is_empty() {
-        "id:__no_match__".to_string()
-    } else {
-        format!("content:({})", query.trim())
-    };
-
-    // Log query building details
-    tracing::info!("=== HYBRID SEARCH QUERY BUILDING ===");
-    tracing::info!("Original query: '{}'", query);
-    tracing::info!("Tokenized: {:?}", tokens);
-    tracing::info!("Chunk phrase: {}", chunk_phrase_query);
-    tracing::info!("Chunk boolean: {}", chunk_boolean_query);
-    tracing::info!("Chunk prefix: {}", chunk_prefix_query);
-    tracing::info!("Chunk sanitized: {}", chunk_sanitized);
-    tracing::info!(
-        "Search weights - BM25: {}, Vector: {}",
-        bm25_weight,
-        vector_weight
-    );
-    tracing::info!("=====================================");
-
-    // Convert embedding to PostgreSQL vector format
-    let embedding_str = embedding_to_string(embedding);
-
-    let dims = get_embedding_dimensions()?;
-    let sql = format!(
-        r#"
-        WITH phrase_results AS (
-            -- Phrase matching: exact sequences get 2.0x boost
-            SELECT
-                dc.document_id AS id,
-                2.0 * paradedb.score(dc.id) AS phrase_score
-            FROM document_chunks dc
-            WHERE dc.id @@@ $13
-            LIMIT $3 * 4
-        ),
-        bm25_results AS (
-            -- Full BM25 search: standard lexical matching
-            SELECT
-                dc.document_id AS id,
-                ROW_NUMBER() OVER (ORDER BY paradedb.score(dc.id) DESC) as bm25_rank
-            FROM document_chunks dc
-            WHERE dc.id @@@ $1
-            LIMIT $3 * 3
-        ),
-        boolean_results AS (
-            -- Boolean AND matching: all terms required for precision
-            SELECT
-                dc.document_id AS id,
-                1.5 * paradedb.score(dc.id) AS boolean_score
-            FROM document_chunks dc
-            WHERE dc.id @@@ $14
-            LIMIT $3 * 3
-        ),
-        prefix_results AS (
-            -- Prefix/fuzzy matching: flexibility with wildcards
-            SELECT
-                dc.document_id AS id,
-                ROW_NUMBER() OVER (ORDER BY paradedb.score(dc.id) DESC) as prefix_rank
-            FROM document_chunks dc
-            WHERE dc.id @@@ $15
-            LIMIT $3 * 2
-        ),
-        vector_results AS (
-            -- Vector semantic search: contextual similarity
-            SELECT
-                d.id,
-                ROW_NUMBER() OVER (ORDER BY dc.embedding <=> $2::vector({})) as vector_rank
-            FROM documents d
-            JOIN document_chunks dc ON d.id = dc.document_id
-            WHERE dc.embedding IS NOT NULL
-            ORDER BY dc.embedding <=> $2::vector({})
-            LIMIT $3 * 3
-        ),
-        all_results AS (
-            SELECT DISTINCT
-                COALESCE(ph.id, b.id, bo.id, pr.id, v.id) AS result_id,
-                ph.phrase_score,
-                COALESCE(1.0 / (60 + b.bm25_rank), 0.0) AS bm25_score,
-                bo.boolean_score,
-                COALESCE(1.0 / (60 + pr.prefix_rank), 0.0) AS prefix_score,
-                COALESCE(1.0 / (60 + v.vector_rank), 0.0) AS vector_score
-            FROM phrase_results ph
-            FULL OUTER JOIN bm25_results b ON ph.id = b.id
-            FULL OUTER JOIN boolean_results bo ON COALESCE(ph.id, b.id) = bo.id
-            FULL OUTER JOIN prefix_results pr ON COALESCE(ph.id, b.id, bo.id) = pr.id
-            FULL OUTER JOIN vector_results v ON COALESCE(ph.id, b.id, bo.id, pr.id) = v.id
-        )
-        SELECT
-            d.id,
-            d.title,
-            d.content,
-            d.source_path,
-            c.name as category_name,
-            COALESCE(ar.bm25_score, 0.0)::FLOAT as bm25_score,
-            COALESCE(ar.vector_score, 0.0)::FLOAT as vector_score,
-            LEAST(1.0, (
-                COALESCE(ar.phrase_score, 0.0) * 0.15 +
-                COALESCE(ar.bm25_score, 0.0) * $4 +
-                COALESCE(ar.boolean_score, 0.0) * 0.15 +
-                COALESCE(ar.prefix_score, 0.0) * 0.05 +
-                COALESCE(ar.vector_score, 0.0) * $5
-            ))::FLOAT as combined_score,
-            NULL::FLOAT as reranker_score,
-            CASE
-                WHEN d.content @@@ $1 THEN paradedb.snippet(d.content, start_tag => '<mark>', end_tag => '</mark>', max_num_chars => 300)
-                ELSE NULL
-            END as snippet
-        FROM all_results ar
-        JOIN documents d ON ar.result_id = d.id
-        LEFT JOIN categories c ON d.category_id = c.id
-        WHERE
-            ($6::UUID IS NULL OR d.category_id = $6)
-            AND ($7::TIMESTAMPTZ IS NULL OR d.created_at >= $7)
-            AND ($8::TIMESTAMPTZ IS NULL OR d.created_at <= $8)
-            AND ($9::TEXT[] IS NULL OR d.locations && $9)
-            AND ($10::TEXT[] IS NULL OR d.keywords && $10)
-        ORDER BY combined_score DESC
-        LIMIT $3
-        "#,
-        dims, dims
-    );
-
-    let mut results = sqlx::query_as::<_, SearchResult>(&sql)
-        .bind(&chunk_sanitized) // $1: BM25 query for chunks
-        .bind(&embedding_str)
-        .bind(limit * 3) // Fetch more for post-filtering
-        .bind(bm25_weight)
-        .bind(vector_weight)
-        .bind(filters.category_id)
-        .bind(filters.date_from)
-        .bind(filters.date_to)
-        .bind(&filters.locations)
-        .bind(&filters.keywords)
-        .bind("") // placeholder for additional filtering
-        .bind("") // placeholder
-        .bind(&chunk_phrase_query) // $13: phrase query for chunks
-        .bind(&chunk_boolean_query) // $14: boolean query for chunks
-        .bind(&chunk_prefix_query) // $15: prefix query for chunks
-        .fetch_all(pool)
-        .await?;
-
-    tracing::debug!(
-        "Hybrid search: phrase='{}', boolean='{}', prefix='{}'",
-        chunk_phrase_query,
-        chunk_boolean_query,
-        chunk_prefix_query
-    );
-
-    // Apply entity and word count filters using functional composition
-    if has_entity_or_wordcount_filters(filters) {
-        let result_ids: Vec<Uuid> = results.iter().map(|r| r.id).collect();
-        let docs = get_documents_by_ids(pool, &result_ids).await?;
-        let doc_map: std::collections::HashMap<Uuid, &Document> =
-            docs.iter().map(|d| (d.id, d)).collect();
-
-        results.retain(|r| {
-            doc_map
-                .get(&r.id)
-                .map(|doc| matches_all_filters(doc, filters))
-                .unwrap_or(true)
-        });
-    }
-
-    // Apply reranking if enabled
-    if let Some(reranker) = reranker {
-        let documents: Vec<&str> = results.iter().map(|r| r.content.as_str()).collect();
-
-        match reranker.rerank_batch(query, &documents).await {
-            Ok(scores) => {
-                for (result, score) in results.iter_mut().zip(scores.iter()) {
-                    result.reranker_score = Some(*score);
-                    // Blend: 70% reranker + 30% hybrid
-                    result.combined_score = 0.7 * score + 0.3 * result.combined_score;
-                }
-
-                // Re-sort by new combined score
-                results.sort_by(|a, b| {
-                    b.combined_score
-                        .partial_cmp(&a.combined_score)
-                        .unwrap_or(std::cmp::Ordering::Equal)
-                });
-
-                tracing::debug!("Reranking complete: {} results reranked", results.len());
-            }
-            Err(e) => {
-                tracing::warn!("Reranking failed, using original scores: {}", e);
-            }
-        }
-    }
-
-    // Truncate to requested limit
-    Ok(results.into_iter().take(limit as usize).collect())
-}
 
 /// Get documents by list of IDs
 pub async fn get_documents_by_ids(pool: &PgPool, ids: &[Uuid]) -> Result<Vec<Document>> {
@@ -589,7 +347,6 @@ pub async fn bm25_search(
             paradedb.score(d.id)::FLOAT as bm25_score,
             0.0::FLOAT as vector_score,
             paradedb.score(d.id)::FLOAT as combined_score,
-            NULL::FLOAT as reranker_score,
             NULL as snippet
         FROM documents d
         LEFT JOIN categories c ON d.category_id = c.id
@@ -683,7 +440,6 @@ pub async fn vector_search(
             0.0::FLOAT as bm25_score,
             vr.similarity::FLOAT as vector_score,
             vr.similarity::FLOAT as combined_score,
-            NULL::FLOAT as reranker_score,
             NULL as snippet
         FROM vector_results vr
         JOIN documents d ON vr.id = d.id
@@ -739,8 +495,6 @@ pub async fn dynamic_search(
     embedding: Option<&[f32]>,
     where_clause: &str,
     limit: i32,
-    bm25_weight: f64,
-    vector_weight: f64,
 ) -> Result<Vec<SearchResult>> {
     tracing::info!(
         "Dynamic search: has_query={}, has_embedding={}, limit={}",
@@ -785,7 +539,6 @@ pub async fn dynamic_search(
                 paradedb.score(dc.id)::FLOAT as bm25_score,
                 0.0::FLOAT as vector_score,
                 paradedb.score(dc.id)::FLOAT as combined_score,
-                NULL::FLOAT as reranker_score,
                 NULL as snippet
             FROM document_chunks dc
             JOIN documents d ON dc.document_id = d.id
@@ -837,7 +590,6 @@ pub async fn dynamic_search(
                 0.0::FLOAT as bm25_score,
                 vr.similarity::FLOAT as vector_score,
                 vr.similarity::FLOAT as combined_score,
-                NULL::FLOAT as reranker_score,
                 NULL as snippet
             FROM vector_results vr
             JOIN documents d ON vr.id = d.id
@@ -875,7 +627,6 @@ pub async fn dynamic_search(
                 0.0::FLOAT as bm25_score,
                 0.0::FLOAT as vector_score,
                 0.0::FLOAT as combined_score,
-                NULL::FLOAT as reranker_score,
                 NULL as snippet
             FROM documents d
             LEFT JOIN categories c ON d.category_id = c.id
@@ -1177,7 +928,6 @@ pub async fn filter_only_search(
             0.0::FLOAT as bm25_score,
             0.0::FLOAT as vector_score,
             0.0::FLOAT as combined_score,
-            NULL::FLOAT as reranker_score,
             CASE
                 WHEN d.content IS NOT NULL THEN substring(d.content, 1, 300)
                 ELSE NULL
@@ -1642,7 +1392,6 @@ pub async fn search_with_facets(
     bm25_weight: f64,
     vector_weight: f64,
     facet_limit: i32,
-    reranker: Option<&crate::infra::reranker::Reranker>,
 ) -> Result<(Vec<SearchResult>, Vec<crate::domain::dtos::FacetAggregate>)> {
     let embedding_str = embedding_to_string(embedding);
 
@@ -1715,7 +1464,6 @@ pub async fn search_with_facets(
                         bm25_score: row.6.map(|v| v as f64).unwrap_or(0.0),
                         vector_score: row.7.map(|v| v as f64).unwrap_or(0.0),
                         combined_score: combined_score.map(|v| v as f64).unwrap_or(0.0),
-                        reranker_score: None,
                         snippet: row.9,
                     });
                 }
@@ -1734,92 +1482,9 @@ pub async fn search_with_facets(
         }
     }
 
-    // Apply reranking if available
-    if let Some(reranker) = reranker {
-        let chunk_contents: Vec<&str> = search_results.iter().map(|r| r.content.as_str()).collect();
-
-        if let Ok(ranked) = reranker.rerank_and_sort(query, &chunk_contents).await {
-            let mut reranked = Vec::new();
-            for doc in ranked {
-                if let Some(result) = search_results.get(doc.index) {
-                    reranked.push(result.clone());
-                }
-            }
-            search_results = reranked;
-        }
-    }
-
     Ok((search_results, facets))
 }
 
-// ============================================
-// Search/Display Separation
-// ============================================
-
-/// Search for documents using hybrid search, then return full documents
-///
-/// This separates search (chunks) from display (full documents):
-/// 1. Search chunks for relevance using BM25 + vector similarity
-/// 2. Extract unique document IDs from results
-/// 3. Fetch full documents for display
-///
-/// Improves display quality by showing complete document context instead of chunks
-pub async fn search_and_get_documents(
-    pool: &PgPool,
-    query: &str,
-    embedding: &[f32],
-    filters: &SearchFilters,
-    limit: i32,
-    bm25_weight: f64,
-    vector_weight: f64,
-) -> Result<Vec<Document>> {
-    // Step 1: Search chunks to find relevant documents
-    let search_results = hybrid_search(
-        pool,
-        query,
-        embedding,
-        filters,
-        limit * 3, // Fetch more to get unique documents
-        bm25_weight,
-        vector_weight,
-        None, // No reranker for internal document search
-    )
-    .await?;
-
-    // Step 2: Extract unique document IDs, maintaining order by relevance using pure function
-    let result_ids: Vec<Uuid> = search_results.iter().map(|r| r.id).collect();
-    let doc_ids = extract_unique_ids(&result_ids);
-
-    // Step 3: Fetch full documents (limit to requested count)
-    let doc_ids_to_fetch: Vec<Uuid> = doc_ids.into_iter().take(limit as usize).collect();
-
-    if doc_ids_to_fetch.is_empty() {
-        return Ok(vec![]);
-    }
-
-    // Fetch full documents in order
-    let documents = sqlx::query_as::<_, Document>(
-        r#"
-        SELECT id, title, content, source_path, source_type, summary, author,
-               category_id, keywords, locations, created_at, status,
-               entities, metadata, embedding::FLOAT4[] as embedding, content_hash
-        FROM documents
-        WHERE id = ANY($1)
-        ORDER BY created_at DESC
-        "#,
-    )
-    .bind(&doc_ids_to_fetch)
-    .fetch_all(pool)
-    .await?;
-
-    tracing::info!(
-        "Search returned {} documents from {} search results",
-        documents.len(),
-        doc_ids_to_fetch.len()
-    );
-
-    Ok(documents)
-}
 
 // ============================================
 // Import Operations
@@ -2110,7 +1775,6 @@ pub async fn simple_bm25_search(
             paradedb.score(d.id)::FLOAT8 as bm25_score,
             0.0::FLOAT8 as vector_score,
             paradedb.score(d.id)::FLOAT8 as combined_score,
-            NULL::FLOAT8 as reranker_score,
             paradedb.snippet(d.content, start_tag => '<mark>', end_tag => '</mark>', max_num_chars => 300) as snippet
         FROM documents d
         LEFT JOIN categories c ON d.category_id = c.id
@@ -2192,7 +1856,6 @@ pub async fn pure_vector_search(
             0.0::FLOAT8 as bm25_score,
             (1.0 - (d.embedding <=> $1::vector))::FLOAT8 as vector_score,
             (1.0 - (d.embedding <=> $1::vector))::FLOAT8 as combined_score,
-            NULL::FLOAT8 as reranker_score,
             substring(d.content, 1, 300) as snippet
         FROM documents d
         LEFT JOIN categories c ON d.category_id = c.id
@@ -2342,4 +2005,180 @@ pub async fn get_conversation(
     .await?;
 
     Ok(row)
+}
+
+// ============================================
+// METADATA FILTERING & FACETED SEARCH
+// ============================================
+
+/// Metadata facet with value and count
+#[derive(Debug, Clone, sqlx::FromRow, serde::Serialize, serde::Deserialize)]
+pub struct MetadataFacet {
+    pub facet_type: String,
+    pub facet_value: String,
+    pub count: i64,
+}
+
+/// Available filter field with metadata
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct FilterField {
+    pub field_name: String,
+    pub field_type: String,
+    pub distinct_values: i64,
+    pub is_array: bool,
+    pub example_value: Option<String>,
+}
+
+/// Get all available metadata facets for filtering
+/// Returns aggregated counts of all filterable fields
+pub async fn get_metadata_facets(
+    pool: &PgPool,
+    search_query: Option<&str>,
+) -> Result<Vec<MetadataFacet>> {
+    tracing::debug!(
+        "Fetching metadata facets with search_query: {:?}",
+        search_query
+    );
+
+    let facets = sqlx::query_as::<_, MetadataFacet>(
+        r#"
+        SELECT * FROM get_all_metadata_facets(
+            search_query => $1,
+            search_embedding => NULL::vector
+        )
+        ORDER BY facet_type, count DESC
+        "#,
+    )
+    .bind(search_query)
+    .fetch_all(pool)
+    .await?;
+
+    tracing::debug!("Retrieved {} facets", facets.len());
+    Ok(facets)
+}
+
+/// Get all available metadata filter fields
+pub async fn get_filter_fields(_pool: &PgPool) -> Result<Vec<FilterField>> {
+    tracing::debug!("Fetching available filter fields");
+
+    // Return a hardcoded list of known filterable fields
+    // These correspond to document properties and extracted entities
+    let fields = vec![
+        FilterField {
+            field_name: "keywords".to_string(),
+            field_type: "text_array".to_string(),
+            distinct_values: 0,
+            is_array: true,
+            example_value: None,
+        },
+        FilterField {
+            field_name: "locations".to_string(),
+            field_type: "text_array".to_string(),
+            distinct_values: 0,
+            is_array: true,
+            example_value: None,
+        },
+        FilterField {
+            field_name: "author".to_string(),
+            field_type: "text".to_string(),
+            distinct_values: 0,
+            is_array: false,
+            example_value: None,
+        },
+        FilterField {
+            field_name: "source_type".to_string(),
+            field_type: "text".to_string(),
+            distinct_values: 0,
+            is_array: false,
+            example_value: None,
+        },
+        FilterField {
+            field_name: "status".to_string(),
+            field_type: "text".to_string(),
+            distinct_values: 0,
+            is_array: false,
+            example_value: None,
+        },
+        FilterField {
+            field_name: "category".to_string(),
+            field_type: "text".to_string(),
+            distinct_values: 0,
+            is_array: false,
+            example_value: None,
+        },
+        FilterField {
+            field_name: "person".to_string(),
+            field_type: "jsonb_array".to_string(),
+            distinct_values: 0,
+            is_array: true,
+            example_value: None,
+        },
+        FilterField {
+            field_name: "organization".to_string(),
+            field_type: "jsonb_array".to_string(),
+            distinct_values: 0,
+            is_array: true,
+            example_value: None,
+        },
+        FilterField {
+            field_name: "product".to_string(),
+            field_type: "jsonb_array".to_string(),
+            distinct_values: 0,
+            is_array: true,
+            example_value: None,
+        },
+        FilterField {
+            field_name: "concept".to_string(),
+            field_type: "jsonb_array".to_string(),
+            distinct_values: 0,
+            is_array: true,
+            example_value: None,
+        },
+        FilterField {
+            field_name: "question".to_string(),
+            field_type: "jsonb_array".to_string(),
+            distinct_values: 0,
+            is_array: true,
+            example_value: None,
+        },
+    ];
+
+    Ok(fields)
+}
+
+/// Filter field option (for UI dropdowns)
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct FilterOption {
+    pub field_type: String,
+    pub value: String,
+    pub count: i64,
+}
+
+/// Get all filter options grouped by field type
+pub async fn get_all_filter_options(
+    pool: &PgPool,
+) -> Result<std::collections::HashMap<String, Vec<FilterOption>>> {
+    tracing::debug!("Fetching all filter options");
+
+    let facets = get_metadata_facets(pool, None).await?;
+
+    let mut options_by_type: std::collections::HashMap<String, Vec<FilterOption>> =
+        std::collections::HashMap::new();
+
+    for facet in facets {
+        options_by_type
+            .entry(facet.facet_type.clone())
+            .or_insert_with(Vec::new)
+            .push(FilterOption {
+                field_type: facet.facet_type,
+                value: facet.facet_value,
+                count: facet.count,
+            });
+    }
+
+    tracing::debug!(
+        "Retrieved filter options for {} field types",
+        options_by_type.len()
+    );
+    Ok(options_by_type)
 }

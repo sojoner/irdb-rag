@@ -1,16 +1,18 @@
 -- ============================================
 -- IRDB-RAG DATABASE INITIALIZATION
 -- ============================================
--- Performance Optimized Schema with ParadeDB BM25 + pgvector Hybrid Search
+-- Unified Database Schema with ParadeDB BM25 + pgvector
 --
 -- Key Performance Features:
--- 1. BM25 Full-Text Search (ParadeDB) - Fast keyword matching
--- 2. pgvector HNSW Indexes - Semantic similarity search
+-- 1. BM25 Full-Text Search (ParadeDB) - Fast keyword matching for text search
+-- 2. pgvector HNSW Indexes - Semantic similarity search for chat/RAG
 -- 3. JSONB GIN Indexes - Entity/facet aggregations
 -- 4. Array GIN Indexes - Keywords and locations facets
 -- 5. Composite Indexes - Document chunks optimization
+-- 6. Comprehensive Metadata Indexing for faceted filtering
 --
--- See "Performance Optimization Indexes" section below (line ~178)
+-- This file combines the complete schema initialization and metadata
+-- indexing setup. It includes all tables, indexes, and SQL functions.
 
 -- Enable extensions
 CREATE EXTENSION IF NOT EXISTS vector;
@@ -20,7 +22,6 @@ CREATE EXTENSION pg_search;
 SET search_path TO public, paradedb;
 
 -- Drop existing tables and functions to recreate with correct schema
-DROP FUNCTION IF EXISTS hybrid_search(text,vector,integer,double precision,double precision,uuid,timestamp with time zone,timestamp with time zone,text[],text[]);
 DROP TABLE IF EXISTS document_chunks CASCADE;
 DROP TABLE IF EXISTS document_assets CASCADE;
 DROP TABLE IF EXISTS documents CASCADE;
@@ -81,7 +82,6 @@ CREATE TABLE IF NOT EXISTS document_assets (
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- Categories
 -- Conversations (for chat history)
 CREATE TABLE IF NOT EXISTS conversations (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -130,23 +130,13 @@ CREATE TABLE IF NOT EXISTS import_items (
     processed_at TIMESTAMPTZ
 );
 
--- Indexes
+-- ============================================
+-- INDEXES - SEARCH & RETRIEVAL
+-- ============================================
 
 -- BM25 Index on documents
 -- ParadeDB full-text search index for hybrid search
 -- Note: key_field='id' is required to link BM25 scores back to document rows
--- This enables field-qualified queries like: content:(query) OR title:(query) OR summary:(query)
---
--- The primary searchable fields indexed by ParadeDB BM25:
--- - content: Main document body text (highest relevance weight)
--- - title: Document title (medium relevance)
--- - summary: Document summary/abstract (medium relevance)
---
--- Additional filtering is handled in application code:
--- - author, keywords, locations: Filtered in Rust code (src/infra/db.rs)
--- - entities (concepts, persons, organizations, products): JSONB filtering
---
--- See HYBRID SEARCH STRATEGY section below for query building details
 CREATE INDEX documents_search_idx ON documents USING bm25 (id, content, title, summary)
 WITH (key_field='id');
 
@@ -155,8 +145,6 @@ CREATE INDEX chunks_search_idx ON document_chunks USING bm25 (id, content)
 WITH (key_field='id');
 
 -- HNSW Vector indexes for semantic similarity search
--- Note: HNSW parameters (m=16, ef_construction=64) balance build time vs query performance
--- These indexes dramatically improve vector similarity search performance
 CREATE INDEX IF NOT EXISTS idx_documents_embedding ON documents
 USING hnsw (embedding vector_cosine_ops)
 WITH (m = 16, ef_construction = 64);
@@ -166,30 +154,39 @@ USING hnsw (embedding vector_cosine_ops)
 WITH (m = 16, ef_construction = 64);
 
 -- ============================================
--- HYBRID SEARCH STRATEGY
+-- INDEXES - FILTERING & AGGREGATION
 -- ============================================
--- The system implements 5-strategy hybrid search combining:
--- 1. Phrase matching: exact phrase sequences (15% weight, 2.0x boost)
--- 2. BM25 lexical: standard full-text relevance (60% weight)
--- 3. Boolean AND: all terms required (15% weight, 1.5x boost)
--- 4. Prefix/fuzzy: wildcard matching for typos (5% weight)
--- 5. Vector semantic: embedding similarity (10% weight by default)
---
--- Query building in Rust (src/infra/db_utils.rs):
--- - tokenize_query(): Normalize and filter single-char noise
--- - build_phrase_query(): Create "quoted phrase" searches across fields
--- - build_boolean_query(): Create AND-required term searches
--- - build_prefix_query(): Create wildcard term* searches
--- - sanitize_bm25_query(): Add field qualification for multi-field search
---
--- All queries use field-qualified syntax:
---   (content:(term) OR title:(term) OR summary:(term) OR author:(term) OR source_path:(term))
---
--- Results are combined with FULL OUTER JOIN and scored with Reciprocal Rank Fusion:
---   RRF(rank) = 1.0 / (60 + rank)
---   combined_score = Σ(weight_i * RRF_i)
 
--- Unique index for idempotency (source_path + content_hash)
+-- JSONB GIN indexes for entity facets
+CREATE INDEX IF NOT EXISTS idx_documents_entities_persons ON documents USING GIN ((entities->'persons'));
+CREATE INDEX IF NOT EXISTS idx_documents_entities_organizations ON documents USING GIN ((entities->'organizations'));
+CREATE INDEX IF NOT EXISTS idx_documents_entities_products ON documents USING GIN ((entities->'products'));
+CREATE INDEX IF NOT EXISTS idx_documents_entities_concepts ON documents USING GIN ((entities->'concepts'));
+CREATE INDEX IF NOT EXISTS idx_documents_entities_questions ON documents USING GIN ((entities->'questions'));
+CREATE INDEX IF NOT EXISTS idx_documents_entities_jsonb ON documents USING GIN (entities);
+
+-- Array GIN indexes for keywords and locations
+CREATE INDEX IF NOT EXISTS idx_documents_keywords ON documents USING GIN (keywords);
+CREATE INDEX IF NOT EXISTS idx_documents_locations ON documents USING GIN (locations);
+
+-- Metadata JSONB index
+CREATE INDEX IF NOT EXISTS idx_documents_metadata_jsonb ON documents USING GIN (metadata);
+
+-- Scalar field indexes for filtering
+CREATE INDEX IF NOT EXISTS idx_documents_author ON documents(author) WHERE author IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_documents_source_type ON documents(source_type);
+CREATE INDEX IF NOT EXISTS idx_documents_status ON documents(status);
+CREATE INDEX IF NOT EXISTS idx_documents_category_id ON documents(category_id);
+
+-- Date range query optimization
+CREATE INDEX IF NOT EXISTS idx_documents_created_at ON documents(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_documents_created_at_status ON documents(created_at DESC, status);
+
+-- Document chunks optimization
+CREATE INDEX IF NOT EXISTS idx_document_chunks_document_id ON document_chunks(document_id);
+CREATE INDEX IF NOT EXISTS idx_document_chunks_document_chunk_idx ON document_chunks(document_id, chunk_index);
+
+-- Unique index for idempotency
 CREATE UNIQUE INDEX IF NOT EXISTS idx_documents_source_content_hash
 ON documents (source_path, content_hash)
 WHERE source_path IS NOT NULL AND content_hash IS NOT NULL;
@@ -201,120 +198,191 @@ CREATE INDEX IF NOT EXISTS idx_import_items_status ON import_items(status);
 CREATE INDEX IF NOT EXISTS idx_import_items_job_status_size ON import_items(job_id, status, file_size_bytes);
 
 -- ============================================
--- PERFORMANCE OPTIMIZATION INDEXES
+-- METADATA FIELD DISCOVERY
 -- ============================================
--- These indexes dramatically improve query performance for faceted search,
--- aggregations, and filtering. Critical for systems with 1000+ documents.
 
--- JSONB GIN indexes for entity facets (persons, organizations, products, concepts)
--- Impact: ~40-60% faster facet aggregations
--- Query: WHERE entities->'persons' IS NOT NULL
--- Used by: get_facet_aggregations(), faceted_search queries
--- Note: GIN (Generalized Inverted Index) is best for JSONB containment queries
-CREATE INDEX IF NOT EXISTS idx_documents_entities_persons ON documents USING GIN ((entities->'persons'));
-CREATE INDEX IF NOT EXISTS idx_documents_entities_organizations ON documents USING GIN ((entities->'organizations'));
-CREATE INDEX IF NOT EXISTS idx_documents_entities_products ON documents USING GIN ((entities->'products'));
-CREATE INDEX IF NOT EXISTS idx_documents_entities_concepts ON documents USING GIN ((entities->'concepts'));
-
--- Array GIN indexes for keywords and locations facets
--- Impact: ~30-50% faster UNNEST operations in facet queries
--- Query: WHERE keywords IS NOT NULL OR locations && filter_locations
--- Used by: get_facet_aggregations() UNNEST clauses, array overlap filters
-CREATE INDEX IF NOT EXISTS idx_documents_keywords ON documents USING GIN (keywords);
-CREATE INDEX IF NOT EXISTS idx_documents_locations ON documents USING GIN (locations);
-
--- Date range query optimization
--- Impact: ~20-40% faster date-filtered searches
--- Query: WHERE created_at BETWEEN date_from AND date_to
--- Used by: All search queries with date filters
--- Note: DESC ordering helps with recent documents queries
-CREATE INDEX IF NOT EXISTS idx_documents_created_at ON documents(created_at DESC);
-
--- Document chunks optimization
--- Impact: ~50-70% faster chunk retrieval by document
--- Queries: chunk_retrieval by document_id, sequential chunk reading
--- Used by: Document assembly, chunk-based highlighting
--- Composite index allows both single-column and two-column queries
-CREATE INDEX IF NOT EXISTS idx_document_chunks_document_id ON document_chunks(document_id);
-CREATE INDEX IF NOT EXISTS idx_document_chunks_document_chunk_idx ON document_chunks(document_id, chunk_index);
-
--- Hybrid Search Function
-CREATE OR REPLACE FUNCTION hybrid_search(
-  query_text TEXT,
-  query_embedding VECTOR,
-  match_count INT,
-  bm25_weight FLOAT,
-  vector_weight FLOAT,
-  filter_category_id UUID DEFAULT NULL,
-  filter_date_from TIMESTAMPTZ DEFAULT NULL,
-  filter_date_to TIMESTAMPTZ DEFAULT NULL,
-  filter_locations TEXT[] DEFAULT NULL,
-  filter_keywords TEXT[] DEFAULT NULL
-) RETURNS TABLE (
-  id UUID,
-  title TEXT,
-  content TEXT,
-  source_path TEXT,
-  category_name TEXT,
-  bm25_score FLOAT,
-  vector_score FLOAT,
-  combined_score FLOAT,
-  reranker_score FLOAT
+-- Get all unique entity types in entities JSONB
+CREATE OR REPLACE FUNCTION get_entity_types()
+RETURNS TABLE (
+    entity_type TEXT
 ) AS $$
-BEGIN
-  RETURN QUERY
-  WITH bm25_results AS (
-    SELECT
-      d.id,
-      ROW_NUMBER() OVER (ORDER BY paradedb.score(d.id) DESC) as rank
-    FROM documents d
-    WHERE d.id @@@ query_text
-    LIMIT match_count * 2
-  ),
-  vector_results AS (
-    SELECT
-      d.id,
-      ROW_NUMBER() OVER (ORDER BY d.embedding <=> query_embedding) as rank
-    FROM documents d
-    WHERE d.embedding IS NOT NULL
-    ORDER BY d.embedding <=> query_embedding
-    LIMIT match_count * 2
-  )
-  SELECT
-    d.id,
-    d.title,
-    d.content,
-    d.source_path,
-    c.name as category_name,
-    COALESCE(1.0 / (60 + b.rank), 0.0)::FLOAT as bm25_score,
-    COALESCE(1.0 / (60 + v.rank), 0.0)::FLOAT as vector_score,
-    LEAST(1.0, (
-      COALESCE(bm25_weight * (1.0 / (60 + b.rank)), 0.0) +
-      COALESCE(vector_weight * (1.0 / (60 + v.rank)), 0.0)
-    ))::FLOAT as combined_score,
-    NULL::FLOAT as reranker_score
-  FROM documents d
-  LEFT JOIN categories c ON d.category_id = c.id
-  LEFT JOIN bm25_results b ON d.id = b.id
-  LEFT JOIN vector_results v ON d.id = v.id
-  WHERE
-    (b.id IS NOT NULL OR v.id IS NOT NULL)
-    AND (filter_category_id IS NULL OR d.category_id = filter_category_id)
-    AND (filter_date_from IS NULL OR d.created_at >= filter_date_from)
-    AND (filter_date_to IS NULL OR d.created_at <= filter_date_to)
-    AND (filter_locations IS NULL OR d.locations && filter_locations)
-    AND (filter_keywords IS NULL OR d.keywords && filter_keywords)
-  ORDER BY combined_score DESC
-  LIMIT match_count;
-END;
-$$ LANGUAGE plpgsql;
+    SELECT DISTINCT key::TEXT as entity_type
+    FROM documents,
+         LATERAL jsonb_object_keys(entities) as key
+    WHERE entities IS NOT NULL AND entities != 'null'::jsonb
+    ORDER BY entity_type;
+$$ LANGUAGE SQL;
+
+-- Get all unique metadata keys
+CREATE OR REPLACE FUNCTION get_metadata_keys()
+RETURNS TABLE (
+    metadata_key TEXT
+) AS $$
+    SELECT DISTINCT key::TEXT as metadata_key
+    FROM documents,
+         LATERAL jsonb_object_keys(metadata) as key
+    WHERE metadata IS NOT NULL AND metadata != 'null'::jsonb
+    ORDER BY metadata_key;
+$$ LANGUAGE SQL;
 
 -- ============================================
--- FACETED SEARCH FUNCTIONS
+-- FACETED AGGREGATION FUNCTIONS
 -- ============================================
+
+-- Get all metadata facets with counts (comprehensive)
+CREATE OR REPLACE FUNCTION get_all_metadata_facets(
+    search_query TEXT DEFAULT NULL,
+    search_embedding VECTOR DEFAULT NULL
+)
+RETURNS TABLE (
+    facet_type TEXT,
+    facet_value TEXT,
+    count BIGINT
+) AS $$
+WITH matching_docs AS (
+    SELECT DISTINCT d.id
+    FROM documents d
+    WHERE
+        (search_query IS NULL OR (
+            d.id @@@ search_query OR
+            d.title @@ plainto_tsquery(search_query) OR
+            d.content @@ plainto_tsquery(search_query)
+        ))
+        AND (search_embedding IS NULL OR
+             (1.0 - (d.embedding <=> search_embedding)) > 0.3)
+)
+SELECT * FROM (
+    -- Keywords facet
+    SELECT 'keyword'::TEXT as facet_type, keyword as facet_value, COUNT(DISTINCT d.id)::BIGINT as count
+    FROM matching_docs d
+    JOIN documents doc ON d.id = doc.id
+    LEFT JOIN LATERAL UNNEST(doc.keywords) keyword ON TRUE
+    WHERE doc.keywords IS NOT NULL AND keyword IS NOT NULL
+    GROUP BY keyword
+
+    UNION ALL
+
+    -- Locations facet
+    SELECT 'location'::TEXT as facet_type, location as facet_value, COUNT(DISTINCT d.id)::BIGINT as count
+    FROM matching_docs d
+    JOIN documents doc ON d.id = doc.id
+    LEFT JOIN LATERAL UNNEST(doc.locations) location ON TRUE
+    WHERE doc.locations IS NOT NULL AND location IS NOT NULL
+    GROUP BY location
+
+    UNION ALL
+
+    -- Author facet
+    SELECT 'author'::TEXT as facet_type, doc.author as facet_value, COUNT(DISTINCT d.id)::BIGINT as count
+    FROM matching_docs d
+    JOIN documents doc ON d.id = doc.id
+    WHERE doc.author IS NOT NULL AND doc.author != ''
+    GROUP BY doc.author
+
+    UNION ALL
+
+    -- Source type facet
+    SELECT 'source_type'::TEXT as facet_type, doc.source_type as facet_value, COUNT(DISTINCT d.id)::BIGINT as count
+    FROM matching_docs d
+    JOIN documents doc ON d.id = doc.id
+    WHERE doc.source_type IS NOT NULL
+    GROUP BY doc.source_type
+
+    UNION ALL
+
+    -- Status facet
+    SELECT 'status'::TEXT as facet_type, doc.status as facet_value, COUNT(DISTINCT d.id)::BIGINT as count
+    FROM matching_docs d
+    JOIN documents doc ON d.id = doc.id
+    WHERE doc.status IS NOT NULL
+    GROUP BY doc.status
+
+    UNION ALL
+
+    -- Category facet
+    SELECT 'category'::TEXT as facet_type, c.name as facet_value, COUNT(DISTINCT d.id)::BIGINT as count
+    FROM matching_docs d
+    JOIN documents doc ON d.id = doc.id
+    LEFT JOIN categories c ON doc.category_id = c.id
+    WHERE c.name IS NOT NULL
+    GROUP BY c.name
+
+    UNION ALL
+
+    -- Persons entities facet
+    SELECT 'person'::TEXT as facet_type, person as facet_value, COUNT(DISTINCT d.id)::BIGINT as count
+    FROM matching_docs d
+    JOIN documents doc ON d.id = doc.id
+    LEFT JOIN LATERAL jsonb_array_elements_text(doc.entities->'persons') person ON TRUE
+    WHERE doc.entities->'persons' IS NOT NULL
+    GROUP BY person
+
+    UNION ALL
+
+    -- Organizations entities facet
+    SELECT 'organization'::TEXT as facet_type, org as facet_value, COUNT(DISTINCT d.id)::BIGINT as count
+    FROM matching_docs d
+    JOIN documents doc ON d.id = doc.id
+    LEFT JOIN LATERAL jsonb_array_elements_text(doc.entities->'organizations') org ON TRUE
+    WHERE doc.entities->'organizations' IS NOT NULL
+    GROUP BY org
+
+    UNION ALL
+
+    -- Products entities facet
+    SELECT 'product'::TEXT as facet_type, product as facet_value, COUNT(DISTINCT d.id)::BIGINT as count
+    FROM matching_docs d
+    JOIN documents doc ON d.id = doc.id
+    LEFT JOIN LATERAL jsonb_array_elements_text(doc.entities->'products') product ON TRUE
+    WHERE doc.entities->'products' IS NOT NULL
+    GROUP BY product
+
+    UNION ALL
+
+    -- Concepts entities facet
+    SELECT 'concept'::TEXT as facet_type, concept as facet_value, COUNT(DISTINCT d.id)::BIGINT as count
+    FROM matching_docs d
+    JOIN documents doc ON d.id = doc.id
+    LEFT JOIN LATERAL jsonb_array_elements_text(doc.entities->'concepts') concept ON TRUE
+    WHERE doc.entities->'concepts' IS NOT NULL
+    GROUP BY concept
+
+    UNION ALL
+
+    -- Questions entities facet
+    SELECT 'question'::TEXT as facet_type, question as facet_value, COUNT(DISTINCT d.id)::BIGINT as count
+    FROM matching_docs d
+    JOIN documents doc ON d.id = doc.id
+    LEFT JOIN LATERAL jsonb_array_elements_text(doc.entities->'questions') question ON TRUE
+    WHERE doc.entities->'questions' IS NOT NULL
+    GROUP BY question
+) facets
+ORDER BY facet_type, count DESC;
+$$ LANGUAGE SQL;
+
+-- Get facet values for a specific facet type
+CREATE OR REPLACE FUNCTION get_facet_values(
+    in_facet_type TEXT,
+    search_query TEXT DEFAULT NULL,
+    search_embedding VECTOR DEFAULT NULL,
+    limit_count INT DEFAULT 20
+)
+RETURNS TABLE (
+    facet_value TEXT,
+    count BIGINT
+) AS $$
+SELECT f.facet_value, f.count FROM get_all_metadata_facets(search_query, search_embedding) f
+WHERE f.facet_type = in_facet_type
+ORDER BY f.count DESC
+LIMIT limit_count;
+$$ LANGUAGE SQL;
+
+-- ============================================
+-- SEARCH FUNCTIONS
+-- ============================================
+
 
 -- Get facet aggregations (counts for filter values)
--- NOTE: This uses SQL language (not plpgsql) to properly handle WITH clauses
 CREATE OR REPLACE FUNCTION get_facet_aggregations(
   query_text TEXT DEFAULT NULL,
   query_embedding VECTOR DEFAULT NULL,
@@ -420,98 +488,225 @@ RETURNS TABLE (
   ORDER BY facet_name, count DESC
 $$ LANGUAGE SQL;
 
--- Get facet values with counts for a specific facet type - simplified without UNION
--- Note: This is a stub function that returns empty results.
--- The application should call get_facet_aggregations() instead for facet queries.
-CREATE OR REPLACE FUNCTION get_facet_values(
-  facet_type TEXT,
-  query_text TEXT DEFAULT NULL,
-  filter_category_id UUID DEFAULT NULL,
-  filter_date_from TIMESTAMPTZ DEFAULT NULL,
-  filter_date_to TIMESTAMPTZ DEFAULT NULL,
-  filter_locations TEXT[] DEFAULT NULL,
-  filter_keywords TEXT[] DEFAULT NULL,
-  filter_authors TEXT[] DEFAULT NULL,
-  limit_results INT DEFAULT 20
+-- Flexible search with dynamic metadata filtering
+CREATE OR REPLACE FUNCTION flexible_filter_search(
+    search_query TEXT DEFAULT NULL,
+    search_embedding VECTOR DEFAULT NULL,
+    match_count INT DEFAULT 20,
+    bm25_weight FLOAT DEFAULT 0.6,
+    vector_weight FLOAT DEFAULT 0.4,
+    -- Array filters
+    filter_keywords TEXT[] DEFAULT NULL,
+    filter_locations TEXT[] DEFAULT NULL,
+    filter_authors TEXT[] DEFAULT NULL,
+    filter_source_types TEXT[] DEFAULT NULL,
+    filter_statuses TEXT[] DEFAULT NULL,
+    filter_categories TEXT[] DEFAULT NULL,
+    -- Entity filters (from JSONB)
+    filter_persons TEXT[] DEFAULT NULL,
+    filter_organizations TEXT[] DEFAULT NULL,
+    filter_products TEXT[] DEFAULT NULL,
+    filter_concepts TEXT[] DEFAULT NULL,
+    filter_questions TEXT[] DEFAULT NULL,
+    -- Date range filters
+    filter_date_from TIMESTAMPTZ DEFAULT NULL,
+    filter_date_to TIMESTAMPTZ DEFAULT NULL
 )
 RETURNS TABLE (
-  value TEXT,
-  count BIGINT,
-  selected BOOLEAN
+    id UUID,
+    title TEXT,
+    content TEXT,
+    source_path TEXT,
+    source_type TEXT,
+    author TEXT,
+    status TEXT,
+    category_name TEXT,
+    keywords TEXT[],
+    locations TEXT[],
+    entities JSONB,
+    bm25_score FLOAT,
+    vector_score FLOAT,
+    combined_score FLOAT
+) AS $$
+WITH bm25_results AS (
+    SELECT
+        d.id,
+        ROW_NUMBER() OVER (ORDER BY paradedb.score(d.id) DESC) as rank
+    FROM documents d
+    WHERE
+        (search_query IS NULL OR d.id @@@ search_query)
+        AND (filter_keywords IS NULL OR d.keywords && filter_keywords)
+        AND (filter_locations IS NULL OR d.locations && filter_locations)
+        AND (filter_authors IS NULL OR d.author = ANY(filter_authors))
+        AND (filter_source_types IS NULL OR d.source_type = ANY(filter_source_types))
+        AND (filter_statuses IS NULL OR d.status = ANY(filter_statuses))
+        AND (filter_categories IS NULL OR EXISTS (
+            SELECT 1 FROM categories c WHERE c.id = d.category_id AND c.name = ANY(filter_categories)
+        ))
+        AND (filter_date_from IS NULL OR d.created_at >= filter_date_from)
+        AND (filter_date_to IS NULL OR d.created_at <= filter_date_to)
+        -- Entity filters
+        AND (filter_persons IS NULL OR d.entities->'persons' ?| filter_persons)
+        AND (filter_organizations IS NULL OR d.entities->'organizations' ?| filter_organizations)
+        AND (filter_products IS NULL OR d.entities->'products' ?| filter_products)
+        AND (filter_concepts IS NULL OR d.entities->'concepts' ?| filter_concepts)
+        AND (filter_questions IS NULL OR d.entities->'questions' ?| filter_questions)
+    LIMIT match_count * 3
+),
+vector_results AS (
+    SELECT
+        d.id,
+        ROW_NUMBER() OVER (ORDER BY d.embedding <=> search_embedding) as rank
+    FROM documents d
+    WHERE
+        d.embedding IS NOT NULL
+        AND (filter_keywords IS NULL OR d.keywords && filter_keywords)
+        AND (filter_locations IS NULL OR d.locations && filter_locations)
+        AND (filter_authors IS NULL OR d.author = ANY(filter_authors))
+        AND (filter_source_types IS NULL OR d.source_type = ANY(filter_source_types))
+        AND (filter_statuses IS NULL OR d.status = ANY(filter_statuses))
+        AND (filter_categories IS NULL OR EXISTS (
+            SELECT 1 FROM categories c WHERE c.id = d.category_id AND c.name = ANY(filter_categories)
+        ))
+        AND (filter_date_from IS NULL OR d.created_at >= filter_date_from)
+        AND (filter_date_to IS NULL OR d.created_at <= filter_date_to)
+        -- Entity filters
+        AND (filter_persons IS NULL OR d.entities->'persons' ?| filter_persons)
+        AND (filter_organizations IS NULL OR d.entities->'organizations' ?| filter_organizations)
+        AND (filter_products IS NULL OR d.entities->'products' ?| filter_products)
+        AND (filter_concepts IS NULL OR d.entities->'concepts' ?| filter_concepts)
+        AND (filter_questions IS NULL OR d.entities->'questions' ?| filter_questions)
+    ORDER BY d.embedding <=> search_embedding
+    LIMIT match_count * 3
 )
-AS $$
-  SELECT 'dummy_value'::TEXT, 0::BIGINT, FALSE::BOOLEAN WHERE FALSE;
+SELECT
+    d.id,
+    d.title,
+    d.content,
+    d.source_path,
+    d.source_type,
+    d.author,
+    d.status,
+    c.name as category_name,
+    d.keywords,
+    d.locations,
+    d.entities,
+    COALESCE(1.0 / (60 + b.rank), 0.0)::FLOAT as bm25_score,
+    COALESCE(1.0 / (60 + v.rank), 0.0)::FLOAT as vector_score,
+    LEAST(1.0, (
+        COALESCE(bm25_weight * (1.0 / (60 + b.rank)), 0.0) +
+        COALESCE(vector_weight * (1.0 / (60 + v.rank)), 0.0)
+    ))::FLOAT as combined_score
+FROM documents d
+LEFT JOIN categories c ON d.category_id = c.id
+LEFT JOIN bm25_results b ON d.id = b.id
+LEFT JOIN vector_results v ON d.id = v.id
+WHERE (b.id IS NOT NULL OR v.id IS NOT NULL)
+ORDER BY combined_score DESC, bm25_score DESC
+LIMIT match_count;
 $$ LANGUAGE SQL;
 
--- Placeholder for search_with_facets - implement in application layer
--- The Rust code can call hybrid_search() and get_facet_aggregations() separately
-CREATE OR REPLACE FUNCTION search_with_facets(
-  query_text TEXT,
-  query_embedding VECTOR,
-  match_count INT,
-  bm25_weight FLOAT,
-  vector_weight FLOAT,
-  filter_category_id UUID DEFAULT NULL,
-  filter_date_from TIMESTAMPTZ DEFAULT NULL,
-  filter_date_to TIMESTAMPTZ DEFAULT NULL,
-  filter_locations TEXT[] DEFAULT NULL,
-  filter_keywords TEXT[] DEFAULT NULL,
-  filter_authors TEXT[] DEFAULT NULL,
-  facet_limit INT DEFAULT 10
+-- ============================================
+-- MONITORING & MAINTENANCE VIEWS
+-- ============================================
+
+-- View all available filter values across the database
+CREATE OR REPLACE VIEW metadata_filter_catalog AS
+WITH all_facets AS (
+    SELECT 'keywords' as field_type, keyword as field_value
+    FROM documents, LATERAL UNNEST(keywords) keyword
+    WHERE keywords IS NOT NULL
+
+    UNION ALL
+
+    SELECT 'locations' as field_type, location as field_value
+    FROM documents, LATERAL UNNEST(locations) location
+    WHERE locations IS NOT NULL
+
+    UNION ALL
+
+    SELECT 'authors' as field_type, author as field_value
+    FROM documents
+    WHERE author IS NOT NULL
+
+    UNION ALL
+
+    SELECT 'source_types' as field_type, source_type as field_value
+    FROM documents
+    WHERE source_type IS NOT NULL
+
+    UNION ALL
+
+    SELECT 'statuses' as field_type, status as field_value
+    FROM documents
+    WHERE status IS NOT NULL
+
+    UNION ALL
+
+    SELECT 'categories' as field_type, c.name as field_value
+    FROM documents d
+    LEFT JOIN categories c ON d.category_id = c.id
+    WHERE c.name IS NOT NULL
+
+    UNION ALL
+
+    SELECT 'persons' as field_type, person as field_value
+    FROM documents, LATERAL jsonb_array_elements_text(entities->'persons') person
+    WHERE entities->'persons' IS NOT NULL
+
+    UNION ALL
+
+    SELECT 'organizations' as field_type, org as field_value
+    FROM documents, LATERAL jsonb_array_elements_text(entities->'organizations') org
+    WHERE entities->'organizations' IS NOT NULL
+
+    UNION ALL
+
+    SELECT 'products' as field_type, product as field_value
+    FROM documents, LATERAL jsonb_array_elements_text(entities->'products') product
+    WHERE entities->'products' IS NOT NULL
+
+    UNION ALL
+
+    SELECT 'concepts' as field_type, concept as field_value
+    FROM documents, LATERAL jsonb_array_elements_text(entities->'concepts') concept
+    WHERE entities->'concepts' IS NOT NULL
+
+    UNION ALL
+
+    SELECT 'questions' as field_type, question as field_value
+    FROM documents, LATERAL jsonb_array_elements_text(entities->'questions') question
+    WHERE entities->'questions' IS NOT NULL
 )
+SELECT
+    field_type,
+    field_value,
+    COUNT(*) as frequency
+FROM all_facets
+GROUP BY field_type, field_value
+ORDER BY field_type, frequency DESC;
+
+-- Index statistics function
+CREATE OR REPLACE FUNCTION show_metadata_index_stats()
 RETURNS TABLE (
-  result_type TEXT,
-  id UUID,
-  title TEXT,
-  content TEXT,
-  source_path TEXT,
-  category_name TEXT,
-  bm25_score FLOAT,
-  vector_score FLOAT,
-  combined_score FLOAT,
-  snippet TEXT,
-  facet_name TEXT,
-  facet_value TEXT,
-  facet_count BIGINT
+    index_name TEXT,
+    table_name TEXT,
+    index_type TEXT,
+    size_mb FLOAT
 ) AS $$
-  WITH bm25_results AS (
-    SELECT d.id, ROW_NUMBER() OVER (ORDER BY paradedb.score(d.id) DESC) as rank
-    FROM documents d
-    WHERE d.id @@@ query_text LIMIT match_count * 2
-  ),
-  vector_results AS (
-    SELECT d.id, ROW_NUMBER() OVER (ORDER BY d.embedding <=> query_embedding) as rank
-    FROM documents d
-    WHERE d.embedding IS NOT NULL
-    ORDER BY d.embedding <=> query_embedding LIMIT match_count * 2
-  ),
-  search_results AS (
-    SELECT d.id, d.title, d.content, d.source_path, d.category_id, b.rank, v.rank
-    FROM documents d
-    LEFT JOIN bm25_results b ON d.id = b.id
-    LEFT JOIN vector_results v ON d.id = v.id
-    WHERE
-      (b.id IS NOT NULL OR v.id IS NOT NULL)
-      AND (filter_category_id IS NULL OR d.category_id = filter_category_id)
-      AND (filter_date_from IS NULL OR d.created_at >= filter_date_from)
-      AND (filter_date_to IS NULL OR d.created_at <= filter_date_to)
-      AND (filter_locations IS NULL OR d.locations && filter_locations)
-      AND (filter_keywords IS NULL OR d.keywords && filter_keywords)
-      AND (filter_authors IS NULL OR d.author = ANY(filter_authors))
-    ORDER BY LEAST(1.0, (COALESCE(bm25_weight * (1.0 / (60 + b.rank)), 0.0) +
-              COALESCE(vector_weight * (1.0 / (60 + v.rank)), 0.0))) DESC
-    LIMIT match_count
-  )
-  SELECT 'result'::TEXT, sr.id, sr.title, sr.content, sr.source_path, c.name,
-         COALESCE(1.0 / (60 + b.rank), 0.0)::FLOAT,
-         COALESCE(1.0 / (60 + v.rank), 0.0)::FLOAT,
-         LEAST(1.0, (COALESCE(bm25_weight * (1.0 / (60 + b.rank)), 0.0) +
-          COALESCE(vector_weight * (1.0 / (60 + v.rank)), 0.0)))::FLOAT,
-         NULL::TEXT, NULL::TEXT, NULL::TEXT, NULL::BIGINT
-  FROM search_results sr
-  LEFT JOIN bm25_results b ON sr.id = b.id
-  LEFT JOIN vector_results v ON sr.id = v.id
-  LEFT JOIN categories c ON sr.category_id = c.id;
+SELECT
+    indexname,
+    tablename,
+    CASE
+        WHEN indexdef::TEXT ~ 'USING gin' THEN 'GIN'
+        WHEN indexdef::TEXT ~ 'USING bm25' THEN 'BM25'
+        WHEN indexdef::TEXT ~ 'USING hnsw' THEN 'HNSW'
+        ELSE 'OTHER'
+    END as index_type,
+    ROUND(pg_relation_size(indexname::regclass) / 1024.0 / 1024.0, 2)::FLOAT
+FROM pg_indexes
+WHERE tablename IN ('documents', 'document_chunks')
+ORDER BY pg_relation_size(indexname::regclass) DESC;
 $$ LANGUAGE SQL;
 
 -- ============================================
@@ -519,37 +714,18 @@ $$ LANGUAGE SQL;
 -- ============================================
 -- Configure ParadeDB for optimal performance with large document sets
 -- These settings should be applied via docker-compose POSTGRES_INITDB_ARGS
--- or postgresql.conf for persistent configuration
 --
 -- CRITICAL SETTINGS:
 -- 1. paradedb.enable_aggregate_custom_scan = on
---    - Enables optimized aggregation scans for facet queries
---    - Can improve facet performance by 40-60%
---
 -- 2. paradedb.enable_custom_scan_without_operator = on
---    - Allows BM25 index usage without explicit @@@ operator
---    - Improves query planner flexibility
---
--- 3. paradedb.per_tuple_cost = 100 (instead of default 1e+08)
---    - Reduces query planning time from 46+ seconds to <3ms
---    - Default value (1e+08) causes severe planning delays
---
+-- 3. paradedb.per_tuple_cost = 100
 -- 4. paradedb.limit_fetch_multiplier = 2
---    - Improves result quality for LIMIT queries
---    - Fetches extra results then limits to reduce ranking artifacts
---
--- EXAMPLE Docker Configuration (docker-compose.yml):
--- environment:
---   POSTGRES_INITDB_ARGS: >
---     -c paradedb.enable_aggregate_custom_scan=on
---     -c paradedb.enable_custom_scan_without_operator=on
---     -c paradedb.per_tuple_cost=100
---     -c paradedb.limit_fetch_multiplier=2
 --
 -- INDEX MAINTENANCE (run periodically):
 -- - VACUUM ANALYZE documents;
 -- - REINDEX INDEX documents_search_idx;
+-- - REINDEX INDEX chunks_search_idx;
 --
 -- MONITORING (check query performance):
 -- - EXPLAIN ANALYZE SELECT * FROM hybrid_search(...);
--- - SELECT * FROM paradedb.index_info('documents_search_idx');
+-- - SELECT * FROM show_metadata_index_stats();

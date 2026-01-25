@@ -1,7 +1,7 @@
 .PHONY: help lint fmt fmt-check check ci \
         test test-all test-unit test-integration test-db-reset test-db-init \
         gpu-up gpu-down gpu-restart gpu-build gpu-logs gpu-shell gpu-test gpu-lint gpu-ci \
-        gpu-verify-db gpu-db-stats \
+        gpu-verify-db gpu-db-stats gpu-leptos-watch \
         docker-build docker-push docker-release \
         docling-test reranker-test clean db-backup db-restore
 
@@ -41,6 +41,7 @@ help:
 	@echo "  gpu-build         - Build dev container with parallel compilation"
 	@echo "  gpu-logs          - View logs from all GPU services"
 	@echo "  gpu-shell         - Shell into dev container"
+	@echo "  gpu-leptos-watch  - Run Leptos development watch server (hot-reload) in GPU container"
 	@echo "  gpu-test          - Run tests in GPU environment (optional: TEST_FILTER=test_name TEST_FLAGS=--nocapture)"
 	@echo "  gpu-lint          - Run lint checks in GPU container"
 	@echo "  gpu-ci            - Run full CI in GPU container"
@@ -371,6 +372,18 @@ gpu-db-stats:
 	@echo "Database Size:"
 	@docker exec rag-db psql -U rag_user -d rag_chat -c "SELECT pg_size_pretty(pg_database_size('rag_chat')) as database_size"
 	@echo ""
+
+# Start leptos watch in GPU container for development with hot-reload
+# This runs the Leptos development server with automatic recompilation and browser reload
+gpu-leptos-watch:
+	@echo "Starting Leptos development watch server in GPU container..."
+	@echo ""
+	@echo "The app will be available at: http://localhost:3000"
+	@echo "Hot-reload is enabled on port :3001"
+	@echo ""
+	@echo "To stop: Press Ctrl+C"
+	@echo ""
+	RUN_ENV=test-gpu docker compose -f docker-compose-gpu.yml exec dev cargo leptos watch
 
 # =============================================================================
 # Maintenance & Backup

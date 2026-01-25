@@ -25,73 +25,6 @@ pub async fn health_check() -> &'static str {
     "OK"
 }
 
-/// Hybrid search endpoint
-pub async fn search(
-    State(state): State<AppState>,
-    Json(req): Json<SearchRequest>,
-) -> Result<Json<Vec<crate::domain::models::SearchResult>>, AppError> {
-    tracing::info!(
-        "Received search request: query='{}', limit={}, bm25_weight={}, vector_weight={}",
-        req.query,
-        req.limit,
-        req.bm25_weight,
-        req.vector_weight
-    );
-
-    // Reject empty or special-only queries early to avoid embedding service timeout
-    let trimmed_query = req.query.trim();
-    if trimmed_query.is_empty() || trimmed_query == "*" {
-        tracing::info!("Query rejected: empty or special character only");
-        return Ok(Json(Vec::new()));
-    }
-
-    // Generate embedding for query
-    tracing::debug!("Generating embedding for query: '{}'", req.query);
-    let embedding = state.embedder.embed(&req.query).await.map_err(|e| {
-        tracing::error!("Failed to generate embedding: {}", e);
-        AppError::Internal(e.to_string())
-    })?;
-    tracing::debug!("Generated embedding with dimension: {}", embedding.len());
-
-    let filters = db::SearchFilters {
-        category_id: req.category_id,
-        date_from: req.date_from.and_then(|d| d.parse().ok()),
-        date_to: req.date_to.and_then(|d| d.parse().ok()),
-        locations: req.locations,
-        keywords: req.keywords,
-        source_types: None,
-        authors: req.authors,
-        concepts: req.concepts,
-        organizations: req.organizations,
-        persons: req.persons,
-        products: req.products,
-        word_count_min: req.word_count_min,
-        word_count_max: req.word_count_max,
-    };
-
-    tracing::debug!("Executing hybrid search with filters: {:?}", filters);
-    let results = db::hybrid_search(
-        &state.pool,
-        &req.query,
-        &embedding,
-        &filters,
-        req.limit,
-        req.bm25_weight,
-        req.vector_weight,
-        state.reranker.as_ref(),
-    )
-    .await
-    .map_err(|e| {
-        tracing::error!("Hybrid search failed: {}", e);
-        AppError::Internal(e.to_string())
-    })?;
-
-    tracing::info!(
-        "Search completed successfully, returning {} results",
-        results.len()
-    );
-    Ok(Json(results))
-}
 
 /// Fast BM25-only search endpoint for UI
 /// Optimized for keyword-based search without embedding generation
@@ -236,8 +169,6 @@ pub async fn search_dynamic(
         embedding.as_deref(),
         &where_clause,
         req.limit,
-        req.bm25_weight,
-        req.vector_weight,
     )
     .await
     .map_err(|e| {
@@ -273,7 +204,7 @@ pub async fn chat(
 
     // Retrieve relevant chunks
     tracing::debug!("Retrieving {} relevant chunks", req.context_chunks);
-    let mut chunks = db::get_relevant_chunks(
+    let chunks = db::get_relevant_chunks(
         &state.pool,
         &embedding,
         req.context_chunks,
@@ -285,30 +216,6 @@ pub async fn chat(
         AppError::Internal(e.to_string())
     })?;
     tracing::debug!("Retrieved {} chunks", chunks.len());
-
-    // Rerank chunks if available
-    if let Some(reranker) = state.reranker.as_ref() {
-        let chunk_contents: Vec<&str> = chunks.iter().map(|c| c.content.as_str()).collect();
-
-        match reranker
-            .rerank_and_sort(&req.message, &chunk_contents)
-            .await
-        {
-            Ok(ranked) => {
-                let mut reranked = Vec::new();
-                for doc in ranked {
-                    if let Some(chunk) = chunks.get(doc.index) {
-                        reranked.push(chunk.clone());
-                    }
-                }
-                tracing::debug!("Reranked {} chunks for chat context", reranked.len());
-                chunks = reranked;
-            }
-            Err(e) => {
-                tracing::warn!("Chunk reranking failed, using original order: {}", e);
-            }
-        }
-    }
 
     // Build context
     let context: String = chunks
@@ -406,7 +313,7 @@ pub async fn chat_conversation(
     // Retrieve relevant chunks if document_ids provided
     let mut context = String::new();
     if req.document_ids.is_some() && req.context_chunks > 0 {
-        let mut chunks = db::get_relevant_chunks(
+        let chunks = db::get_relevant_chunks(
             &state.pool,
             &embedding,
             req.context_chunks,
@@ -418,30 +325,6 @@ pub async fn chat_conversation(
             AppError::Internal(e.to_string())
         })?;
         tracing::debug!("Retrieved {} chunks", chunks.len());
-
-        // Rerank chunks if available
-        if let Some(reranker) = state.reranker.as_ref() {
-            let chunk_contents: Vec<&str> = chunks.iter().map(|c| c.content.as_str()).collect();
-
-            match reranker
-                .rerank_and_sort(&last_user_message, &chunk_contents)
-                .await
-            {
-                Ok(ranked) => {
-                    let mut reranked = Vec::new();
-                    for doc in ranked {
-                        if let Some(chunk) = chunks.get(doc.index) {
-                            reranked.push(chunk.clone());
-                        }
-                    }
-                    tracing::debug!("Reranked {} chunks for chat context", reranked.len());
-                    chunks = reranked;
-                }
-                Err(e) => {
-                    tracing::warn!("Chunk reranking failed, using original order: {}", e);
-                }
-            }
-        }
 
         // Build context
         context = chunks
@@ -565,7 +448,7 @@ pub async fn chat_conversation_stream(
     let mut sources: Vec<SourceReference> = vec![];
 
     if req.document_ids.is_some() && req.context_chunks > 0 {
-        let mut chunks = db::get_relevant_chunks(
+        let chunks = db::get_relevant_chunks(
             &state.pool,
             &embedding,
             req.context_chunks,
@@ -576,33 +459,6 @@ pub async fn chat_conversation_stream(
             tracing::error!("Failed to retrieve chunks: {}", e);
             AppError::Internal(e.to_string())
         })?;
-
-        // Rerank chunks if available
-        if let Some(reranker) = state.reranker.as_ref() {
-            let chunk_contents: Vec<&str> = chunks.iter().map(|c| c.content.as_str()).collect();
-
-            match reranker
-                .rerank_and_sort(&last_user_message, &chunk_contents)
-                .await
-            {
-                Ok(ranked) => {
-                    let mut reranked = Vec::new();
-                    for doc in ranked {
-                        if let Some(chunk) = chunks.get(doc.index) {
-                            reranked.push(chunk.clone());
-                        }
-                    }
-                    tracing::debug!(
-                        "Reranked {} chunks for streaming chat context",
-                        reranked.len()
-                    );
-                    chunks = reranked;
-                }
-                Err(e) => {
-                    tracing::warn!("Chunk reranking failed, using original order: {}", e);
-                }
-            }
-        }
 
         // Build context
         context = chunks
@@ -786,7 +642,7 @@ pub async fn chat_stream(
     })?;
 
     // Retrieve relevant chunks
-    let mut chunks = db::get_relevant_chunks(
+    let chunks = db::get_relevant_chunks(
         &state.pool,
         &embedding,
         req.context_chunks,
@@ -797,33 +653,6 @@ pub async fn chat_stream(
         tracing::error!("Failed to retrieve chunks: {}", e);
         AppError::Internal(e.to_string())
     })?;
-
-    // Rerank chunks if available
-    if let Some(reranker) = state.reranker.as_ref() {
-        let chunk_contents: Vec<&str> = chunks.iter().map(|c| c.content.as_str()).collect();
-
-        match reranker
-            .rerank_and_sort(&req.message, &chunk_contents)
-            .await
-        {
-            Ok(ranked) => {
-                let mut reranked = Vec::new();
-                for doc in ranked {
-                    if let Some(chunk) = chunks.get(doc.index) {
-                        reranked.push(chunk.clone());
-                    }
-                }
-                tracing::debug!(
-                    "Reranked {} chunks for streaming chat context",
-                    reranked.len()
-                );
-                chunks = reranked;
-            }
-            Err(e) => {
-                tracing::warn!("Chunk reranking failed, using original order: {}", e);
-            }
-        }
-    }
 
     // Build context
     let context: String = chunks
@@ -1149,7 +978,6 @@ pub async fn faceted_search(
         req.bm25_weight,
         req.vector_weight,
         req.facet_limit,
-        state.reranker.as_ref().map(|r| r.as_ref()),
     )
     .await
     .map_err(|e| {

@@ -145,14 +145,6 @@ pub fn ResultsList(
                                                     <span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-green-100 text-green-800">
                                                         {format!("{:.0}%", res.combined_score * 100.0)}
                                                     </span>
-                                                    {res.reranker_score.map(|reranker_score| {
-                                                        view! {
-                                                            <span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-blue-100 text-blue-800"
-                                                                  title="Re-ranker relevance score">
-                                                                {format!("RR: {:.0}%", reranker_score * 100.0)}
-                                                            </span>
-                                                        }
-                                                    })}
                                                 </div>
                                             </div>
 

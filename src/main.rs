@@ -11,7 +11,7 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 use rag_chat::api::{self, state::AppState};
 use rag_chat::config::Settings;
-use rag_chat::infra::{db, embedder::Embedder, reranker::Reranker};
+use rag_chat::infra::{db, embedder::Embedder};
 use rag_chat::logging;
 use rag_chat::services::indexing;
 
@@ -191,27 +191,6 @@ async fn serve(
     let embedder = Embedder::new(&settings.embedding)?;
     embedder.init().await?;
 
-    // Initialize reranker if enabled
-    let reranker = if settings.reranking.enabled {
-        match Reranker::new(&settings.reranking) {
-            Ok(r) => {
-                if let Err(e) = r.init().await {
-                    tracing::warn!("Reranker init failed, disabling: {}", e);
-                    None
-                } else {
-                    tracing::info!("Reranker initialized: model={}", r.get_model_name());
-                    Some(Arc::new(r))
-                }
-            }
-            Err(e) => {
-                tracing::warn!("Failed to create reranker, disabling: {}", e);
-                None
-            }
-        }
-    } else {
-        None
-    };
-
     // Spawn import job workers
     let import_job_queue = rag_chat::services::import::spawn_import_workers(
         pool.clone(),
@@ -241,7 +220,6 @@ async fn serve(
         leptos_options.clone(),
         import_job_queue,
         Arc::new(settings),
-        reranker,
     );
 
     // Create the Axum router with API routes and Leptos integration

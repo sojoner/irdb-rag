@@ -8,12 +8,13 @@ pub async fn discover_fields(pool: &PgPool) -> Result<Vec<FieldMetadata>, sqlx::
     let rows: Vec<(String, i64)> = sqlx::query_as(
         r#"
         SELECT
-            jsonb_object_keys(metadata) AS field_name,
-            COUNT(DISTINCT metadata->field_name) AS unique_count
-        FROM documents
+            key AS field_name,
+            COUNT(*) AS unique_count
+        FROM documents,
+             LATERAL jsonb_object_keys(metadata) AS key
         WHERE metadata IS NOT NULL
-        GROUP BY field_name
-        ORDER BY field_name
+        GROUP BY key
+        ORDER BY key
         "#
     )
     .fetch_all(pool)

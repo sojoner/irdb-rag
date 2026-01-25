@@ -16,7 +16,6 @@ pub fn create_router(state: AppState) -> Router {
 
     Router::new()
         // API routes
-        .route("/api/search", post(handlers::search))
         .route("/api/search/bm25", post(handlers::search_bm25))
         .route("/api/search/vector", post(handlers::search_vector))
         .route("/api/search/dynamic", post(handlers::search_dynamic))

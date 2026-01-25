@@ -25,8 +25,6 @@ pub struct Settings {
     #[serde(default)]
     pub knowledge_base: KnowledgeBaseConfig,
     #[serde(default)]
-    pub reranking: RerankerConfig,
-    #[serde(default)]
     pub enrichment: EnrichmentConfig,
 }
 
@@ -268,35 +266,6 @@ pub struct RagConfig {
     pub chat_system_prompt: Option<String>,
 
     pub entity_extraction_enabled: bool,
-}
-
-/// Re-ranking service configuration
-#[derive(Debug, Deserialize, Clone)]
-pub struct RerankerConfig {
-    #[serde(default)]
-    pub enabled: bool,
-    pub api_url: String,
-    pub api_key: String,
-    pub model: String,
-    pub timeout_seconds: u64,
-    #[serde(default = "default_10")]
-    pub max_search_results: usize,
-    #[serde(default = "default_8")]
-    pub max_chat_chunks: usize,
-}
-
-impl Default for RerankerConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            api_url: "http://localhost:11434".to_string(),
-            api_key: String::new(),
-            model: "dengcao/Qwen3-Reranker-0.6B:Q5_K_M".to_string(),
-            timeout_seconds: 30,
-            max_search_results: 10,
-            max_chat_chunks: 8,
-        }
-    }
 }
 
 impl Default for EnrichmentConfig {

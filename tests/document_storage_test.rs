@@ -2,7 +2,7 @@ use anyhow::Result;
 use rag_chat::config::Settings;
 use rag_chat::domain::models::Document;
 use rag_chat::infra::db::SearchFilters;
-use rag_chat::infra::db::{create_pool, hybrid_search};
+use rag_chat::infra::db::create_pool;
 use sqlx::{PgPool, Row};
 use uuid::Uuid;
 
@@ -145,61 +145,3 @@ async fn test_document_upsert() -> Result<()> {
     Ok(())
 }
 
-#[tokio::test]
-async fn test_hybrid_search_syntax() -> Result<()> {
-    let pool = setup_db().await?;
-    println!("\n🔍 Testing hybrid search syntax...\n");
-
-    // We don't need to insert documents because we are testing query parsing/execution,
-    // not result relevance (which is covered by other tests).
-    // We just want to ensure these queries don't throw errors.
-
-    let test_queries = vec![
-        "id:()",
-        "id: ()",
-        "id:( )",
-        "*",
-        "id:(*)",
-        "",
-        "   ",
-        "normal query",
-    ];
-
-    let dummy_embedding = vec![0.0; 1024]; // Assuming 1024 dim
-    let filters = SearchFilters {
-        category_id: None,
-        date_from: None,
-        date_to: None,
-        locations: None,
-        keywords: None,
-        source_types: None,
-        authors: None,
-        concepts: None,
-        organizations: None,
-        persons: None,
-        products: None,
-        word_count_min: None,
-        word_count_max: None,
-    };
-
-    for query in test_queries {
-        println!("Testing query: '{}'", query);
-        let result =
-            hybrid_search(&pool, query, &dummy_embedding, &filters, 5, 0.5, 0.5, None).await;
-
-        match result {
-            Ok(_) => println!("✅ Query '{}' succeeded", query),
-            Err(e) => {
-                let error_msg = format!("{:?}", e);
-                if error_msg.contains("could not parse query string") {
-                    panic!("❌ Query '{}' caused parsing error: {}", query, error_msg);
-                } else {
-                    println!("⚠️ Query '{}' failed with other error (expected if DB empty or other issues): {:?}", query, e);
-                }
-            }
-        }
-    }
-
-    pool.close().await;
-    Ok(())
-}

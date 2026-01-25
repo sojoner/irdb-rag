@@ -163,8 +163,8 @@ pub async fn search_documents_dynamic(
 
     let query = request.query.clone();
     let limit = request.limit;
-    let bm25_weight = request.bm25_weight;
-    let vector_weight = request.vector_weight;
+    let _bm25_weight = request.bm25_weight;
+    let _vector_weight = request.vector_weight;
 
     info!("========== DYNAMIC QUERY SEARCH ==========");
     info!("Query: {:?}, Filters: {:?}", query, request.filters);
@@ -198,8 +198,6 @@ pub async fn search_documents_dynamic(
         None, // No embedding for now, text-only search
         &where_clause,
         limit,
-        bm25_weight,
-        vector_weight,
     )
     .await
     .map_err(|e| ServerFnError::new(format!("Search failed: {}", e)))?;
