@@ -71,7 +71,12 @@
       "Bash(sudo pkill:*)",
       "Bash(timeout 180 bash:*)",
       "Bash(./test_search_performance.sh:*)",
-      "Bash(./test_dedicated_search.sh:*)"
+      "Bash(./test_dedicated_search.sh:*)",
+      "Bash(docker-compose logs:*)",
+      "Bash(docker-compose config:*)",
+      "Bash(env)",
+      "Bash(ssh:*)",
+      "Bash(scp:*)"
     ],
     "additionalDirectories": [
       "/tmp"
