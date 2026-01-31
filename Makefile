@@ -1,6 +1,6 @@
 .PHONY: help lint fmt fmt-check check ci \
         test test-all test-unit test-integration test-db-reset test-db-init \
-        gpu-up gpu-down gpu-restart gpu-build gpu-logs gpu-shell gpu-test gpu-lint gpu-ci \
+        gpu-sync gpu-up gpu-down gpu-restart gpu-build gpu-logs gpu-shell gpu-test gpu-lint gpu-ci \
         gpu-verify-db gpu-db-stats \
         docker-build docker-push docker-release \
         docling-test reranker-test clean db-backup db-restore db-reset db-migrate
@@ -16,6 +16,10 @@ IMAGE_TAG ?= latest
 REGISTRY ?= docker.io
 IMAGE_FULL := $(REGISTRY)/$(IMAGE_NAME):$(IMAGE_TAG)
 BUILD_JOBS ?= 0
+
+# Remote development configuration (bm3090)
+REMOTE_HOST ?= sojoner@bm3090
+REMOTE_PATH ?= ~/irdb-rag
 
 help:
 	@echo "Available targets:"
@@ -60,7 +64,7 @@ help:
 	@echo ""
 	@echo "Maintenance & Backup:"
 	@echo "  db-refresh-indexes - Refresh BM25 and HNSW indexes for optimal search performance"
-	@echo "  db-backup         - Backup database to /data/backups"
+	@echo "  db-backup         - Backup database to ./data/backups"
 	@echo "  db-reset          - Reset database (drop and recreate empty)"
 	@echo "  db-migrate        - Apply schema migrations from init.sql to current database"
 	@echo "  db-restore        - Restore from backup with schema migration (requires BACKUP_FILE=...)"
@@ -143,26 +147,23 @@ docker-release: docker-build docker-push
 
 # GPU Development targets
 # Start GPU development environment
-gpu-up:
-	@echo "Starting GPU development environment (CLEAN START)..."
+# Sync local code to remote (bm3090)
+gpu-sync:
+	@echo "Syncing project to $(REMOTE_HOST):$(REMOTE_PATH)..."
+	rsync -avz --exclude 'target' --exclude 'node_modules' --exclude '.git' --exclude 'data' . $(REMOTE_HOST):$(REMOTE_PATH)/
+	@echo "✅ Sync complete"
+
+gpu-up: gpu-sync
+	@echo "Starting GPU development environment on $(REMOTE_HOST)..."
 	@echo ""
-	@echo "Step 1: Cleaning up old containers and data..."
-	RUN_ENV=test-gpu docker compose -f docker-compose-gpu.yml down -v 2>/dev/null || true
-	#@sudo rm -rf /data/postgres
-	#@echo "✅ Cleaned old data"
-	#@echo ""
-	@echo "Step 2: Preparing data directories..."
-	@sudo mkdir -p /data/docling_models /data/docling_scratch /data/ollama /data/postgres /data/backups
-	@sudo chown 999:999 /data/postgres
-	@sudo chmod 700 /data/postgres
-	@sudo chmod 777 /data/backups
-	@echo "✅ Directories ready"
+	@echo "Step 1: Cleaning up old containers..."
+	ssh $(REMOTE_HOST) "cd $(REMOTE_PATH) && RUN_ENV=test-gpu docker compose down -v 2>/dev/null || true"
 	@echo ""
-	@echo "Step 3: Starting database service only..."
-	RUN_ENV=test-gpu EMBEDDING_DIMENSIONS=$(EMBEDDING_DIMENSIONS) docker compose -f docker-compose-gpu.yml up -d db db-perms
+	@echo "Step 2: Starting database service..."
+	ssh $(REMOTE_HOST) "cd $(REMOTE_PATH) && RUN_ENV=test-gpu EMBEDDING_DIMENSIONS=$(EMBEDDING_DIMENSIONS) docker compose up -d db db-perms"
 	@echo "Waiting for database to be healthy..."
 	@for i in 1 2 3 4 5 6 7 8 9 10 11 12; do \
-		if docker exec rag-db pg_isready -U rag_user -d rag_chat > /dev/null 2>&1; then \
+		if ssh $(REMOTE_HOST) "docker exec rag-db pg_isready -U rag_user -d rag_chat" > /dev/null 2>&1; then \
 			echo "✓ Database is ready"; \
 			break; \
 		fi; \
@@ -175,79 +176,79 @@ gpu-up:
 	done
 	@echo "✅ Database is healthy"
 	@echo ""
-	@echo "Step 4: Running database schema initialization..."
-	RUN_ENV=test-gpu EMBEDDING_DIMENSIONS=$(EMBEDDING_DIMENSIONS) docker compose -f docker-compose-gpu.yml run --rm db-init
+	@echo "Step 3: Running database schema initialization..."
+	ssh $(REMOTE_HOST) "cd $(REMOTE_PATH) && RUN_ENV=test-gpu EMBEDDING_DIMENSIONS=$(EMBEDDING_DIMENSIONS) docker compose run --rm db-init"
 	@echo "✅ Database schema initialized"
 	@echo ""
-	@echo "Step 5: Verifying database schema..."
-	@docker exec rag-db psql -U rag_user -d rag_chat -c "SELECT COUNT(*) as table_count FROM information_schema.tables WHERE table_schema='public'" 2>/dev/null || true
+	@echo "Step 4: Verifying database schema..."
+	@ssh $(REMOTE_HOST) "docker exec rag-db psql -U rag_user -d rag_chat -c \"SELECT COUNT(*) as table_count FROM information_schema.tables WHERE table_schema='public'\"" 2>/dev/null || true
 	@echo "✅ Schema verification complete"
 	@echo ""
-	@echo "Step 6: Starting remaining services (Ollama, Docling, Web)..."
-	RUN_ENV=test-gpu EMBEDDING_DIMENSIONS=$(EMBEDDING_DIMENSIONS) docker compose -f docker-compose-gpu.yml up -d ollama docling ollama-init docling-init web
+	@echo "Step 5: Starting remaining services (Ollama, Docling, Web)..."
+	ssh $(REMOTE_HOST) "cd $(REMOTE_PATH) && RUN_ENV=test-gpu EMBEDDING_DIMENSIONS=$(EMBEDDING_DIMENSIONS) docker compose up -d ollama docling ollama-init docling-init web"
 	@echo "⏳ Services starting (this may take a few minutes)..."
 	@echo ""
 	@echo "✅ GPU development environment started!"
 	@echo ""
 	@echo "Services:"
-	@echo "  - App:     http://localhost:3000 (hot-reload enabled)"
-	@echo "  - Docling: http://localhost:5001"
-	@echo "  - Ollama:  http://localhost:11434"
-	@echo "  - DB:      localhost:15432"
+	@echo "  - App:     http://bm3090:3000 (hot-reload enabled)"
+	@echo "  - Docling: http://bm3090:5001"
+	@echo "  - Ollama:  http://bm3090:11434"
+	@echo "  - DB:      bm3090:15432"
 	@echo ""
 	@echo "Monitor progress with: make gpu-logs"
 	@echo "Shell into dev container: make gpu-shell"
 
 .PHONY: db-backup gpu-down
 # Stop GPU development environment
-gpu-down: db-backup
-	docker compose -f docker-compose-gpu.yml down
+gpu-down:
+	ssh $(REMOTE_HOST) "cd $(REMOTE_PATH) && docker compose down"
 
-# Restart dev container (useful after config changes)
-gpu-restart:
-	@echo "Restarting dev container..."
-	docker compose -f docker-compose-gpu.yml restart dev
-	@echo "Dev container restarted! App will reload automatically."
+# Restart web container (useful after config changes)
+gpu-restart: gpu-sync
+	@echo "Restarting web container..."
+	ssh $(REMOTE_HOST) "cd $(REMOTE_PATH) && docker compose restart web"
+	@echo "Web container restarted! App will reload automatically."
 
 # Build dev container with parallel compilation
-gpu-build:
+gpu-build: gpu-sync
 	@echo "Building dev container with 16 parallel jobs..."
-	DOCKER_BUILDKIT=1 docker compose -f docker-compose-gpu.yml build --parallel dev
+	ssh $(REMOTE_HOST) "cd $(REMOTE_PATH) && DOCKER_BUILDKIT=1 docker compose build --parallel web"
 
 # View logs
 gpu-logs:
-	docker compose -f docker-compose-gpu.yml logs --since 30s -f
+	ssh $(REMOTE_HOST) "cd $(REMOTE_PATH) && docker compose logs --since 30s -f"
 
-# Shell into dev container
+# Shell into web container
 gpu-shell:
-	docker compose -f docker-compose-gpu.yml exec dev bash
+	ssh -t $(REMOTE_HOST) "cd $(REMOTE_PATH) && docker compose exec web bash"
 
 # Run tests in GPU environment (optionally filter with TEST_FILTER env var)
 # Usage: make gpu-test                          # Run all tests
 #        make gpu-test TEST_FILTER=test_import  # Run specific test
 #        make gpu-test TEST_FILTER=test_docling TEST_FLAGS=--nocapture
-gpu-test:
+gpu-test: gpu-sync
 	@if [ -z "$(TEST_FILTER)" ]; then \
 		echo "Running all tests in GPU environment..."; \
-		docker compose -f docker-compose-gpu.yml exec dev cargo test -- $(TEST_FLAGS); \
+		ssh $(REMOTE_HOST) "cd $(REMOTE_PATH) && docker compose exec web cargo test -- $(TEST_FLAGS)"; \
 	else \
 		echo "Running filtered tests: $(TEST_FILTER) in GPU environment..."; \
-		docker compose -f docker-compose-gpu.yml exec dev cargo test $(TEST_FILTER) -- $(TEST_FLAGS); \
+		ssh $(REMOTE_HOST) "cd $(REMOTE_PATH) && docker compose exec web cargo test $(TEST_FILTER) -- $(TEST_FLAGS)"; \
 	fi
 
 # Run lint in GPU environment
-gpu-lint:
+gpu-lint: gpu-sync
 	@echo "Running lint checks in GPU container..."
-	docker compose -f docker-compose-gpu.yml exec dev cargo clippy --all-targets --all-features -- -D warnings
+	ssh $(REMOTE_HOST) "cd $(REMOTE_PATH) && docker compose exec web cargo clippy --all-targets --all-features -- -D warnings"
 	@echo "✅ GPU lint passed!"
 
 # Run full CI in GPU environment
-gpu-ci:
+gpu-ci: gpu-sync
 	@echo "Running full CI in GPU container..."
-	docker compose -f docker-compose-gpu.yml exec dev cargo fmt --check
-	docker compose -f docker-compose-gpu.yml exec dev cargo clippy --all-targets --all-features -- -D warnings
-	docker compose -f docker-compose-gpu.yml exec dev cargo check --all-targets --all-features
-	docker compose -f docker-compose-gpu.yml exec dev cargo test --lib
+	ssh $(REMOTE_HOST) "cd $(REMOTE_PATH) && docker compose exec web cargo fmt --check"
+	ssh $(REMOTE_HOST) "cd $(REMOTE_PATH) && docker compose exec web cargo clippy --all-targets --all-features -- -D warnings"
+	ssh $(REMOTE_HOST) "cd $(REMOTE_PATH) && docker compose exec web cargo check --all-targets --all-features"
+	ssh $(REMOTE_HOST) "cd $(REMOTE_PATH) && docker compose exec web cargo test --lib"
 	@echo "✅ GPU CI passed!"
 
 # Verify database schema is initialized and ready
@@ -255,11 +256,11 @@ gpu-verify-db:
 	@echo "Verifying database schema initialization..."
 	@echo ""
 	@echo "Checking if database is accessible..."
-	@docker exec rag-db pg_isready -U rag_user -d rag_chat > /dev/null 2>&1 || (echo "❌ Database not accessible"; exit 1)
+	@ssh $(REMOTE_HOST) "docker exec rag-db pg_isready -U rag_user -d rag_chat" > /dev/null 2>&1 || (echo "❌ Database not accessible"; exit 1)
 	@echo "✓ Database is accessible"
 	@echo ""
 	@echo "Checking table count..."
-	@TABLES=$$(docker exec rag-db psql -U rag_user -d rag_chat -tc "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='public'" | tr -d ' '); \
+	@TABLES=$$(ssh $(REMOTE_HOST) "docker exec rag-db psql -U rag_user -d rag_chat -tc \"SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='public'\"" | tr -d ' '); \
 	if [ "$$TABLES" -gt 0 ]; then \
 		echo "✓ Database schema created ($$TABLES tables found)"; \
 	else \
@@ -268,7 +269,7 @@ gpu-verify-db:
 	fi
 	@echo ""
 	@echo "Database tables:"
-	@docker exec rag-db psql -U rag_user -d rag_chat -c "SELECT tablename FROM pg_tables WHERE schemaname='public' ORDER BY tablename"
+	@ssh $(REMOTE_HOST) "docker exec rag-db psql -U rag_user -d rag_chat -c \"SELECT tablename FROM pg_tables WHERE schemaname='public' ORDER BY tablename\""
 	@echo ""
 	@echo "✅ Database schema verified successfully!"
 
@@ -278,16 +279,16 @@ gpu-db-stats:
 	@echo "==================="
 	@echo ""
 	@echo "Documents:"
-	@docker exec rag-db psql -U rag_user -d rag_chat -c "SELECT COUNT(*) as document_count FROM documents"
+	@ssh $(REMOTE_HOST) "docker exec rag-db psql -U rag_user -d rag_chat -c \"SELECT COUNT(*) as document_count FROM documents\""
 	@echo ""
 	@echo "Document Chunks:"
-	@docker exec rag-db psql -U rag_user -d rag_chat -c "SELECT COUNT(*) as chunk_count FROM document_chunks"
+	@ssh $(REMOTE_HOST) "docker exec rag-db psql -U rag_user -d rag_chat -c \"SELECT COUNT(*) as chunk_count FROM document_chunks\""
 	@echo ""
 	@echo "Import Jobs:"
-	@docker exec rag-db psql -U rag_user -d rag_chat -c "SELECT COUNT(*) as job_count FROM import_jobs"
+	@ssh $(REMOTE_HOST) "docker exec rag-db psql -U rag_user -d rag_chat -c \"SELECT COUNT(*) as job_count FROM import_jobs\""
 	@echo ""
 	@echo "Database Size:"
-	@docker exec rag-db psql -U rag_user -d rag_chat -c "SELECT pg_size_pretty(pg_database_size('rag_chat')) as database_size"
+	@ssh $(REMOTE_HOST) "docker exec rag-db psql -U rag_user -d rag_chat -c \"SELECT pg_size_pretty(pg_database_size('rag_chat')) as database_size\""
 	@echo ""
 
 # =============================================================================
@@ -297,13 +298,13 @@ gpu-db-stats:
 # Reset database (drop and recreate empty)
 db-reset:
 	@echo "Resetting database..."
-	@docker exec rag-db psql -U rag_user -d postgres -c "DROP DATABASE IF EXISTS rag_chat; CREATE DATABASE rag_chat;" 2>/dev/null
+	@ssh $(REMOTE_HOST) "docker exec rag-db psql -U rag_user -d postgres -c \"DROP DATABASE IF EXISTS rag_chat; CREATE DATABASE rag_chat;\""
 	@echo "✅ Database reset complete (empty)"
 
 # Apply schema migrations (run init.sql on current database)
-db-migrate:
+db-migrate: gpu-sync
 	@echo "Applying schema migrations..."
-	@docker exec -i rag-db psql -U rag_user -d rag_chat < ./sql/init.sql > /dev/null 2>&1
+	@ssh $(REMOTE_HOST) "cd $(REMOTE_PATH) && docker exec rag-db psql -U rag_user -d rag_chat -f /docker-entrypoint-initdb.d/02_init.sql"
 	@echo "✅ Schema migrations applied"
 
 # Refresh database indexes for optimal search performance
@@ -315,25 +316,24 @@ db-refresh-indexes:
 	@echo "  2. REINDEX BM25 indexes (documents_search_idx, chunks_search_idx)"
 	@echo "  3. REINDEX HNSW vector indexes"
 	@echo ""
-	@docker exec rag-db psql -U rag_user -d rag_chat -c "VACUUM ANALYZE documents;"
-	@docker exec rag-db psql -U rag_user -d rag_chat -c "VACUUM ANALYZE document_chunks;"
-	@docker exec rag-db psql -U rag_user -d rag_chat -c "REINDEX INDEX documents_search_idx;"
-	@docker exec rag-db psql -U rag_user -d rag_chat -c "REINDEX INDEX chunks_search_idx;"
-	@docker exec rag-db psql -U rag_user -d rag_chat -c "REINDEX INDEX CONCURRENTLY idx_documents_embedding;" 2>/dev/null || true
-	@docker exec rag-db psql -U rag_user -d rag_chat -c "REINDEX INDEX CONCURRENTLY idx_document_chunks_embedding;" 2>/dev/null || true
+	@ssh $(REMOTE_HOST) "docker exec rag-db psql -U rag_user -d rag_chat -c 'VACUUM ANALYZE documents;'"
+	@ssh $(REMOTE_HOST) "docker exec rag-db psql -U rag_user -d rag_chat -c 'VACUUM ANALYZE document_chunks;'"
+	@ssh $(REMOTE_HOST) "docker exec rag-db psql -U rag_user -d rag_chat -c 'REINDEX INDEX documents_search_idx;'"
+	@ssh $(REMOTE_HOST) "docker exec rag-db psql -U rag_user -d rag_chat -c 'REINDEX INDEX chunks_search_idx;'"
+	@ssh $(REMOTE_HOST) "docker exec rag-db psql -U rag_user -d rag_chat -c 'REINDEX INDEX CONCURRENTLY idx_documents_embedding;'" 2>/dev/null || true
+	@ssh $(REMOTE_HOST) "docker exec rag-db psql -U rag_user -d rag_chat -c 'REINDEX INDEX CONCURRENTLY idx_document_chunks_embedding;'" 2>/dev/null || true
 	@echo "✅ Index refresh complete!"
 
-# Backup the database to /data/backups
+# Backup the database to remote /data/backups
 db-backup:
-	@echo "Backing up database to /data/backups..."
-	@sudo mkdir -p /data/backups
-	@sudo chmod 777 /data/backups
-	@BACKUP_FILE="/data/backups/rag_chat_$$(date +%Y%m%d_%H%M%S).dump"; \
-	docker exec rag-db pg_dump -U rag_user -d rag_chat -F c -f /tmp/temp_backup.dump; \
-	docker cp rag-db:/tmp/temp_backup.dump $$BACKUP_FILE; \
-	docker exec rag-db rm /tmp/temp_backup.dump; \
-	echo "✅ Backup created: $$BACKUP_FILE"; \
-	ls -lh $$BACKUP_FILE
+	@echo "Backing up database to $(REMOTE_HOST):/data/backups..."
+	@ssh $(REMOTE_HOST) "sudo mkdir -p /data/backups && sudo chmod 777 /data/backups"
+	@ssh $(REMOTE_HOST) "BACKUP_FILE=\"/data/backups/rag_chat_\$$(date +%Y%m%d_%H%M%S).dump\" && \
+		docker exec rag-db pg_dump -U rag_user -d rag_chat -F c -f /tmp/temp_backup.dump && \
+		docker cp rag-db:/tmp/temp_backup.dump \$$BACKUP_FILE && \
+		docker exec rag-db rm /tmp/temp_backup.dump && \
+		echo \"✅ Backup created: \$$BACKUP_FILE\" && \
+		ls -lh \$$BACKUP_FILE"
 
 # Restore the database from a backup file
 # Usage: make db-restore BACKUP_FILE=/data/backups/rag_chat_20260125_202752.dump
@@ -343,28 +343,28 @@ db-backup:
 # 3. Skips schema migrations (backup already includes current schema)
 db-restore:
 	@if [ -z "$(BACKUP_FILE)" ]; then \
-		echo "❌ Error: BACKUP_FILE is not set. Usage: make db-restore BACKUP_FILE=/path/to/backup.dump"; \
+		echo "❌ Error: BACKUP_FILE is not set. Usage: make db-restore BACKUP_FILE=/data/backups/rag_chat_20260125_202752.dump"; \
 		exit 1; \
 	fi
 	@echo "Restoring database from $(BACKUP_FILE)..."
 	@echo ""
 	@echo "Step 1: Terminating active connections..."
-	@docker exec rag-db psql -U rag_user -d postgres -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname='rag_chat' AND pid != pg_backend_pid();" 2>/dev/null || true
+	@ssh $(REMOTE_HOST) "docker exec rag-db psql -U rag_user -d postgres -c \"SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname='rag_chat' AND pid != pg_backend_pid();\"" 2>/dev/null || true
 	@echo "✅ Connections terminated"
 	@echo ""
 	@echo "Step 2: Dropping and recreating database..."
-	@docker exec rag-db psql -U rag_user -d postgres -c "DROP DATABASE IF EXISTS rag_chat; CREATE DATABASE rag_chat;" 2>/dev/null || true
+	@ssh $(REMOTE_HOST) "docker exec rag-db psql -U rag_user -d postgres -c \"DROP DATABASE IF EXISTS rag_chat; CREATE DATABASE rag_chat;\""
 	@echo "✅ Database recreated"
 	@echo ""
 	@echo "Step 3: Restoring data from backup..."
-	@docker cp $(BACKUP_FILE) rag-db:/tmp/restore.dump
+	@ssh $(REMOTE_HOST) "docker cp $(BACKUP_FILE) rag-db:/tmp/restore.dump"
 	@echo "  Running pg_restore (this may take a few minutes for large backups)..."
-	@bash -c 'docker exec rag-db pg_restore -U rag_user -d rag_chat --no-acl --no-owner /tmp/restore.dump >/dev/null 2>&1; exit 0'
-	@docker exec rag-db rm /tmp/restore.dump 2>/dev/null || true
+	@ssh $(REMOTE_HOST) "docker exec rag-db pg_restore -U rag_user -d rag_chat --no-acl --no-owner /tmp/restore.dump 2>/dev/null || true"
+	@ssh $(REMOTE_HOST) "docker exec rag-db rm /tmp/restore.dump" 2>/dev/null || true
 	@echo "✅ Data restored (schema already included in backup)"
 	@echo ""
 	@echo "Step 4: Verifying restore..."
-	@docker exec rag-db psql -U rag_user -d rag_chat -c "SELECT COUNT(*) as documents FROM documents;"
+	@ssh $(REMOTE_HOST) "docker exec rag-db psql -U rag_user -d rag_chat -c \"SELECT COUNT(*) as documents FROM documents;\""
 	@echo ""
 	@echo "✅ Database restore complete!"
 
@@ -382,25 +382,25 @@ docling-test:
 # Test Docling PDF import via GPU container (requires: make gpu-up)
 docling-import-test:
 	@echo "Testing Docling PDF import in GPU environment..."
-	@docker compose -f docker-compose-gpu.yml ps dev > /dev/null 2>&1 || (echo "❌ Dev container not running. Start with: make gpu-up" && exit 1)
+	@docker compose -f docker-compose.yml ps dev > /dev/null 2>&1 || (echo "❌ Dev container not running. Start with: make gpu-up" && exit 1)
 	@echo "Running test_import_wellbeing_pdf..."
-	docker compose -f docker-compose-gpu.yml exec dev cargo test --test import_test test_import_wellbeing_pdf -- --nocapture
+	docker compose -f docker-compose.yml exec dev cargo test --test import_test test_import_wellbeing_pdf -- --nocapture
 	@echo "✅ Docling PDF import test complete!"
 
 # Test Docling service health via GPU container
 docling-health-test:
 	@echo "Testing Docling service health in GPU environment..."
-	@docker compose -f docker-compose-gpu.yml ps dev > /dev/null 2>&1 || (echo "❌ Dev container not running. Start with: make gpu-up" && exit 1)
+	@docker compose -f docker-compose.yml ps dev > /dev/null 2>&1 || (echo "❌ Dev container not running. Start with: make gpu-up" && exit 1)
 	@echo "Running test_docling_service_health..."
-	docker compose -f docker-compose-gpu.yml exec dev cargo test --test import_test test_docling_service_health -- --nocapture
+	docker compose -f docker-compose.yml exec dev cargo test --test import_test test_docling_service_health -- --nocapture
 	@echo "✅ Docling health test complete!"
 
 # Test Docling file format support via GPU container
 docling-format-test:
 	@echo "Testing Docling file format support in GPU environment..."
-	@docker compose -f docker-compose-gpu.yml ps dev > /dev/null 2>&1 || (echo "❌ Dev container not running. Start with: make gpu-up" && exit 1)
+	@docker compose -f docker-compose.yml ps dev > /dev/null 2>&1 || (echo "❌ Dev container not running. Start with: make gpu-up" && exit 1)
 	@echo "Running test_docling_file_format_support..."
-	docker compose -f docker-compose-gpu.yml exec dev cargo test --test import_test test_docling_file_format_support -- --nocapture
+	docker compose -f docker-compose.yml exec dev cargo test --test import_test test_docling_file_format_support -- --nocapture
 	@echo "✅ Docling format test complete!"
 
 # Test reranker integration (requires Ollama with reranker model)

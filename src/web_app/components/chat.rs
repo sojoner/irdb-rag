@@ -2,7 +2,8 @@ use leptos::prelude::*;
 use leptos::web_sys;
 use uuid::Uuid;
 use crate::domain::dtos::ChatMessage;
-use crate::web_app::services::chat::{fetch_stream, fetch_conversation_messages};
+#[cfg(target_arch = "wasm32")]
+use crate::web_app::services::chat::{fetch_conversation_messages, fetch_stream};
 
 #[component]
 pub fn Chat(

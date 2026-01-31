@@ -9,7 +9,7 @@ use crate::web_app::components::{
     stats_bar::StatsBar,
     unified_search::UnifiedSearch,
 };
-use crate::web_app::services::search::{DeleteDocument, SearchDocuments, SearchRequest};
+use crate::web_app::services::search::{DeleteDocument, SearchDocuments};
 use leptos::prelude::*;
 use uuid::Uuid;
 

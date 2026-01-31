@@ -68,7 +68,7 @@ pub fn build_search_request(
 #[component]
 pub fn QueryBuilderExample() -> impl IntoView {
     let (query, set_query) = signal(String::new());
-    let (filters, set_filters) = signal(Vec::<QueryFilter>::new());
+    let (_filters, set_filters) = signal(Vec::<QueryFilter>::new());
     let (debug_request, set_debug_request) = signal(String::new());
 
     let handle_filter_change = move |new_filters: Vec<QueryFilter>| {

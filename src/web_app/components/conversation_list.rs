@@ -218,6 +218,7 @@ async fn fetch_conversations() -> Result<Vec<ConversationListItem>, String> {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+#[allow(dead_code)]
 async fn fetch_conversations() -> Result<Vec<ConversationListItem>, String> {
     Err("Client-side only".to_string())
 }
