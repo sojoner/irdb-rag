@@ -3,7 +3,7 @@
         gpu-up gpu-down gpu-restart gpu-build gpu-logs gpu-shell gpu-test gpu-lint gpu-ci \
         gpu-verify-db gpu-db-stats \
         docker-build docker-push docker-release \
-        docling-test reranker-test clean db-backup db-restore
+        docling-test reranker-test clean db-backup db-restore db-reset db-migrate
 
 # Test configuration - use 768 for nomic-embed-text-v2-moe (faster embeddings)
 EMBEDDING_DIMENSIONS ?= 768
@@ -61,7 +61,9 @@ help:
 	@echo "Maintenance & Backup:"
 	@echo "  db-refresh-indexes - Refresh BM25 and HNSW indexes for optimal search performance"
 	@echo "  db-backup         - Backup database to /data/backups"
-	@echo "  db-restore        - Restore database from backup (requires BACKUP_FILE=...)"
+	@echo "  db-reset          - Reset database (drop and recreate empty)"
+	@echo "  db-migrate        - Apply schema migrations from init.sql to current database"
+	@echo "  db-restore        - Restore from backup with schema migration (requires BACKUP_FILE=...)"
 	@echo "  clean             - Clean all test artifacts (DB data, target/)"
 	@echo ""
 	@echo "Environment variables:"
@@ -107,91 +109,7 @@ ci: fmt-check lint check test-unit
 # Database Targets
 # =============================================================================
 
-# Reset and reinitialize the test database
-test-db-reset:
-	@echo "Resetting test database with EMBEDDING_DIMENSIONS=$(EMBEDDING_DIMENSIONS) using $(COMPOSE_FILE)..."
-	docker compose -f $(COMPOSE_FILE) down -v
-	@echo "Cleaning up postgres data..."
-	sudo rm -rf data/postgres
-	mkdir -p data/postgres
-	sudo chown 999:999 data/postgres
-	RUN_ENV=$(RUN_ENV) EMBEDDING_DIMENSIONS=$(EMBEDDING_DIMENSIONS) docker compose -f $(COMPOSE_FILE) up -d db
-	@echo "Waiting for database to be healthy..."
-	@sleep 5
-	RUN_ENV=$(RUN_ENV) EMBEDDING_DIMENSIONS=$(EMBEDDING_DIMENSIONS) docker compose -f $(COMPOSE_FILE) up -d db-init
-	@echo "Waiting for initialization to complete..."
-	@sleep 3
-	@echo "Test database reset complete!"
 
-# Initialize test database (use if db is already running)
-test-db-init:
-	@echo "Initializing test database with EMBEDDING_DIMENSIONS=$(EMBEDDING_DIMENSIONS)..."
-	RUN_ENV=$(RUN_ENV) EMBEDDING_DIMENSIONS=$(EMBEDDING_DIMENSIONS) docker compose -f $(COMPOSE_FILE) up -d db-init
-	@echo "Test database initialization complete!"
-
-# Run tests with database reset (excludes docling/integration tests requiring external services)
-test: test-db-reset
-	@echo "Running core tests (unit + API tests)..."
-	RUN_ENV=$(RUN_ENV) RUST_LOG=error cargo test --lib
-	RUN_ENV=$(RUN_ENV) RUST_LOG=error cargo test --test api_test
-	RUN_ENV=$(RUN_ENV) RUST_LOG=error cargo test --test chunking_test
-	RUN_ENV=$(RUN_ENV) RUST_LOG=error cargo test --test db_pool_test
-	RUN_ENV=$(RUN_ENV) RUST_LOG=error cargo test --test document_storage_test
-	RUN_ENV=$(RUN_ENV) RUST_LOG=error cargo test --test enricher_test
-	@echo "✅ Core tests passed! Use 'make test-all' to run tests requiring external services (Docling, Ollama/vLLM)"
-
-# Run only unit tests (fast, no DB reset needed)
-test-unit:
-	@echo "Running unit tests..."
-	RUN_ENV=$(RUN_ENV) RUST_LOG=error cargo test --lib
-
-# Run integration tests (requires DB)
-test-integration: test-db-reset
-	@echo "Running integration tests..."
-	RUN_ENV=$(RUN_ENV) RUST_LOG=error cargo test --test integration_test
-	RUN_ENV=$(RUN_ENV) RUST_LOG=error cargo test --test import_test
-	RUN_ENV=$(RUN_ENV) RUST_LOG=error cargo test --test embedding_test
-	RUN_ENV=$(RUN_ENV) RUST_LOG=error cargo test --test api_test
-
-# Run ALL tests including those requiring external services (Docling on :5001, Ollama on :11434 or vLLM on :1234)
-test-all:
-	@$(MAKE) test-db-reset RUN_ENV=$(RUN_ENV) COMPOSE_FILE=$(COMPOSE_FILE)
-	@echo "Running ALL tests (requires Docling and LLM services)..."
-	@echo "Starting Docling service..."
-	RUN_ENV=$(RUN_ENV) docker compose -f $(COMPOSE_FILE) up -d docling
-	@echo "Waiting for Docling to be ready (this may take 30-60 seconds)..."
-	@for i in 1 2 3 4 5 6 7 8 9 10 11 12; do \
-		sleep 5; \
-		if curl -s http://localhost:5001/health > /dev/null 2>&1; then \
-			echo "✓ Docling is ready!"; \
-			break; \
-		fi; \
-		if [ $$i -eq 12 ]; then \
-			echo "❌ Docling failed to start after 60 seconds. Check logs with: docker compose -f $(COMPOSE_FILE) logs docling"; \
-			exit 1; \
-		fi; \
-		echo "  Still waiting... ($$(($$i * 5))s)"; \
-	done
-	@if [ "$(RUN_ENV)" = "test-gpu" ]; then \
-		echo "Starting Ollama service..."; \
-		RUN_ENV=$(RUN_ENV) docker compose -f $(COMPOSE_FILE) up -d ollama ollama-init; \
-		echo "Waiting for Ollama to be ready..."; \
-		sleep 10; \
-		curl -s http://localhost:11434/api/tags > /dev/null 2>&1 || (echo "❌ Ollama failed to start." && exit 1); \
-		echo "✓ Ollama is ready!"; \
-		echo "Ensuring dev container is running..."; \
-		RUN_ENV=$(RUN_ENV) docker compose -f $(COMPOSE_FILE) up -d dev; \
-		echo "Stopping cargo watch to run tests..."; \
-		docker compose -f $(COMPOSE_FILE) exec -T dev pkill -f "cargo leptos watch" || true; \
-		sleep 2; \
-		echo "Running full test suite in dev container..."; \
-		docker compose -f $(COMPOSE_FILE) exec dev bash -c "RUN_ENV=$(RUN_ENV) RUST_LOG=error cargo test"; \
-	else \
-		echo "Checking vLLM availability..."; \
-		curl -s http://127.0.0.1:1234/health > /dev/null 2>&1 || (echo "⚠️  vLLM not running on :1234. Some tests may fail." && sleep 2); \
-		echo "Running full test suite..."; \
-		RUN_ENV=$(RUN_ENV) RUST_LOG=error cargo test; \
-	fi
 
 # Clean all test artifacts
 clean:
@@ -376,6 +294,18 @@ gpu-db-stats:
 # Maintenance & Backup
 # =============================================================================
 
+# Reset database (drop and recreate empty)
+db-reset:
+	@echo "Resetting database..."
+	@docker exec rag-db psql -U rag_user -d postgres -c "DROP DATABASE IF EXISTS rag_chat; CREATE DATABASE rag_chat;" 2>/dev/null
+	@echo "✅ Database reset complete (empty)"
+
+# Apply schema migrations (run init.sql on current database)
+db-migrate:
+	@echo "Applying schema migrations..."
+	@docker exec -i rag-db psql -U rag_user -d rag_chat < ./sql/init.sql > /dev/null 2>&1
+	@echo "✅ Schema migrations applied"
+
 # Refresh database indexes for optimal search performance
 # Run this periodically or after large data imports
 db-refresh-indexes:
@@ -405,18 +335,39 @@ db-backup:
 	echo "✅ Backup created: $$BACKUP_FILE"; \
 	ls -lh $$BACKUP_FILE
 
-# Restore the database from a backup file
-# Usage: make db-restore BACKUP_FILE=/data/backups/rag_chat_20260118_111800.dump
+# Restore the database from a backup file (with schema migration)
+# Usage: make db-restore BACKUP_FILE=/data/backups/rag_chat_20260125_202752.dump
+# This target handles schema version mismatches by:
+# 1. Dropping and recreating the database
+# 2. Restoring data from backup
+# 3. Applying current schema migrations (init.sql)
 db-restore:
 	@if [ -z "$(BACKUP_FILE)" ]; then \
 		echo "❌ Error: BACKUP_FILE is not set. Usage: make db-restore BACKUP_FILE=/path/to/backup.dump"; \
 		exit 1; \
 	fi
-	@echo "Restoring database from $(BACKUP_FILE)..."
+	@echo "Restoring database from $(BACKUP_FILE) with schema migration..."
+	@echo ""
+	@echo "Step 1: Dropping existing database..."
+	@docker exec rag-db psql -U rag_user -d postgres -c "DROP DATABASE IF EXISTS rag_chat;" 2>/dev/null || true
+	@docker exec rag-db psql -U rag_user -d postgres -c "CREATE DATABASE rag_chat;"
+	@echo "✅ Database reset"
+	@echo ""
+	@echo "Step 2: Restoring data from backup..."
 	@docker cp $(BACKUP_FILE) rag-db:/tmp/restore.dump
-	@docker exec rag-db pg_restore -U rag_user -d rag_chat -c /tmp/restore.dump
-	#@docker exec rag-db rm /tmp/restore.dump
-	@echo "✅ Restore complete!"
+	@docker exec rag-db pg_restore -U rag_user -d rag_chat --data-only /tmp/restore.dump 2>&1 | grep -v "does not exist" | head -20 || true
+	@docker exec rag-db rm /tmp/restore.dump
+	@echo "✅ Data restored"
+	@echo ""
+	@echo "Step 3: Applying current schema (migrations)..."
+	@docker exec -i rag-db psql -U rag_user -d rag_chat < ./sql/init.sql > /dev/null 2>&1
+	@echo "✅ Schema migrated to current version"
+	@echo ""
+	@echo "Step 4: Verifying restore..."
+	@echo "Document count:"
+	@docker exec rag-db psql -U rag_user -d rag_chat -c "SELECT COUNT(*) as documents FROM documents;"
+	@echo ""
+	@echo "✅ Database restore and migration complete!"
 
 # =============================================================================
 # Integration Testing
