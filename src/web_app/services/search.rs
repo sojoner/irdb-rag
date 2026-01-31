@@ -24,6 +24,8 @@ pub struct SearchRequest {
     pub bm25_weight: f64,
     pub vector_weight: f64,
     pub category_id: Option<Uuid>,
+    pub date_from: Option<String>,
+    pub date_to: Option<String>,
     pub keywords: Option<Vec<String>>,
     pub concepts: Option<Vec<String>>,
     pub locations: Option<Vec<String>>,
@@ -41,6 +43,8 @@ impl Default for SearchRequest {
             bm25_weight: 0.5,
             vector_weight: 0.5,
             category_id: None,
+            date_from: None,
+            date_to: None,
             keywords: None,
             concepts: None,
             locations: None,
@@ -85,10 +89,22 @@ pub async fn search_documents(request: SearchRequest) -> Result<Vec<SearchResult
     }
 
     // Build filter object
+    // Parse dates from YYYY-MM-DD format to DateTime<Utc>
+    let date_from = request.date_from.as_ref().and_then(|d| {
+        chrono::NaiveDate::parse_from_str(d, "%Y-%m-%d")
+            .ok()
+            .map(|nd| nd.and_hms_opt(0, 0, 0).unwrap().and_utc())
+    });
+    let date_to = request.date_to.as_ref().and_then(|d| {
+        chrono::NaiveDate::parse_from_str(d, "%Y-%m-%d")
+            .ok()
+            .map(|nd| nd.and_hms_opt(23, 59, 59).unwrap().and_utc())
+    });
+
     let db_filters = db::SearchFilters {
         category_id: request.category_id,
-        date_from: None,
-        date_to: None,
+        date_from,
+        date_to,
         locations: request.locations.filter(|v| !v.is_empty()),
         keywords: request.keywords.filter(|v| !v.is_empty()),
         source_types: None,

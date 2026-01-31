@@ -76,7 +76,12 @@
       "Bash(docker-compose config:*)",
       "Bash(env)",
       "Bash(ssh:*)",
-      "Bash(scp:*)"
+      "Bash(scp:*)",
+      "mcp__plugin_playwright_playwright__browser_navigate",
+      "mcp__plugin_playwright_playwright__browser_console_messages",
+      "mcp__plugin_playwright_playwright__browser_take_screenshot",
+      "mcp__plugin_playwright_playwright__browser_evaluate",
+      "Bash(git add:*)"
     ],
     "additionalDirectories": [
       "/tmp"

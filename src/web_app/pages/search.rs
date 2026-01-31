@@ -1,14 +1,15 @@
 use crate::domain::models::SearchMetadata;
 use crate::web_app::components::{
+    advanced_query_builder::{AdvancedQueryBuilder, QueryFilter, FilterValue},
     chat::Chat,
     conversation_list::ConversationList,
     document_preview::DocumentPreview,
     faceted_filters::{get_categories, FacetedFilters},
     results_list::ResultsList,
-    search::SearchDocuments,
     stats_bar::StatsBar,
     unified_search::UnifiedSearch,
 };
+use crate::web_app::services::search::{DeleteDocument, SearchDocuments, SearchRequest};
 use leptos::prelude::*;
 use uuid::Uuid;
 
@@ -46,11 +47,14 @@ pub fn SearchPage() -> impl IntoView {
     let (selected_organizations, set_selected_organizations) = signal(Vec::<String>::new());
     let (selected_authors, set_selected_authors) = signal(Vec::<String>::new());
 
+    // Advanced Query Builder filters
+    let (query_builder_filters, set_query_builder_filters) = signal(Vec::<QueryFilter>::new());
+
     // Server Action for Search
     let search_action = ServerAction::<SearchDocuments>::new();
 
     // Server Action for Delete
-    let delete_action = ServerAction::<crate::web_app::components::search::DeleteDocument>::new();
+    let delete_action = ServerAction::<DeleteDocument>::new();
 
     // Derived signals from action
     let (results, set_results) = signal(Vec::new());
@@ -62,14 +66,87 @@ pub fn SearchPage() -> impl IntoView {
         let query_trimmed = query.trim();
         leptos::logging::log!("SearchPage: executing search for '{}'", query);
 
-        // Collect filter values
-        let keywords = selected_keywords.get();
-        let concepts = selected_concepts.get();
-        let locations = selected_locations.get();
-        let persons = selected_persons.get();
-        let organizations = selected_organizations.get();
-        let authors = selected_authors.get();
+        // Collect filter values from faceted filters
+        let mut keywords = selected_keywords.get();
+        let mut concepts = selected_concepts.get();
+        let mut locations = selected_locations.get();
+        let mut persons = selected_persons.get();
+        let mut organizations = selected_organizations.get();
+        let mut authors = selected_authors.get();
         let category = selected_category.get();
+        let mut date_from: Option<String> = None;
+        let mut date_to: Option<String> = None;
+
+        // Merge query builder filters with faceted filters
+        for filter in query_builder_filters.get() {
+            match filter.value {
+                FilterValue::DateRange { from, to } => {
+                    date_from = from;
+                    date_to = to;
+                }
+                FilterValue::Text { field, value } => {
+                    // Text filters can be used in query enhancement if needed
+                    if !value.is_empty() {
+                        leptos::logging::log!("Text filter: {} = {}", field, value);
+                    }
+                }
+                FilterValue::Array { field, values } => {
+                    // Merge array field values with existing selections
+                    if !values.is_empty() {
+                        match field.as_str() {
+                            "keywords" => {
+                                for v in values {
+                                    if !keywords.contains(&v) {
+                                        keywords.push(v);
+                                    }
+                                }
+                            }
+                            "locations" => {
+                                for v in values {
+                                    if !locations.contains(&v) {
+                                        locations.push(v);
+                                    }
+                                }
+                            }
+                            "persons" => {
+                                for v in values {
+                                    if !persons.contains(&v) {
+                                        persons.push(v);
+                                    }
+                                }
+                            }
+                            "organizations" => {
+                                for v in values {
+                                    if !organizations.contains(&v) {
+                                        organizations.push(v);
+                                    }
+                                }
+                            }
+                            "concepts" => {
+                                for v in values {
+                                    if !concepts.contains(&v) {
+                                        concepts.push(v);
+                                    }
+                                }
+                            }
+                            "authors" => {
+                                for v in values {
+                                    if !authors.contains(&v) {
+                                        authors.push(v);
+                                    }
+                                }
+                            }
+                            "products" => {
+                                // Products field - currently not stored in dedicated signal
+                                // Can be handled via query enhancement or API parameter if needed
+                                leptos::logging::log!("Products filter: {:?}", values);
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+        }
 
         // Check if we have any search criteria
         let has_query = !query_trimmed.is_empty();
@@ -79,7 +156,9 @@ pub fn SearchPage() -> impl IntoView {
             || !locations.is_empty()
             || !persons.is_empty()
             || !organizations.is_empty()
-            || !authors.is_empty();
+            || !authors.is_empty()
+            || date_from.is_some()
+            || date_to.is_some();
 
         // Require either a query OR filters to proceed
         if !has_query && !has_filters {
@@ -99,7 +178,7 @@ pub fn SearchPage() -> impl IntoView {
             query.to_string()
         };
 
-        use crate::web_app::components::search::SearchRequest;
+        use crate::web_app::services::search::SearchRequest;
 
         search_action.dispatch(SearchDocuments {
             request: SearchRequest {
@@ -109,6 +188,8 @@ pub fn SearchPage() -> impl IntoView {
                 bm25_weight: 1.0,
                 vector_weight: 0.0,
                 category_id: category,
+                date_from,
+                date_to,
                 keywords: if keywords.is_empty() {
                     None
                 } else {
@@ -144,7 +225,7 @@ pub fn SearchPage() -> impl IntoView {
     };
 
     let on_delete = Callback::new(move |id: Uuid| {
-        use crate::web_app::components::search::DeleteDocument;
+        use crate::web_app::services::search::DeleteDocument;
         delete_action.dispatch(DeleteDocument { doc_id: id });
     });
 
@@ -333,28 +414,43 @@ pub fn SearchPage() -> impl IntoView {
                     // Filters and Results
                     <div class="flex-1 flex gap-3 overflow-hidden p-3">
                         // Filters (collapsible)
-                        <div class="w-48 flex flex-col bg-gray-50 rounded border border-gray-200 overflow-y-auto flex-shrink-0 z-0">
-                            <div class="px-3 py-2 border-b border-gray-200 bg-white">
+                        <div class="w-80 flex flex-col bg-white rounded border border-gray-200 overflow-y-auto flex-shrink-0 z-0">
+                            <div class="px-3 py-2 border-b border-gray-200 bg-white sticky top-0">
                                 <h3 class="text-xs font-bold text-gray-700">"Filters"</h3>
                             </div>
-                            <FacetedFilters
-                                categories=categories
-                                selected_category=selected_category.into()
-                                set_selected_category=set_selected_category
-                                selected_keywords=selected_keywords.into()
-                                set_selected_keywords=set_selected_keywords
-                                selected_concepts=selected_concepts.into()
-                                set_selected_concepts=set_selected_concepts
-                                selected_locations=selected_locations.into()
-                                set_selected_locations=set_selected_locations
-                                selected_persons=selected_persons.into()
-                                set_selected_persons=set_selected_persons
-                                selected_organizations=selected_organizations.into()
-                                set_selected_organizations=set_selected_organizations
-                                selected_authors=selected_authors.into()
-                                set_selected_authors=set_selected_authors
-                                on_change=Callback::new(move |_| execute_search(()))
-                            />
+                            <div class="divide-y">
+                                // Faceted Filters Section
+                                <div class="bg-gray-50">
+                                    <FacetedFilters
+                                        categories=categories
+                                        selected_category=selected_category.into()
+                                        set_selected_category=set_selected_category
+                                        selected_keywords=selected_keywords.into()
+                                        set_selected_keywords=set_selected_keywords
+                                        selected_concepts=selected_concepts.into()
+                                        set_selected_concepts=set_selected_concepts
+                                        selected_locations=selected_locations.into()
+                                        set_selected_locations=set_selected_locations
+                                        selected_persons=selected_persons.into()
+                                        set_selected_persons=set_selected_persons
+                                        selected_organizations=selected_organizations.into()
+                                        set_selected_organizations=set_selected_organizations
+                                        selected_authors=selected_authors.into()
+                                        set_selected_authors=set_selected_authors
+                                        on_change=Callback::new(move |_| execute_search(()))
+                                    />
+                                </div>
+
+                                // Advanced Query Builder Section
+                                <div class="p-3 bg-white">
+                                    <AdvancedQueryBuilder
+                                        on_filter_change=Callback::new(move |filters: Vec<QueryFilter>| {
+                                            set_query_builder_filters.set(filters);
+                                            execute_search(());
+                                        })
+                                    />
+                                </div>
+                            </div>
                         </div>
 
                         // Results
