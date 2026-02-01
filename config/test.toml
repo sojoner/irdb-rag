@@ -1,48 +1,53 @@
 # RAG Chat - Test Configuration
-# Overrides default.toml for testing
+# Tests run against bm3090 remote Docker context
+# Set Docker context: docker context use bm3090
 
 [database]
-url = "postgres://rag_user:rag_password@localhost:15432/rag_chat"
+url = "postgres://rag_user:rag_password@bm3090:15432/rag_chat"
+max_connections = 50
+acquire_timeout_seconds = 60
 
-# All LLMs use same OpenRouter config for tests
+# All LLMs use Ollama on bm3090
 [llm.chat]
-provider = "LMStudio"
-api_url = "http://127.0.0.1:1234/v1"
-api_key = "lm-studio"
-model = "ibm/granite-4-h-tiny"
+provider = "openai"
+api_url = "http://bm3090:11434/v1"
+api_key = "ollama"
+model = "granite3-moe:3b"
 
 [llm.metadata]
-provider = "LMStudio"
-api_url = "http://127.0.0.1:1234/v1"
-api_key = "lm-studio"
-model = "ibm/granite-4-h-tiny"
+provider = "openai"
+api_url = "http://bm3090:11434/v1"
+api_key = "ollama"
+model = "granite3-moe:3b"
 
 [llm.ner]
-provider = "LMStudio"
-api_url = "http://127.0.0.1:1234/v1"
-api_key = "lm-studio"
-model = "ibm/granite-4-h-tiny"
+provider = "openai"
+api_url = "http://bm3090:11434/v1"
+api_key = "ollama"
+model = "granite3-moe:3b"
 
 [llm]
 timeout_seconds = 300
 
 [embedding]
-provider = "LMStudio"
-api_url = "http://127.0.0.1:1234/v1"
-api_key = "lm-studio"
-model = "text-embedding-qwen3-embedding-0.6b"
-dimensions = 1024
+provider = "openai"
+api_url = "http://bm3090:11434/v1"
+api_key = "ollama"
+model = "nomic-embed-text-v2-moe"
+dimensions = 768
 timeout_seconds = 120
 
 [docling]
-url = "http://localhost:5001"
+url = "http://bm3090:5001"
 timeout_seconds = 180
 models = "DocLayNet,TableFormer"
 
-# Performance optimization options for local testing with vLLM
 do_layout_analysis = true
 do_table_structure = true
-do_ocr = true
+do_ocr = false
+batch_document_limit = 48
+batch_chunk_limit = 128
+batch_embedding_limit = 256
 
 [import]
 workers = 2
@@ -53,3 +58,10 @@ retry_max_delay_ms = 30000
 [rag]
 system_prompt = "You are a helpful AI assistant specialized in answering questions about documents. Use the provided document context to give accurate, well-sourced answers. If information is not available in the context, clearly state that. Always cite which documents you're referencing."
 entity_extraction_enabled = true
+
+[reranking]
+enabled = false
+api_url = "http://bm3090:11434"
+api_key = ""
+model = "dengcao/Qwen3-Reranker-0.6B:Q5_K_M"
+timeout_seconds = 30

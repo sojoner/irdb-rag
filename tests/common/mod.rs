@@ -34,19 +34,17 @@ impl TestClient {
         }
     }
 
-    pub async fn ensure_server_running(&self) {
+    pub async fn is_server_running(&self) -> bool {
         let health_url = format!("{}/health", self.base_url);
         match self.client.get(&health_url).send().await {
-            Ok(resp) => {
-                if !resp.status().is_success() {
-                    panic!("Server is running but health check failed: {}", resp.status());
-                }
-            },
-            Err(e) => {
-                eprintln!("Could not connect to server at {}. Is it running?", self.base_url);
-                eprintln!("Error: {}", e);
-                panic!("Server is not running. Please start it with 'cargo run' in a separate terminal.");
-            }
+            Ok(resp) => resp.status().is_success(),
+            Err(_) => false,
+        }
+    }
+
+    pub async fn ensure_server_running(&self) {
+        if !self.is_server_running().await {
+            panic!("Server is not running on {}. Please start it with 'cargo run' in a separate terminal.", self.base_url);
         }
     }
 

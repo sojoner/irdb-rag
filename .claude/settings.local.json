@@ -97,7 +97,11 @@
       "mcp__MCP_DOCKER__browser_type",
       "Bash(RUN_ENV=local-bm3090 cargo test:*)",
       "Bash(RUN_ENV=local-bm3090 RUST_LOG=info cargo test:*)",
-      "Bash(RUN_ENV=local-bm3090 RUST_LOG=rag_chat=debug cargo test:*)"
+      "Bash(RUN_ENV=local-bm3090 RUST_LOG=rag_chat=debug cargo test:*)",
+      "Bash(ping:*)",
+      "Bash(timeout 3 bash -c 'cat < /dev/null > /dev/tcp/bm3090/15432')",
+      "Bash(timeout 5 psql:*)",
+      "Bash(PGPASSWORD=rag_password timeout 5 psql:*)"
     ],
     "additionalDirectories": [
       "/tmp"

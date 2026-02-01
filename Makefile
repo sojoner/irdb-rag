@@ -12,11 +12,12 @@ BACKUP_DIR ?= ./data/backups
 help:
 	@echo "Available targets:"
 	@echo ""
-	@echo "  build          - Build Docker image with :latest tag"
-	@echo "  test           - Run all tests with coverage (requires >= 60%)"
-	@echo "  test-coverage  - Run tests and show coverage report"
-	@echo "  db-backup      - Backup database to $(BACKUP_DIR)"
-	@echo "  db-restore     - Restore database (requires BACKUP_FILE=...)"
+	@echo "  build             - Build Docker image with :latest tag"
+	@echo "  test              - Run unit tests (fast, no DB required)"
+	@echo "  test-integration  - Run integration tests (requires DB on bm3090:15432)"
+	@echo "  test-coverage     - Run tests with coverage check >= 60% (requires cargo-tarpaulin)"
+	@echo "  db-backup         - Backup database to $(BACKUP_DIR)"
+	@echo "  db-restore        - Restore database (requires BACKUP_FILE=...)"
 	@echo ""
 
 # =============================================================================
@@ -32,13 +33,19 @@ build:
 	@echo "Build complete: $(IMAGE_NAME):$(IMAGE_TAG)"
 
 # =============================================================================
-# Test with Coverage
+# Test
 # =============================================================================
 
-test: test-coverage
+test:
+	@echo "Running unit tests..."
+	@cargo test --lib --all-features
+
+test-integration:
+	@echo "Running integration tests (requires database on bm3090:15432)..."
+	@cargo test --test '*' --all-features -- --test-threads=1
 
 test-coverage:
-	@echo "Running tests with coverage..."
+	@echo "Running tests with coverage (requires: cargo install cargo-tarpaulin)..."
 	@cargo tarpaulin --out Html --out Stdout --skip-clean --timeout 300 \
 		--ignore-tests --fail-under 60 || \
 		(echo "Coverage below 60% threshold!" && exit 1)
