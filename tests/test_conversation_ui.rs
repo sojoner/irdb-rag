@@ -3,8 +3,8 @@
 #[cfg(test)]
 mod tests {
     use leptos::prelude::*;
-    use irdb_rag::web_app::components::chat::Chat;
-    use irdb_rag::web_app::components::conversation_list::ConversationList;
+    use rag_chat::web_app::components::chat::Chat;
+    use rag_chat::web_app::components::conversation_list::ConversationList;
 
     #[test]
     fn test_conversation_list_component_exists() {

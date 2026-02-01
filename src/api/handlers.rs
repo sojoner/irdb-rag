@@ -124,7 +124,14 @@ pub async fn search_bm25(
         word_count_max: req.word_count_max,
     };
 
-    let results = db::bm25_search(&state.pool, &req.query, &filters, req.limit)
+    let results = db::bm25_search(
+        &state.pool,
+        &req.query,
+        &filters,
+        req.limit,
+        0,
+        &db::SortOrder::Relevance,
+    )
         .await
         .map_err(|e| {
             tracing::error!("BM25 search failed: {}", e);

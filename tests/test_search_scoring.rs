@@ -34,7 +34,14 @@ async fn test_search_scores_are_normalized() {
         word_count_max: None,
     };
 
-    let results = rag_chat::infra::db::bm25_search(&pool, query, &filters, 20)
+    let results = rag_chat::infra::db::bm25_search(
+        &pool, 
+        query, 
+        &filters, 
+        20, 
+        0, 
+        &rag_chat::infra::db::SortOrder::Relevance
+    )
         .await
         .expect("Search should succeed");
 

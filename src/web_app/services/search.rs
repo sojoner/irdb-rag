@@ -3,6 +3,26 @@ use leptos::prelude::*;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+/// Response containing search results and metadata for query explanation
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct SearchResponse {
+    pub results: Vec<SearchResult>,
+    /// The actual BM25 query that was executed (after transformation)
+    pub executed_query: String,
+    /// Whether the query was detected as field-qualified
+    pub was_field_qualified: bool,
+    /// Number of results returned in this page
+    pub result_count: usize,
+    /// Total matching documents (for pagination)
+    pub total_count: i64,
+    /// Current page (0-indexed)
+    pub page: i32,
+    /// Page size
+    pub page_size: i32,
+    /// Search duration in milliseconds
+    pub duration_ms: u128,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct SearchFilters {
@@ -15,11 +35,24 @@ pub struct SearchFilters {
     pub authors: Option<Vec<String>>,
 }
 
+/// Sort order for search results
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq, Default)]
+pub enum SortOrder {
+    #[default]
+    Relevance,      // BM25 score descending (default for searches with query)
+    DateDesc,       // Newest first (default for browse/filter-only)
+    DateAsc,        // Oldest first
+    TitleAsc,       // Alphabetical A-Z
+    TitleDesc,      // Alphabetical Z-A
+}
+
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub struct SearchRequest {
     pub query: String,
     pub limit: i32,
+    pub offset: i32,              // Pagination offset
+    pub sort: SortOrder,          // Sort order
     pub search_fields: Vec<String>,
     pub bm25_weight: f64,
     pub vector_weight: f64,
@@ -39,6 +72,8 @@ impl Default for SearchRequest {
         Self {
             query: String::new(),
             limit: 20,
+            offset: 0,
+            sort: SortOrder::Relevance,
             search_fields: vec!["content".to_string(), "title".to_string(), "summary".to_string()],
             bm25_weight: 0.5,
             vector_weight: 0.5,
@@ -56,17 +91,22 @@ impl Default for SearchRequest {
 }
 
 #[server(SearchDocuments, "/api")]
-pub async fn search_documents(request: SearchRequest) -> Result<Vec<SearchResult>, ServerFnError> {
+pub async fn search_documents(request: SearchRequest) -> Result<SearchResponse, ServerFnError> {
     use crate::api::state::AppState;
     use crate::infra::db;
+    use std::time::Instant;
     use tracing::info;
 
+    let start_time = Instant::now();
     let query = request.query;
     let limit = request.limit;
+    let offset = request.offset;
+    let sort = request.sort.clone();
     let search_fields = request.search_fields;
 
-    info!("========== SIMPLE BM25 SEARCH ==========");
-    info!("Query: '{}', Fields: {:?}", query, search_fields);
+    info!("========== SEARCH REQUEST ==========");
+    info!("Query: '{}', Fields: {:?}, Limit: {}, Offset: {}, Sort: {:?}",
+          query, search_fields, limit, offset, sort);
 
     // Extract the AppState from context
     let state = use_context::<AppState>()
@@ -83,12 +123,6 @@ pub async fn search_documents(request: SearchRequest) -> Result<Vec<SearchResult
         || (request.organizations.as_ref().map_or(false, |o| !o.is_empty()))
         || (request.authors.as_ref().map_or(false, |a| !a.is_empty()));
 
-    if !has_query && !has_filters {
-        info!("SERVER: No query or filters provided, returning empty results");
-        return Ok(Vec::new());
-    }
-
-    // Build filter object
     // Parse dates from YYYY-MM-DD format to DateTime<Utc>
     let date_from = request.date_from.as_ref().and_then(|d| {
         chrono::NaiveDate::parse_from_str(d, "%Y-%m-%d")
@@ -118,26 +152,58 @@ pub async fn search_documents(request: SearchRequest) -> Result<Vec<SearchResult
     };
 
     // If we have a query, use fast BM25 search; otherwise use filter-only search
-    if has_query {
+    let (results, total_count, executed_query, was_field_qualified) = if has_query {
         // Use the optimized BM25 search (searches documents table directly)
-        let results = db::bm25_search(&state.pool, &query, &db_filters, limit)
+        let results = db::bm25_search(&state.pool, &query, &db_filters, limit, offset, &sort)
             .await
             .map_err(|e| ServerFnError::new(format!("Search failed: {}", e)))?;
 
-        info!("SERVER: BM25 search returned {} results", results.len());
-        Ok(results)
+        let total_count = db::bm25_search_count(&state.pool, &query, &db_filters)
+            .await
+            .map_err(|e| ServerFnError::new(format!("Count failed: {}", e)))?;
+
+        info!("SERVER: BM25 search returned {} of {} total results", results.len(), total_count);
+        (results, total_count, query.clone(), false)
+    } else if has_filters || trimmed_query == "*" {
+        // Filter-only or browse all documents (query = "*")
+        let results = db::filter_only_search(&state.pool, &db_filters, limit, offset, &sort)
+            .await
+            .map_err(|e| ServerFnError::new(format!("Search failed: {}", e)))?;
+
+        let total_count = db::filter_only_search_count(&state.pool, &db_filters)
+            .await
+            .map_err(|e| ServerFnError::new(format!("Count failed: {}", e)))?;
+
+        info!("SERVER: Filter-only search returned {} of {} total results", results.len(), total_count);
+        (results, total_count, "*".to_string(), false)
     } else {
-        // Filter-only search (no text/semantic search, pure filter matching)
-        let results = db::filter_only_search(&state.pool, &db_filters, limit)
-            .await
-            .map_err(|e| ServerFnError::new(format!("Search failed: {}", e)))?;
+        info!("SERVER: No query or filters provided, returning empty results");
+        return Ok(SearchResponse {
+            results: Vec::new(),
+            executed_query: String::new(),
+            was_field_qualified: false,
+            result_count: 0,
+            total_count: 0,
+            page: 0,
+            page_size: limit,
+            duration_ms: start_time.elapsed().as_millis(),
+        });
+    };
 
-        info!(
-            "SERVER: Filter-only search returned {} results",
-            results.len()
-        );
-        Ok(results)
-    }
+    let duration_ms = start_time.elapsed().as_millis();
+    let result_count = results.len();
+    let page = offset / limit;
+
+    Ok(SearchResponse {
+        results,
+        executed_query,
+        was_field_qualified,
+        result_count,
+        total_count,
+        page,
+        page_size: limit,
+        duration_ms,
+    })
 }
 
 #[server(DeleteDocument, "/api")]

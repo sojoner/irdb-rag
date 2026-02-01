@@ -14,6 +14,39 @@ pub fn UnifiedSearch(
     #[prop(into)] on_search: Callback<()>,
 ) -> impl IntoView {
     let (show_help, set_show_help) = signal(false);
+    let (show_query_preview, set_show_query_preview) = signal(false);
+
+    // Derive what the BM25 query will look like (client-side preview)
+    let query_preview = Signal::derive(move || {
+        let q = query.get();
+        let trimmed = q.trim();
+        if trimmed.is_empty() {
+            return String::new();
+        }
+
+        // Check if already field-qualified
+        let known_fields = ["title", "content", "summary", "author", "source_path", "keywords"];
+        let is_field_qualified = known_fields.iter().any(|field| {
+            let pattern_with_parens = format!("{}:(", field);
+            let pattern_without_parens = format!("{}:", field);
+            trimmed.starts_with(&pattern_with_parens)
+                || trimmed.starts_with(&pattern_without_parens)
+                || trimmed.contains(&format!(" {}", pattern_with_parens))
+                || trimmed.contains(&format!(" {}", pattern_without_parens))
+        });
+
+        let has_operators = trimmed.contains(" AND ") || trimmed.contains(" OR ");
+
+        if is_field_qualified || has_operators {
+            format!("Direct: {}", trimmed)
+        } else {
+            let fields = search_fields.get();
+            let field_parts: Vec<String> = fields.iter()
+                .map(|f| format!("{}:({})", f, trimmed))
+                .collect();
+            format!("Multi-field: {}", field_parts.join(" OR "))
+        }
+    });
 
     Effect::new(move |_| {
         leptos::logging::log!("UnifiedSearch component mounted/hydrated");
@@ -70,12 +103,24 @@ pub fn UnifiedSearch(
                     </svg>
                 </button>
 
-                // Right side controls (Help)
+                // Right side controls (Query Preview + Help)
                 <div class="flex items-center gap-1">
+                    // Query Preview toggle
+                    <button
+                        on:click=move |_| set_show_query_preview.update(|v| *v = !*v)
+                        class=move || format!("p-1 rounded-full transition-colors {}",
+                            if show_query_preview.get() { "text-green-600 bg-green-50" } else { "text-gray-400 hover:text-green-600 hover:bg-green-50" })
+                        title="Show Query Preview"
+                    >
+                        <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4" />
+                        </svg>
+                    </button>
                     // Help button
                     <button
                         on:click=move |_| set_show_help.update(|v| *v = !*v)
-                        class="p-1 text-gray-400 hover:text-blue-600 rounded-full hover:bg-blue-50 transition-colors"
+                        class=move || format!("p-1 rounded-full transition-colors {}",
+                            if show_help.get() { "text-blue-600 bg-blue-50" } else { "text-gray-400 hover:text-blue-600 hover:bg-blue-50" })
                         title="Search Syntax"
                     >
                         <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -185,16 +230,36 @@ pub fn UnifiedSearch(
                 </label>
             </div>
 
+            // Query Preview panel
+            <Show when=move || show_query_preview.get() && !query.get().trim().is_empty()>
+                <div class="text-xs bg-green-50 p-3 rounded-lg border border-green-100">
+                    <p class="font-semibold text-green-800 mb-1">"Executed Query:"</p>
+                    <code class="block bg-white p-2 rounded text-green-900 font-mono text-xs break-all">
+                        {move || query_preview.get()}
+                    </code>
+                </div>
+            </Show>
+
             // Help panel
             <Show when=move || show_help.get()>
-                <div class="text-xs bg-blue-50 p-3 rounded-lg border border-blue-100 text-blue-800">
-                    <p class="font-semibold mb-1">"Search Syntax:"</p>
+                <div class="text-xs bg-blue-50 p-3 rounded-lg border border-blue-100 text-blue-800 space-y-2">
+                    <p class="font-semibold">"BM25 Search Syntax:"</p>
                     <div class="grid grid-cols-2 gap-x-4 gap-y-1">
-                        <span><code class="bg-white px-1 rounded">"~fuzzy"</code> " Fuzzy match"</span>
-                        <span><code class="bg-white px-1 rounded">"term*"</code> " Prefix search"</span>
-                        <span><code class="bg-white px-1 rounded">"\"phrase\""</code> " Exact phrase"</span>
-                        <span><code class="bg-white px-1 rounded">"AND/OR"</code> " Boolean"</span>
+                        <span><code class="bg-white px-1 rounded">"term*"</code> " Prefix match"</span>
+                        <span><code class="bg-white px-1 rounded">"\"exact phrase\""</code> " Phrase match"</span>
+                        <span><code class="bg-white px-1 rounded">"word1 AND word2"</code> " Both required"</span>
+                        <span><code class="bg-white px-1 rounded">"word1 OR word2"</code> " Either matches"</span>
                     </div>
+                    <p class="font-semibold mt-2">"Field-Specific Search:"</p>
+                    <div class="grid grid-cols-2 gap-x-4 gap-y-1">
+                        <span><code class="bg-white px-1 rounded">"title:(term)"</code> " Search in title only"</span>
+                        <span><code class="bg-white px-1 rounded">"content:(term)"</code> " Search in content only"</span>
+                        <span><code class="bg-white px-1 rounded">"author:(name)"</code> " Search by author"</span>
+                        <span><code class="bg-white px-1 rounded">"summary:(term)"</code> " Search in summary"</span>
+                    </div>
+                    <p class="text-gray-600 mt-2 italic">
+                        "Note: BM25 searches for whole words. 'java' won't match 'JavaScript' (compound word)."
+                    </p>
                 </div>
             </Show>
 

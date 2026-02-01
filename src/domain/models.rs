@@ -74,16 +74,22 @@ pub struct SearchResult {
     pub content: String,
     pub source_path: Option<String>,
     pub category_name: Option<String>,
-    pub bm25_score: f64,
+    pub bm25_score: f64,           // Normalized score (0-1)
     pub vector_score: f64,
-    pub combined_score: f64,
+    pub combined_score: f64,       // Normalized combined score (0-1)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reranker_score: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub snippet: Option<String>,
+    #[serde(default)]
+    #[cfg_attr(feature = "ssr", sqlx(default))]
+    pub raw_bm25_score: f64,       // Raw RSV from BM25 (for debugging/display)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ssr", sqlx(default))]
+    pub created_at: Option<chrono::DateTime<chrono::Utc>>,  // For sorting by date
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SearchMetadata {
     pub duration_ms: u128,
     pub total_results: usize,
@@ -91,6 +97,15 @@ pub struct SearchMetadata {
     pub total_chunks_searched: usize,
     pub bm25_weight: f64,
     pub vector_weight: f64,
+    /// The actual BM25 query that was executed (after field qualification)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub executed_query: Option<String>,
+    /// Fields that were searched
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub search_fields: Option<Vec<String>>,
+    /// Whether the query was detected as field-qualified
+    #[serde(default)]
+    pub was_field_qualified: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

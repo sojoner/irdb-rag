@@ -9,7 +9,7 @@ use crate::web_app::components::{
     stats_bar::StatsBar,
     unified_search::UnifiedSearch,
 };
-use crate::web_app::services::search::{DeleteDocument, SearchDocuments};
+use crate::web_app::services::search::{DeleteDocument, SearchDocuments, SortOrder};
 use leptos::prelude::*;
 use uuid::Uuid;
 
@@ -29,6 +29,14 @@ pub fn SearchPage() -> impl IntoView {
         "title".to_string(),
         "summary".to_string(),
     ]);
+
+    // Pagination state
+    let (current_page, set_current_page) = signal(0i32);
+    let (page_size, _set_page_size) = signal(20i32);
+    let (total_count, set_total_count) = signal(0i64);
+
+    // Sort state
+    let (sort_order, set_sort_order) = signal(SortOrder::Relevance);
 
     // Filter state - Load categories on mount
     let categories_resource = Resource::new_blocking(|| (), |_| async { get_categories().await });
@@ -61,10 +69,10 @@ pub fn SearchPage() -> impl IntoView {
     let (_search_metadata, _set_search_metadata) = signal(None::<SearchMetadata>);
 
     // ============ SEARCH FUNCTION ============
-    let execute_search = move |_| {
+    let execute_search_with_page = move |page: i32| {
         let query = search_query.get();
         let query_trimmed = query.trim();
-        leptos::logging::log!("SearchPage: executing search for '{}'", query);
+        leptos::logging::log!("SearchPage: executing search for '{}', page {}", query, page);
 
         // Collect filter values from faceted filters
         let mut keywords = selected_keywords.get();
@@ -77,6 +85,9 @@ pub fn SearchPage() -> impl IntoView {
         let mut date_from: Option<String> = None;
         let mut date_to: Option<String> = None;
 
+        // Collect text field filters to append to query
+        let mut text_field_queries: Vec<String> = Vec::new();
+
         // Merge query builder filters with faceted filters
         for filter in query_builder_filters.get() {
             match filter.value {
@@ -85,9 +96,11 @@ pub fn SearchPage() -> impl IntoView {
                     date_to = to;
                 }
                 FilterValue::Text { field, value } => {
-                    // Text filters can be used in query enhancement if needed
+                    // Text filters are appended to the query using BM25 field syntax
                     if !value.is_empty() {
                         leptos::logging::log!("Text filter: {} = {}", field, value);
+                        // Use BM25 field-qualified syntax: field:(value)
+                        text_field_queries.push(format!("{}:({})", field, value));
                     }
                 }
                 FilterValue::Array { field, values } => {
@@ -150,6 +163,7 @@ pub fn SearchPage() -> impl IntoView {
 
         // Check if we have any search criteria
         let has_query = !query_trimmed.is_empty();
+        let has_text_field_filters = !text_field_queries.is_empty();
         let has_filters = category.is_some()
             || !keywords.is_empty()
             || !concepts.is_empty()
@@ -158,32 +172,56 @@ pub fn SearchPage() -> impl IntoView {
             || !organizations.is_empty()
             || !authors.is_empty()
             || date_from.is_some()
-            || date_to.is_some();
+            || date_to.is_some()
+            || has_text_field_filters;
 
-        // Require either a query OR filters to proceed
-        if !has_query && !has_filters {
-            leptos::logging::log!("SearchPage: skipping search - no query and no filters");
-            return;
-        }
-
-        // If we have filters but NO query, use wildcard to match all documents
-        // This enables filter-only search (e.g., "show me all documents from Germany")
-        let final_query = if !has_query && has_filters {
+        // Build final query: combine user query with text field filters
+        // Allow '*' to browse all documents
+        let final_query = if query_trimmed == "*" {
+            // Explicit browse all
+            "*".to_string()
+        } else if !has_query && has_text_field_filters {
+            // No main query but have text field filters - use the field filters as the query
+            leptos::logging::log!(
+                "SearchPage: using text field filters as query: {:?}",
+                text_field_queries
+            );
+            text_field_queries.join(" AND ")
+        } else if !has_query && has_filters {
+            // No query but have other filters - use wildcard
             leptos::logging::log!(
                 "SearchPage: using wildcard search with filters (filter-only mode)"
             );
             "*".to_string()
+        } else if !has_query && !has_filters {
+            // No query and no filters - skip search
+            leptos::logging::log!("SearchPage: skipping search - no query and no filters");
+            return;
+        } else if has_text_field_filters {
+            // Have both main query AND text field filters - combine them
+            leptos::logging::log!(
+                "SearchPage: combining query '{}' with text field filters {:?}",
+                query,
+                text_field_queries
+            );
+            format!("{} AND {}", query, text_field_queries.join(" AND "))
         } else {
-            // User has typed something - use their exact query, even with filters
+            // User has typed something - use their exact query
             query.to_string()
         };
 
         use crate::web_app::services::search::SearchRequest;
 
+        let limit = page_size.get();
+        let offset = page * limit;
+        let sort = sort_order.get();
+
         search_action.dispatch(SearchDocuments {
             request: SearchRequest {
                 query: final_query,
-                limit: 20,
+                limit,
+                offset,
+                sort,
                 search_fields: search_fields.get(),
                 bm25_weight: 1.0,
                 vector_weight: 0.0,
@@ -224,6 +262,12 @@ pub fn SearchPage() -> impl IntoView {
         });
     };
 
+    // Wrapper for new searches (resets to page 0)
+    let execute_search = move |_| {
+        set_current_page.set(0);
+        execute_search_with_page(0);
+    };
+
     let on_delete = Callback::new(move |id: Uuid| {
         use crate::web_app::services::search::DeleteDocument;
         delete_action.dispatch(DeleteDocument { doc_id: id });
@@ -231,13 +275,21 @@ pub fn SearchPage() -> impl IntoView {
 
     // Effect to update results when search_action completes
     Effect::new(move |_| {
-        if let Some(Ok(res)) = search_action.value().get() {
-            leptos::logging::log!("SearchPage: Effect received {} results", res.len());
+        if let Some(Ok(response)) = search_action.value().get() {
+            leptos::logging::log!(
+                "SearchPage: Effect received {} of {} total results (page {}, {}ms)",
+                response.result_count,
+                response.total_count,
+                response.page,
+                response.duration_ms
+            );
 
-            set_results.set(res);
+            set_results.set(response.results);
+            set_total_count.set(response.total_count);
         } else if let Some(Err(e)) = search_action.value().get() {
             leptos::logging::error!("SearchPage: Search failed: {:?}", e);
             set_results.set(vec![]);
+            set_total_count.set(0);
         }
     });
 
@@ -409,6 +461,15 @@ pub fn SearchPage() -> impl IntoView {
                             set_search_fields=set_search_fields
                             on_search=Callback::new(move |_| execute_search(()))
                         />
+                        // Advanced Query Builder - directly under search
+                        <div class="mt-3 pt-3 border-t border-gray-100">
+                            <AdvancedQueryBuilder
+                                on_filter_change=Callback::new(move |filters: Vec<QueryFilter>| {
+                                    set_query_builder_filters.set(filters);
+                                    execute_search(());
+                                })
+                            />
+                        </div>
                     </div>
 
                     // Filters and Results
@@ -441,24 +502,59 @@ pub fn SearchPage() -> impl IntoView {
                                     />
                                 </div>
 
-                                // Advanced Query Builder Section
-                                <div class="p-3 bg-white">
-                                    <AdvancedQueryBuilder
-                                        on_filter_change=Callback::new(move |filters: Vec<QueryFilter>| {
-                                            set_query_builder_filters.set(filters);
-                                            execute_search(());
-                                        })
-                                    />
-                                </div>
                             </div>
                         </div>
 
                         // Results
                         <div class="flex-1 flex flex-col bg-gray-50 rounded border border-gray-200 overflow-hidden">
-                            <div class="px-3 py-2 border-b border-gray-200 bg-white flex justify-between items-center flex-shrink-0">
+                            // Header with count and sort
+                            <div class="px-3 py-2 border-b border-gray-200 bg-white flex justify-between items-center flex-shrink-0 gap-2">
                                 <h3 class="text-xs font-bold text-gray-700">"Results"</h3>
-                                <span class="text-xs text-gray-500">{move || format!("{} found", results.get().len())}</span>
+                                <div class="flex items-center gap-3">
+                                    // Sort dropdown
+                                    <div class="flex items-center gap-1.5">
+                                        <label class="text-xs text-gray-500">"Sort:"</label>
+                                        <select
+                                            class="text-xs border border-gray-200 rounded px-1.5 py-0.5 bg-white focus:ring-1 focus:ring-blue-500"
+                                            on:change=move |ev| {
+                                                let value = event_target_value(&ev);
+                                                let new_sort = match value.as_str() {
+                                                    "relevance" => SortOrder::Relevance,
+                                                    "date_desc" => SortOrder::DateDesc,
+                                                    "date_asc" => SortOrder::DateAsc,
+                                                    "title_asc" => SortOrder::TitleAsc,
+                                                    "title_desc" => SortOrder::TitleDesc,
+                                                    _ => SortOrder::Relevance,
+                                                };
+                                                set_sort_order.set(new_sort);
+                                                execute_search(());
+                                            }
+                                        >
+                                            <option value="relevance" selected=move || matches!(sort_order.get(), SortOrder::Relevance)>"Relevance"</option>
+                                            <option value="date_desc" selected=move || matches!(sort_order.get(), SortOrder::DateDesc)>"Date (newest)"</option>
+                                            <option value="date_asc" selected=move || matches!(sort_order.get(), SortOrder::DateAsc)>"Date (oldest)"</option>
+                                            <option value="title_asc" selected=move || matches!(sort_order.get(), SortOrder::TitleAsc)>"Title (A-Z)"</option>
+                                            <option value="title_desc" selected=move || matches!(sort_order.get(), SortOrder::TitleDesc)>"Title (Z-A)"</option>
+                                        </select>
+                                    </div>
+                                    // Result count
+                                    <span class="text-xs text-gray-500">
+                                        {move || {
+                                            let count = total_count.get();
+                                            let page = current_page.get();
+                                            let size = page_size.get();
+                                            let start = page * size + 1;
+                                            let end = std::cmp::min((page + 1) * size, count as i32);
+                                            if count > 0 {
+                                                format!("{}-{} of {}", start, end, count)
+                                            } else {
+                                                "0 found".to_string()
+                                            }
+                                        }}
+                                    </span>
+                                </div>
                             </div>
+
                             <ResultsList
                                 results=results.into()
                                 loading=is_loading.into()
@@ -468,6 +564,46 @@ pub fn SearchPage() -> impl IntoView {
                                 on_delete=on_delete
                                 set_chat_input=set_chat_input_text
                             />
+
+                            // Pagination controls
+                            <Show when=move || { total_count.get() > page_size.get() as i64 }>
+                                <div class="px-3 py-2 border-t border-gray-200 bg-white flex justify-center items-center gap-2 flex-shrink-0">
+                                    <button
+                                        class="px-2 py-1 text-xs font-medium text-gray-600 bg-gray-100 rounded hover:bg-gray-200 disabled:opacity-50 disabled:cursor-not-allowed"
+                                        disabled=move || current_page.get() == 0
+                                        on:click=move |_| {
+                                            let new_page = current_page.get() - 1;
+                                            set_current_page.set(new_page);
+                                            execute_search_with_page(new_page);
+                                        }
+                                    >
+                                        "← Prev"
+                                    </button>
+
+                                    <span class="text-xs text-gray-600">
+                                        {move || {
+                                            let page = current_page.get();
+                                            let total_pages = ((total_count.get() as f64) / (page_size.get() as f64)).ceil() as i32;
+                                            format!("Page {} of {}", page + 1, total_pages)
+                                        }}
+                                    </span>
+
+                                    <button
+                                        class="px-2 py-1 text-xs font-medium text-gray-600 bg-gray-100 rounded hover:bg-gray-200 disabled:opacity-50 disabled:cursor-not-allowed"
+                                        disabled=move || {
+                                            let total_pages = ((total_count.get() as f64) / (page_size.get() as f64)).ceil() as i32;
+                                            current_page.get() >= total_pages - 1
+                                        }
+                                        on:click=move |_| {
+                                            let new_page = current_page.get() + 1;
+                                            set_current_page.set(new_page);
+                                            execute_search_with_page(new_page);
+                                        }
+                                    >
+                                        "Next →"
+                                    </button>
+                                </div>
+                            </Show>
                         </div>
                     </div>
                 </div>

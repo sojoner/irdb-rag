@@ -105,6 +105,11 @@ async fn test_search_api_with_db() {
         products: None,
         word_count_min: None,
         word_count_max: None,
+        search_fields: vec![
+            "content".to_string(),
+            "title".to_string(),
+            "summary".to_string(),
+        ],
     };
 
     let result = match handlers::search(State(state.clone()), Json(req)).await {
@@ -226,6 +231,11 @@ async fn test_search_api_syntax_edge_cases() {
             products: None,
             word_count_min: None,
             word_count_max: None,
+            search_fields: vec![
+                "content".to_string(),
+                "title".to_string(),
+                "summary".to_string(),
+            ],
         };
 
         let result = handlers::search(State(state.clone()), Json(req)).await;

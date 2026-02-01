@@ -118,6 +118,8 @@ pub fn ResultsList(
                         let category_name_clone = category_name.clone();
                         let res_content = res.content.clone();
                         let res_content_send = res.content.clone();
+                        let combined_score = res.combined_score;
+                        let raw_bm25_score = res.raw_bm25_score;
 
                         view! {
                             <div class="group bg-white rounded-lg border border-gray-200 shadow-sm hover:shadow-md transition-all overflow-hidden"
@@ -142,9 +144,20 @@ pub fn ResultsList(
                                                     {res.title.clone()}
                                                 </button>
                                                 <div class="flex gap-1 flex-shrink-0">
-                                                    <span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-green-100 text-green-800">
-                                                        {format!("{:.0}%", res.combined_score * 100.0)}
-                                                    </span>
+                                                    // Show normalized percentage (0 = no BM25 search)
+                                                    <Show when=move || { combined_score > 0.0 }>
+                                                        <span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-green-100 text-green-800"
+                                                              title=format!("Normalized relevance score (raw RSV: {:.2})", raw_bm25_score)>
+                                                            {format!("{:.0}%", combined_score * 100.0)}
+                                                        </span>
+                                                    </Show>
+                                                    // Show raw RSV for BM25 searches
+                                                    <Show when=move || { raw_bm25_score > 0.0 }>
+                                                        <span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-yellow-100 text-yellow-800"
+                                                              title="BM25 Retrieval Status Value (raw score)">
+                                                            {format!("RSV: {:.2}", raw_bm25_score)}
+                                                        </span>
+                                                    </Show>
                                                     {res.reranker_score.map(|reranker_score| {
                                                         view! {
                                                             <span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-blue-100 text-blue-800"

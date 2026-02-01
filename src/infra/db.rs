@@ -16,6 +16,9 @@ use crate::infra::db_utils::{
     embedding_to_string, extract_unique_ids, has_entity_or_wordcount_filters,
 };
 
+/// Re-export SortOrder from services for DB layer usage
+pub use crate::web_app::services::search::SortOrder;
+
 /// Get embedding dimensions from configuration
 /// This is a helper function for database operations that need to know the vector dimension
 pub fn get_embedding_dimensions() -> Result<u32> {
@@ -558,27 +561,65 @@ pub async fn get_documents_by_ids(pool: &PgPool, ids: &[Uuid]) -> Result<Vec<Doc
 /// Fast BM25-only search for UI search interface
 /// Searches documents table directly (564 docs vs 138K chunks) for 10x speed improvement
 /// Uses multi-field BM25: content, title, summary
+/// Supports pagination (offset/limit) and sorting
 pub async fn bm25_search(
     pool: &PgPool,
     query: &str,
     filters: &SearchFilters,
     limit: i32,
+    offset: i32,
+    sort: &SortOrder,
 ) -> Result<Vec<SearchResult>> {
     if query.trim().is_empty() {
         return Ok(Vec::new());
     }
 
+    let trimmed = query.trim();
+
+    // Check if query is already field-qualified (e.g., "title:(werner)" or "content:(hello)")
+    // Field-qualified queries use syntax: field:(term) or field:term
+    // Also handle complex queries with AND/OR operators
+    let known_fields = ["title", "content", "summary", "author", "source_path", "keywords"];
+    let is_field_qualified = known_fields.iter().any(|field| {
+        // Match patterns like "title:(java)", "title:java", " content:(test)"
+        let pattern_with_parens = format!("{}:(", field);
+        let pattern_without_parens = format!("{}:", field);
+        trimmed.starts_with(&pattern_with_parens)
+            || trimmed.starts_with(&pattern_without_parens)
+            || trimmed.contains(&format!(" {}", pattern_with_parens))
+            || trimmed.contains(&format!(" {}", pattern_without_parens))
+    });
+
+    // Also check for BM25 operators which indicate an advanced query
+    let has_bm25_operators = trimmed.contains(" AND ")
+        || trimmed.contains(" OR ")
+        || trimmed.contains(" &&& ")
+        || trimmed.contains(" ||| ");
+
     // Multi-field query: search across content, title, and summary for best relevance
-    let multi_field_query = format!(
-        "(content:({}) OR title:({}) OR summary:({}))",
-        query.trim(),
-        query.trim(),
-        query.trim()
-    );
+    // Skip wrapping if query is already field-qualified or has operators to avoid breaking syntax
+    let multi_field_query = if is_field_qualified || has_bm25_operators {
+        tracing::info!("BM25 search: using query directly (field-qualified or has operators): {}", trimmed);
+        trimmed.to_string()
+    } else {
+        format!(
+            "(content:({}) OR title:({}) OR summary:({}))",
+            trimmed, trimmed, trimmed
+        )
+    };
 
-    tracing::info!("BM25 search (documents): query='{}', limit={}", query, limit);
+    // Build ORDER BY clause based on sort preference
+    let order_by = match sort {
+        SortOrder::Relevance => "paradedb.score(d.id) DESC",
+        SortOrder::DateDesc => "d.created_at DESC NULLS LAST",
+        SortOrder::DateAsc => "d.created_at ASC NULLS LAST",
+        SortOrder::TitleAsc => "d.title ASC",
+        SortOrder::TitleDesc => "d.title DESC",
+    };
 
-    let mut results = sqlx::query_as::<_, SearchResult>(
+    tracing::info!("BM25 search (documents): query='{}', limit={}, offset={}, sort={:?}", query, limit, offset, sort);
+
+    let sql = format!(
         r#"
         SELECT
             d.id,
@@ -590,7 +631,9 @@ pub async fn bm25_search(
             0.0::FLOAT as vector_score,
             paradedb.score(d.id)::FLOAT as combined_score,
             NULL::FLOAT as reranker_score,
-            NULL as snippet
+            NULL as snippet,
+            paradedb.score(d.id)::FLOAT as raw_bm25_score,
+            d.created_at
         FROM documents d
         LEFT JOIN categories c ON d.category_id = c.id
         WHERE d.id @@@ $1
@@ -599,19 +642,23 @@ pub async fn bm25_search(
             AND ($4::TIMESTAMPTZ IS NULL OR d.created_at <= $4)
             AND ($5::TEXT[] IS NULL OR d.locations && $5)
             AND ($6::TEXT[] IS NULL OR d.keywords && $6)
-        ORDER BY paradedb.score(d.id) DESC
-        LIMIT $7
+        ORDER BY {}
+        LIMIT $7 OFFSET $8
         "#,
-    )
-    .bind(&multi_field_query)
-    .bind(filters.category_id)
-    .bind(filters.date_from)
-    .bind(filters.date_to)
-    .bind(&filters.locations)
-    .bind(&filters.keywords)
-    .bind(limit)
-    .fetch_all(pool)
-    .await?;
+        order_by
+    );
+
+    let mut results = sqlx::query_as::<_, SearchResult>(&sql)
+        .bind(&multi_field_query)
+        .bind(filters.category_id)
+        .bind(filters.date_from)
+        .bind(filters.date_to)
+        .bind(&filters.locations)
+        .bind(&filters.keywords)
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(pool)
+        .await?;
 
     // Apply entity and word count filters if needed
     if has_entity_or_wordcount_filters(filters) {
@@ -630,6 +677,7 @@ pub async fn bm25_search(
 
     // Normalize scores to 0-1 range based on max score in result set
     // This makes percentages meaningful (100% = best match in this query)
+    // Keep raw_bm25_score unchanged for RSV display
     if !results.is_empty() {
         let max_score = results.iter()
             .map(|r| r.combined_score)
@@ -639,6 +687,7 @@ pub async fn bm25_search(
             for result in &mut results {
                 result.bm25_score = result.bm25_score / max_score;
                 result.combined_score = result.combined_score / max_score;
+                // raw_bm25_score remains unchanged
             }
             tracing::debug!("Normalized BM25 scores by max_score: {}", max_score);
         }
@@ -646,6 +695,67 @@ pub async fn bm25_search(
 
     tracing::info!("BM25 search completed: {} results", results.len());
     Ok(results)
+}
+
+/// Count total matching documents for pagination
+pub async fn bm25_search_count(
+    pool: &PgPool,
+    query: &str,
+    filters: &SearchFilters,
+) -> Result<i64> {
+    if query.trim().is_empty() {
+        return Ok(0);
+    }
+
+    let trimmed = query.trim();
+
+    // Check if query is already field-qualified
+    let known_fields = ["title", "content", "summary", "author", "source_path", "keywords"];
+    let is_field_qualified = known_fields.iter().any(|field| {
+        let pattern_with_parens = format!("{}:(", field);
+        let pattern_without_parens = format!("{}:", field);
+        trimmed.starts_with(&pattern_with_parens)
+            || trimmed.starts_with(&pattern_without_parens)
+            || trimmed.contains(&format!(" {}", pattern_with_parens))
+            || trimmed.contains(&format!(" {}", pattern_without_parens))
+    });
+
+    let has_bm25_operators = trimmed.contains(" AND ")
+        || trimmed.contains(" OR ")
+        || trimmed.contains(" &&& ")
+        || trimmed.contains(" ||| ");
+
+    let multi_field_query = if is_field_qualified || has_bm25_operators {
+        trimmed.to_string()
+    } else {
+        format!(
+            "(content:({}) OR title:({}) OR summary:({}))",
+            trimmed, trimmed, trimmed
+        )
+    };
+
+    let count: (i64,) = sqlx::query_as(
+        r#"
+        SELECT COUNT(*)
+        FROM documents d
+        WHERE d.id @@@ $1
+            AND ($2::UUID IS NULL OR d.category_id = $2)
+            AND ($3::TIMESTAMPTZ IS NULL OR d.created_at >= $3)
+            AND ($4::TIMESTAMPTZ IS NULL OR d.created_at <= $4)
+            AND ($5::TEXT[] IS NULL OR d.locations && $5)
+            AND ($6::TEXT[] IS NULL OR d.keywords && $6)
+        "#,
+    )
+    .bind(&multi_field_query)
+    .bind(filters.category_id)
+    .bind(filters.date_from)
+    .bind(filters.date_to)
+    .bind(&filters.locations)
+    .bind(&filters.keywords)
+    .fetch_one(pool)
+    .await?;
+
+    Ok(count.0)
 }
 
 /// Fast vector-only similarity search for chat/RAG interface
@@ -985,22 +1095,20 @@ pub async fn list_documents(pool: &PgPool, limit: i32, offset: i32) -> Result<Ve
 }
 
 /// Filter-only search: returns documents matching filters without any text/semantic search
+/// Supports pagination (offset/limit) and sorting
 pub async fn filter_only_search(
     pool: &PgPool,
     filters: &SearchFilters,
     limit: i32,
+    offset: i32,
+    sort: &SortOrder,
 ) -> Result<Vec<SearchResult>> {
-    // Build SQL with category filter - always use $1 for category, $2 for limit
-    let category_clause = if filters.category_id.is_some() {
-        "AND d.category_id = $1"
-    } else {
-        ""
-    };
-
-    let limit_param = if filters.category_id.is_some() {
-        "$2"
-    } else {
-        "$1"
+    // Build ORDER BY clause based on sort preference (no relevance for filter-only)
+    let order_by = match sort {
+        SortOrder::Relevance | SortOrder::DateDesc => "d.created_at DESC NULLS LAST",
+        SortOrder::DateAsc => "d.created_at ASC NULLS LAST",
+        SortOrder::TitleAsc => "d.title ASC",
+        SortOrder::TitleDesc => "d.title DESC",
     };
 
     let sql = format!(
@@ -1008,7 +1116,7 @@ pub async fn filter_only_search(
         SELECT
             d.id,
             d.title,
-            d.content,
+            LEFT(d.content, 300) as content,
             d.source_path,
             c.name as category_name,
             0.0::FLOAT as bm25_score,
@@ -1018,30 +1126,37 @@ pub async fn filter_only_search(
             CASE
                 WHEN d.content IS NOT NULL THEN substring(d.content, 1, 300)
                 ELSE NULL
-            END as snippet
+            END as snippet,
+            0.0::FLOAT as raw_bm25_score,
+            d.created_at
         FROM documents d
         LEFT JOIN categories c ON d.category_id = c.id
         WHERE d.status = 'indexed'
-        {}
-        ORDER BY d.created_at DESC
-        LIMIT {}
+            AND ($1::UUID IS NULL OR d.category_id = $1)
+            AND ($2::TIMESTAMPTZ IS NULL OR d.created_at >= $2)
+            AND ($3::TIMESTAMPTZ IS NULL OR d.created_at <= $3)
+            AND ($4::TEXT[] IS NULL OR d.locations && $4)
+            AND ($5::TEXT[] IS NULL OR d.keywords && $5)
+        ORDER BY {}
+        LIMIT $6 OFFSET $7
         "#,
-        category_clause, limit_param
+        order_by
     );
 
-    let mut query = sqlx::query_as::<_, SearchResult>(&sql);
-
-    // Bind category_id if present
-    if let Some(cat_id) = filters.category_id {
-        query = query.bind(cat_id);
-    }
-    query = query.bind(limit);
-
-    let mut results = query.fetch_all(pool).await?;
+    let mut results = sqlx::query_as::<_, SearchResult>(&sql)
+        .bind(filters.category_id)
+        .bind(filters.date_from)
+        .bind(filters.date_to)
+        .bind(&filters.locations)
+        .bind(&filters.keywords)
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(pool)
+        .await?;
 
     // Apply in-memory entity filters (concepts, organizations, persons, etc.)
     // Fetch full documents for filter matching
-    if !results.is_empty() {
+    if !results.is_empty() && has_entity_or_wordcount_filters(filters) {
         let doc_ids: Vec<Uuid> = results.iter().map(|r| r.id).collect();
         let full_docs = get_documents_by_ids(pool, &doc_ids).await?;
 
@@ -1055,6 +1170,34 @@ pub async fn filter_only_search(
     }
 
     Ok(results)
+}
+
+/// Count total documents matching filters for pagination
+pub async fn filter_only_search_count(
+    pool: &PgPool,
+    filters: &SearchFilters,
+) -> Result<i64> {
+    let count: (i64,) = sqlx::query_as(
+        r#"
+        SELECT COUNT(*)
+        FROM documents d
+        WHERE d.status = 'indexed'
+            AND ($1::UUID IS NULL OR d.category_id = $1)
+            AND ($2::TIMESTAMPTZ IS NULL OR d.created_at >= $2)
+            AND ($3::TIMESTAMPTZ IS NULL OR d.created_at <= $3)
+            AND ($4::TEXT[] IS NULL OR d.locations && $4)
+            AND ($5::TEXT[] IS NULL OR d.keywords && $5)
+        "#,
+    )
+    .bind(filters.category_id)
+    .bind(filters.date_from)
+    .bind(filters.date_to)
+    .bind(&filters.locations)
+    .bind(&filters.keywords)
+    .fetch_one(pool)
+    .await?;
+
+    Ok(count.0)
 }
 
 pub async fn list_categories(pool: &PgPool) -> Result<Vec<Category>> {
@@ -1554,6 +1697,8 @@ pub async fn search_with_facets(
                         combined_score: combined_score.map(|v| v as f64).unwrap_or(0.0),
                         reranker_score: None,
                         snippet: row.9,
+                        raw_bm25_score: row.6.map(|v| v as f64).unwrap_or(0.0),
+                        created_at: None,
                     });
                 }
             }
