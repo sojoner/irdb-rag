@@ -1,30 +1,32 @@
-# Wikipedia Import Plan
+# Wikipedia Import Plan (High-Performance Batch Edition)
 
 ## Objective
-Implement a high-performance, multi-threaded importer for Wikipedia XML multistream dumps (`.xml.bz2`) into a PostgreSQL database with BM25 indexing.
+Implement an ultra-high-performance, multi-threaded importer for Wikipedia XML multistream dumps (`.xml.bz2`) into PostgreSQL. Target: >20,000 pages/sec using 20 cores and 90GB RAM.
 
-## Architecture
-1. **Streaming Decompression:** Stream the `.bz2` file using `bzip2-rs` or `flate2` to avoid loading huge files into memory.
-2. **Streaming XML Parsing:** Use `quick-xml` to iterate through `<page>` elements without a full DOM.
-3. **Parallel Processing (Rayon):** 
-    - Worker threads (16-20) will clean WikiText (remove templates, citations, etc.) using `parse-wiki-text`.
-    - Extract plaintext for the BM25 index.
-4. **Batch DB Upload (COPY):**
-    - Use PostgreSQL `COPY` command (via `sqlx` or `tokio-postgres`) for bulk insertion.
-    - Buffer processed pages into chunks of 10,000 before flushing to DB.
+## UI & Integration
+- **Import UI Enhancement:** Add a "Wikipedia Dump" source type in the Import Manager.
+- **Path Input:** User provides the absolute path to the `.xml.bz2` file on the server (e.g., `/data/backups/enwiki-20260101-pages-articles-multistream.xml.bz2`).
+- **Background Job:** Triggering the import creates an `ImportJob` with `source_type = 'wikipedia'`.
+- **Progress Monitoring:** The background task updates `processed_items` in the `import_jobs` table every 10,000 pages, allowing the UI to show real-time progress.
 
-## Data Flow
-`bz2 File` -> `bzip2 Stream` -> `XML Parser (page iterator)` -> `Parallel Map (WikiText -> Plaintext)` -> `Buffer` -> `Postgres COPY`
+## Architecture & Parallelism
+1. **Producer-Consumer Pipeline (Crossbeam):**
+   - **Producer (1 Thread):** Decompresses `.bz2` and streams XML. Emits raw `<page>` blocks into a bounded channel.
+   - **Workers (18 Threads - Rayon):** 
+     - Receive page blocks.
+     - Parse XML (id, title, timestamp).
+     - **Metadata Extraction:** Extract Infobox data, Categories, and Templates into structured JSONB.
+     - **WikiText Cleaning:** Strips markup while preserving semantic structure.
+     - **Search Vector:** Skips embeddings (LLM) for speed; focuses on BM25 indices.
+   - **DB Writer (1 Thread):** Collects processed results and executes high-speed `COPY`.
 
-## Constraints & Hardware
-- **Cores:** 20 (Target 18 for processing, 1 for I/O, 1 for Decompression).
-- **RAM:** 90 GB (Large buffers for cleaning and batching allowed).
-- **Speed Target:** >10,000 pages per second.
+2. **Database Optimization (Postgres COPY):**
+   - Use `Binary COPY` protocol for maximum ingestion speed.
+   - Batch size: 50,000 rows per transaction.
 
 ## Implementation Steps
-1. Create `enwiki_pages` table with required columns.
-2. Implement `WikiImporter` in `src/services/import_wiki.rs`.
-3. Add `parse-wiki-text` and `bzip2` to `Cargo.toml`.
-4. Implement the pipeline with error handling (skip malformed pages).
-5. Add CLI command or API endpoint to trigger import.
-6. Configure BM25 indices on the resulting table.
+1. **Schema Setup:** Create `enwiki_pages` with GIN/BM25 indices.
+2. **UI Update:** Add "Wikipedia" option to `src/web_app/pages/import.rs`.
+3. **Job Runner Integration:** Extend `process_import_job` in `src/services/import.rs` to recognize 'wikipedia' jobs.
+4. **Streaming Parser:** Implement non-blocking XML reader in `src/services/import_wiki.rs`.
+5. **Batch Ingestion:** Implement the binary `COPY` sink.

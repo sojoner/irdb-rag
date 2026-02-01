@@ -94,7 +94,8 @@
       "WebFetch(domain:www.paradedb.com)",
       "mcp__plugin_playwright_playwright__browser_install",
       "mcp__MCP_DOCKER__browser_navigate",
-      "mcp__MCP_DOCKER__browser_type"
+      "mcp__MCP_DOCKER__browser_type",
+      "Bash(RUN_ENV=local-bm3090 cargo test:*)"
     ],
     "additionalDirectories": [
       "/tmp"

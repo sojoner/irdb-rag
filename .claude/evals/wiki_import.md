@@ -1,35 +1,15 @@
-# Wikipedia Import Evaluation & Verification
+# Wikipedia Import Evaluation (Performance & Depth)
 
-## Success Criteria
+## Performance Benchmarks
+- [ ] **Throughput:** Sustained >20,000 pages/sec.
+- [ ] **Job Integration:** UI correctly shows progress percentage as pages are processed.
+- [ ] **No Embedding Overhead:** Verify LLM/GPU usage is zero during Wikipedia import.
 
-1. **Throughput:**
-   - [ ] Import speed > 10,000 pages/sec.
-   - [ ] Total time for full `enwiki` dump < 2 hours (estimated for 6M+ pages).
+## Quality Metrics
+- [ ] **Infobox Coverage:** >90% of pages with infoboxes have structured JSON data.
+- [ ] **BM25 Search:** `Relativity` query returns Albert Einstein as top result.
 
-2. **Data Integrity:**
-   - [ ] Final row count matches official dump metadata.
-   - [ ] Titles and IDs correctly imported.
-   - [ ] Plaintext is clean (no raw WikiText templates visible).
-
-3. **Search Quality (BM25):**
-   - [ ] Full-text search returns relevant results for "Quantum Mechanics".
-   - [ ] Result ranking follows BM25 scoring.
-
-## Test Cases
-
-### 1. Small Dump Test
-Run the importer on a 100MB subset of the dump.
-- **Expected:** Success in < 30 seconds.
-- **Check:** `SELECT count(*) FROM enwiki_pages;`
-
-### 2. Multi-threaded Load
-Monitor CPU usage during import.
-- **Expected:** At least 16 cores should be at 100%.
-
-### 3. Cleanup Verification
-- **Query:** `SELECT content FROM enwiki_pages WHERE title = 'London' LIMIT 1;`
-- **Expected:** No `{{ ... }}` or `[[ ... ]]` syntax.
-
-## Recovery
-- [ ] Support resuming from a specific page ID if the process crashes.
-- [ ] Log failed page IDs to a separate file.
+## UI Verification
+- [ ] "Wikipedia" source type appears in "New Import Job" modal.
+- [ ] Providing a valid path starts a background job visible in the list.
+- [ ] Progress bar updates smoothly without page refreshes.
