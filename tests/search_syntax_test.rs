@@ -69,6 +69,7 @@ async fn test_search_syntax_edge_cases() {
             products: None,
             word_count_min: None,
             word_count_max: None,
+            sort: Default::default(),
         };
 
         let result = handlers::search(State(state.clone()), Json(req)).await;

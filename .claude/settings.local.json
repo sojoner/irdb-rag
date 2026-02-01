@@ -88,7 +88,13 @@
       "mcp__plugin_playwright_playwright__browser_click",
       "mcp__plugin_playwright_playwright__browser_type",
       "mcp__plugin_playwright_playwright__browser_snapshot",
-      "mcp__plugin_playwright_playwright__browser_close"
+      "mcp__plugin_playwright_playwright__browser_close",
+      "mcp__plugin_playwright_playwright__browser_fill_form",
+      "WebFetch(domain:docs.paradedb.com)",
+      "WebFetch(domain:www.paradedb.com)",
+      "mcp__plugin_playwright_playwright__browser_install",
+      "mcp__MCP_DOCKER__browser_navigate",
+      "mcp__MCP_DOCKER__browser_type"
     ],
     "additionalDirectories": [
       "/tmp"

@@ -175,6 +175,7 @@ mod tests {
         let req = SearchRequest {
             query: "test".to_string(),
             limit: 10,
+            sort: Default::default(),
             search_fields: vec!["content".to_string()],
             bm25_weight: 0.5,
             vector_weight: 0.5,
@@ -203,6 +204,7 @@ mod tests {
         let req = SearchRequest {
             query: "test".to_string(),
             limit: 10,
+            sort: Default::default(),
             search_fields: vec!["content".to_string()],
             bm25_weight: 0.5,
             vector_weight: 0.5,
@@ -233,6 +235,7 @@ mod tests {
         let req = SearchRequest {
             query: "test".to_string(),
             limit: 10,
+            sort: Default::default(),
             search_fields: vec!["content".to_string()],
             bm25_weight: 0.5,
             vector_weight: 0.5,

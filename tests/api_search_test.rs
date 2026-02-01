@@ -25,6 +25,20 @@ pub struct SearchRequest {
     pub products: Option<Vec<String>>,
     pub word_count_min: Option<i32>,
     pub word_count_max: Option<i32>,
+    #[serde(default)]
+    pub sort: SortOrder,
+    #[serde(default)]
+    pub search_fields: Vec<String>,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq, Default)]
+pub enum SortOrder {
+    #[default]
+    Relevance,      // BM25 score descending (default for searches with query)
+    DateDesc,       // Newest first (default for browse/filter-only)
+    DateAsc,        // Oldest first
+    TitleAsc,       // Alphabetical A-Z
+    TitleDesc,      // Alphabetical Z-A
 }
 
 fn default_limit() -> i32 {
@@ -77,6 +91,8 @@ async fn test_search_request_basic() {
         products: None,
         word_count_min: None,
         word_count_max: None,
+        sort: SortOrder::Relevance,
+        search_fields: vec!["content".to_string(), "title".to_string(), "summary".to_string()],
     };
 
     let (response, elapsed): (Result<_, _>, _) = measure_api_call("Basic search API call", async {
@@ -130,6 +146,8 @@ async fn test_search_with_keywords_filter() {
         products: None,
         word_count_min: None,
         word_count_max: None,
+        sort: SortOrder::Relevance,
+        search_fields: vec!["content".to_string(), "title".to_string(), "summary".to_string()],
     };
 
     let (response, elapsed): (Result<_, _>, _) =
@@ -180,6 +198,8 @@ async fn test_search_with_date_filter() {
         products: None,
         word_count_min: None,
         word_count_max: None,
+        sort: SortOrder::Relevance,
+        search_fields: vec!["content".to_string(), "title".to_string(), "summary".to_string()],
     };
 
     let (response, elapsed): (Result<_, _>, _) =
@@ -230,6 +250,8 @@ async fn test_search_with_entity_filters() {
         products: None,
         word_count_min: None,
         word_count_max: None,
+        sort: SortOrder::Relevance,
+        search_fields: vec!["content".to_string(), "title".to_string(), "summary".to_string()],
     };
 
     let (response, elapsed): (Result<_, _>, _) =
@@ -280,6 +302,8 @@ async fn test_search_bm25_heavy() {
         products: None,
         word_count_min: None,
         word_count_max: None,
+        sort: SortOrder::Relevance,
+        search_fields: vec!["content".to_string(), "title".to_string(), "summary".to_string()],
     };
 
     let (response, elapsed): (Result<_, _>, _) = measure_api_call("BM25-heavy search", async {
@@ -326,6 +350,8 @@ async fn test_search_vector_heavy() {
         products: None,
         word_count_min: None,
         word_count_max: None,
+        sort: SortOrder::Relevance,
+        search_fields: vec!["content".to_string(), "title".to_string(), "summary".to_string()],
     };
 
     let (response, elapsed): (Result<_, _>, _) = measure_api_call("Vector-heavy search", async {
@@ -372,6 +398,8 @@ async fn test_search_empty_query() {
         products: None,
         word_count_min: None,
         word_count_max: None,
+        sort: SortOrder::Relevance,
+        search_fields: vec!["content".to_string(), "title".to_string(), "summary".to_string()],
     };
 
     let (response, elapsed): (Result<_, _>, _) = measure_api_call("Empty query search", async {
@@ -458,6 +486,8 @@ async fn test_concurrent_searches() {
                         products: None,
                         word_count_min: None,
                         word_count_max: None,
+                        sort: SortOrder::Relevance,
+        search_fields: vec!["content".to_string(), "title".to_string(), "summary".to_string()],
                     };
                     client
                         .post("http://localhost:3000/api/search")
@@ -505,6 +535,8 @@ async fn test_search_performance_benchmark() {
             products: None,
             word_count_min: None,
             word_count_max: None,
+            sort: SortOrder::Relevance,
+        search_fields: vec!["content".to_string(), "title".to_string(), "summary".to_string()],
         })
         .send()
         .await;
@@ -531,6 +563,8 @@ async fn test_search_performance_benchmark() {
                 products: None,
                 word_count_min: None,
                 word_count_max: None,
+                sort: SortOrder::Relevance,
+        search_fields: vec!["content".to_string(), "title".to_string(), "summary".to_string()],
             })
             .send()
             .await
@@ -559,6 +593,8 @@ async fn test_search_performance_benchmark() {
                 products: None,
                 word_count_min: None,
                 word_count_max: None,
+                sort: SortOrder::Relevance,
+        search_fields: vec!["content".to_string(), "title".to_string(), "summary".to_string()],
             })
             .send()
             .await
@@ -587,6 +623,8 @@ async fn test_search_performance_benchmark() {
                 products: None,
                 word_count_min: None,
                 word_count_max: None,
+                sort: SortOrder::Relevance,
+        search_fields: vec!["content".to_string(), "title".to_string(), "summary".to_string()],
             })
             .send()
             .await
@@ -615,6 +653,8 @@ async fn test_search_performance_benchmark() {
                 products: None,
                 word_count_min: None,
                 word_count_max: None,
+                sort: SortOrder::Relevance,
+        search_fields: vec!["content".to_string(), "title".to_string(), "summary".to_string()],
             })
             .send()
             .await

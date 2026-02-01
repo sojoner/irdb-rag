@@ -7,7 +7,7 @@ use uuid::Uuid;
 // Let's assume LLMConfig is moved to domain::models or domain::config.
 // I will put LLMConfig in domain::models for now to avoid circular deps.
 
-use crate::domain::models::LLMConfig;
+use crate::domain::models::{LLMConfig, SortOrder};
 
 // ============================================
 // Request/Response Types
@@ -21,6 +21,8 @@ pub struct SearchRequest {
     /// Fields to search in: content, title, summary, author, keywords
     #[serde(default = "default_search_fields")]
     pub search_fields: Vec<String>,
+    #[serde(default)]
+    pub sort: SortOrder,
     // Deprecated - keeping for backward compatibility
     #[serde(default = "default_bm25_weight")]
     pub bm25_weight: f64,
@@ -61,7 +63,7 @@ fn default_vector_weight() -> f64 {
 #[cfg_attr(not(target_arch = "wasm32"), derive(sqlx::FromRow))]
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
 pub struct ChatMessage {
-    pub role: String,    // "user" or "assistant"
+    pub role: String, // "user" or "assistant"
     pub content: String,
 }
 

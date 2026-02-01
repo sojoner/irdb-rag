@@ -16,8 +16,8 @@ use crate::infra::db_utils::{
     embedding_to_string, extract_unique_ids, has_entity_or_wordcount_filters,
 };
 
-/// Re-export SortOrder from services for DB layer usage
-pub use crate::web_app::services::search::SortOrder;
+/// Re-export SortOrder from domain models for DB layer usage
+pub use crate::domain::models::SortOrder;
 
 /// Get embedding dimensions from configuration
 /// This is a helper function for database operations that need to know the vector dimension

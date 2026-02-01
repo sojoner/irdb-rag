@@ -1,4 +1,4 @@
-use crate::domain::models::SearchResult;
+pub use crate::domain::models::{SearchResult, SortOrder};
 use leptos::prelude::*;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -33,17 +33,6 @@ pub struct SearchFilters {
     pub persons: Option<Vec<String>>,
     pub organizations: Option<Vec<String>>,
     pub authors: Option<Vec<String>>,
-}
-
-/// Sort order for search results
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq, Default)]
-pub enum SortOrder {
-    #[default]
-    Relevance,      // BM25 score descending (default for searches with query)
-    DateDesc,       // Newest first (default for browse/filter-only)
-    DateAsc,        // Oldest first
-    TitleAsc,       // Alphabetical A-Z
-    TitleDesc,      // Alphabetical Z-A
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]

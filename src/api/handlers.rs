@@ -130,7 +130,7 @@ pub async fn search_bm25(
         &filters,
         req.limit,
         0,
-        &db::SortOrder::Relevance,
+        &req.sort,
     )
         .await
         .map_err(|e| {

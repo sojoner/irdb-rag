@@ -74,19 +74,19 @@ pub struct SearchResult {
     pub content: String,
     pub source_path: Option<String>,
     pub category_name: Option<String>,
-    pub bm25_score: f64,           // Normalized score (0-1)
+    pub bm25_score: f64, // Normalized score (0-1)
     pub vector_score: f64,
-    pub combined_score: f64,       // Normalized combined score (0-1)
+    pub combined_score: f64, // Normalized combined score (0-1)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reranker_score: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub snippet: Option<String>,
     #[serde(default)]
     #[cfg_attr(feature = "ssr", sqlx(default))]
-    pub raw_bm25_score: f64,       // Raw RSV from BM25 (for debugging/display)
+    pub raw_bm25_score: f64, // Raw RSV from BM25 (for debugging/display)
     #[serde(skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "ssr", sqlx(default))]
-    pub created_at: Option<chrono::DateTime<chrono::Utc>>,  // For sorting by date
+    pub created_at: Option<chrono::DateTime<chrono::Utc>>, // For sorting by date
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -114,6 +114,17 @@ pub struct DbStats {
     pub document_count: i64,
     pub chunk_count: i64,
     pub database_size: String,
+}
+
+/// Sort order for search results
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
+pub enum SortOrder {
+    #[default]
+    Relevance, // BM25 score descending (default for searches with query)
+    DateDesc,  // Newest first (default for browse/filter-only)
+    DateAsc,   // Oldest first
+    TitleAsc,  // Alphabetical A-Z
+    TitleDesc, // Alphabetical Z-A
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]

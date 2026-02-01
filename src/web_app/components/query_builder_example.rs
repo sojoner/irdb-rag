@@ -1,7 +1,6 @@
 /// Example integration of Advanced Query Builder
 /// This shows how to convert QueryFilter objects to SearchRequest
 /// and integrate with the search functionality
-
 use crate::domain::dtos::SearchRequest;
 use crate::web_app::components::advanced_query_builder::{
     AdvancedQueryBuilder, FilterValue, QueryFilter,
@@ -9,14 +8,16 @@ use crate::web_app::components::advanced_query_builder::{
 use leptos::prelude::*;
 
 /// Convert QueryFilter objects to SearchRequest
-pub fn build_search_request(
-    base_query: String,
-    filters: Vec<QueryFilter>,
-) -> SearchRequest {
+pub fn build_search_request(base_query: String, filters: Vec<QueryFilter>) -> SearchRequest {
     let mut request = SearchRequest {
         query: base_query,
         limit: 20,
-        search_fields: vec!["content".to_string(), "title".to_string(), "summary".to_string()],
+        sort: Default::default(),
+        search_fields: vec![
+            "content".to_string(),
+            "title".to_string(),
+            "summary".to_string(),
+        ],
         bm25_weight: 0.5,
         vector_weight: 0.5,
         category_id: None,

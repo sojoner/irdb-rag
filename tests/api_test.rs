@@ -105,6 +105,7 @@ async fn test_search_api_with_db() {
         products: None,
         word_count_min: None,
         word_count_max: None,
+        sort: Default::default(),
         search_fields: vec![
             "content".to_string(),
             "title".to_string(),
@@ -231,6 +232,7 @@ async fn test_search_api_syntax_edge_cases() {
             products: None,
             word_count_min: None,
             word_count_max: None,
+            sort: Default::default(),
             search_fields: vec![
                 "content".to_string(),
                 "title".to_string(),
