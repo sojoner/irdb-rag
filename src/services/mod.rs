@@ -9,6 +9,8 @@ pub mod enrichment_utils;
 #[cfg(feature = "ssr")]
 pub mod import;
 #[cfg(feature = "ssr")]
+pub mod import_wiki;
+#[cfg(feature = "ssr")]
 pub mod indexing;
 #[cfg(feature = "ssr")]
 pub mod job_cleanup;

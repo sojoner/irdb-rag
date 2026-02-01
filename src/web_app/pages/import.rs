@@ -38,6 +38,10 @@ pub async fn create_import_job(
             .filter(|line| !line.is_empty())
             .map(std::path::PathBuf::from)
             .collect()
+    } else if source_type == "wikipedia" {
+        // Wikipedia is a single file dump, we represent it as one "item" initially
+        // or we handle it specially in the worker
+        vec![std::path::PathBuf::from(&source_path)]
     } else {
         vec![]
     };
@@ -842,7 +846,7 @@ pub fn ImportPage() -> impl IntoView {
                             // Source Type Selection
                             <div>
                                 <label class="block text-sm font-medium text-gray-700 mb-2">"Source Type"</label>
-                                <div class="grid grid-cols-2 gap-2">
+                                <div class="grid grid-cols-3 gap-2">
                                     <button
                                         on:click=move |_| set_source_type.set("folder".to_string())
                                         class=move || format!(
@@ -855,7 +859,7 @@ pub fn ImportPage() -> impl IntoView {
                                         )
                                     >
                                         <div class="font-medium text-sm text-gray-900">"Folder"</div>
-                                        <div class="text-xs text-gray-600">"Import from directory"</div>
+                                        <div class="text-xs text-gray-600">"Import directory"</div>
                                     </button>
                                     <button
                                         on:click=move |_| set_source_type.set("url".to_string())
@@ -869,7 +873,21 @@ pub fn ImportPage() -> impl IntoView {
                                         )
                                     >
                                         <div class="font-medium text-sm text-gray-900">"URL"</div>
-                                        <div class="text-xs text-gray-600">"Import from web"</div>
+                                        <div class="text-xs text-gray-600">"Import web"</div>
+                                    </button>
+                                    <button
+                                        on:click=move |_| set_source_type.set("wikipedia".to_string())
+                                        class=move || format!(
+                                            "px-4 py-3 rounded-lg border-2 transition-all text-left {}",
+                                            if source_type.get() == "wikipedia" {
+                                                "border-blue-500 bg-blue-50"
+                                            } else {
+                                                "border-gray-200 hover:border-gray-300"
+                                            }
+                                        )
+                                    >
+                                        <div class="font-medium text-sm text-gray-900">"Wikipedia"</div>
+                                        <div class="text-xs text-gray-600">"XML.BZ2 Dump"</div>
                                     </button>
                                 </div>
                             </div>
@@ -877,24 +895,31 @@ pub fn ImportPage() -> impl IntoView {
                             // Source Path Input
                             <div>
                                 <label class="block text-sm font-medium text-gray-700 mb-2">
-                                    {move || if source_type.get() == "folder" { "Folder Path" } else { "URL" }}
+                                    {move || match source_type.get().as_str() {
+                                        "folder" => "Folder Path",
+                                        "url" => "URL",
+                                        "wikipedia" => "Wikipedia Dump Path (.xml.bz2)",
+                                        _ => "Source Path"
+                                    }}
                                 </label>
                                 <textarea
                                     prop:value=move || source_path.get()
                                     on:input=move |ev| set_source_path.set(event_target_value(&ev))
-                                    placeholder=move || if source_type.get() == "folder" {
-                                        "/path/to/documents"
-                                    } else {
-                                        "https://example.com/document.pdf\nhttps://example.com/another.pdf"
+                                    placeholder=move || match source_type.get().as_str() {
+                                        "folder" => "/path/to/documents",
+                                        "url" => "https://example.com/document.pdf",
+                                        "wikipedia" => "/data/backups/enwiki-latest-pages-articles.xml.bz2",
+                                        _ => "Enter path or URL"
                                     }
                                     rows="4"
                                     class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm"
                                 />
                                 <p class="text-xs text-gray-500 mt-1">
-                                    {move || if source_type.get() == "folder" {
-                                        "Enter the absolute path to the folder containing documents"
-                                    } else {
-                                        "Enter one or more URLs (one per line)"
+                                    {move || match source_type.get().as_str() {
+                                        "folder" => "Enter the absolute path to the folder containing documents",
+                                        "url" => "Enter one or more URLs (one per line)",
+                                        "wikipedia" => "Enter the absolute path to the Wikipedia articles multistream XML.BZ2 file",
+                                        _ => ""
                                     }}
                                 </p>
                             </div>

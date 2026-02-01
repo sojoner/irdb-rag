@@ -1,0 +1,90 @@
+# RAG Chat - Local Development with Remote Services (bm3090)
+# Run cargo leptos watch locally, connect to services on bm3090
+
+[database]
+url = "postgres://rag_user:rag_password@bm3090:15432/rag_chat"
+max_connections = 20
+acquire_timeout_seconds = 30
+
+# All LLMs use Ollama on bm3090
+[llm.chat]
+provider = "openai"
+api_url = "http://bm3090:11434/v1"
+api_key = "ollama"
+model = "granite3-moe:3b"
+
+[llm.metadata]
+provider = "openai"
+api_url = "http://bm3090:11434/v1"
+api_key = "ollama"
+model = "granite3-moe:3b"
+
+[llm.ner]
+provider = "openai"
+api_url = "http://bm3090:11434/v1"
+api_key = "ollama"
+model = "granite3-moe:3b"
+
+[llm]
+timeout_seconds = 600
+
+[embedding]
+provider = "openai"
+api_url = "http://bm3090:11434/v1"
+api_key = "ollama"
+model = "nomic-embed-text-v2-moe"
+dimensions = 768
+timeout_seconds = 120
+
+[docling]
+url = "http://bm3090:5001"
+timeout_seconds = 600
+models = "DocLayNet,TableFormer"
+do_layout_analysis = true
+do_table_structure = true
+do_ocr = false
+batch_document_limit = 48
+batch_chunk_limit = 128
+batch_embedding_limit = 256
+
+[import]
+workers = 1
+indexing_batch_size = 2
+max_concurrent_documents = 4
+entity_extraction_batches = 4
+chunk_size_tokens = 4096
+max_retries = 3
+retry_base_delay_ms = 1000
+retry_max_delay_ms = 30000
+
+[import.cleanup]
+enabled = true
+retention_hours = 24
+check_interval_hours = 1
+
+[knowledge_base]
+local_paths = []
+urls = []
+chrome_bookmarks_path = ""
+file_extensions = ["md", "pdf"]
+scan_on_startup = false
+
+[enrichment]
+enabled = true
+extract_entities = true
+extract_summary = true
+extract_keywords = true
+classify_category = true
+
+[rag]
+system_prompt = "You are a helpful AI assistant specialized in answering questions about documents. Use the provided document context to give accurate, well-sourced answers. If information is not available in the context, clearly state that. Always cite which documents you're referencing."
+entity_extraction_enabled = true
+
+[reranking]
+enabled = false
+api_url = "http://bm3090:11434"
+api_key = ""
+model = "dengcao/Qwen3-Reranker-0.6B:Q5_K_M"
+timeout_seconds = 30
+max_search_results = 10
+max_chat_chunks = 8

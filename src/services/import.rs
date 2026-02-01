@@ -653,6 +653,17 @@ pub async fn process_import_job(
     // Update job status to running
     runner.update_job_status(pool, job_id, "running").await?;
 
+    // Check if this is a specialized import job (e.g. Wikipedia)
+    let job = runner.get_job(pool, job_id).await?;
+    if job.source_type == "wikipedia" {
+        if let Some(path) = job.source_path {
+            // Specialized Wikipedia Importer
+            tracing::info!("Starting specialized Wikipedia import for job {}", job_id);
+            crate::services::import_wiki::import_wikipedia_dump(pool, job_id, PathBuf::from(path)).await?;
+            return Ok(());
+        }
+    }
+
     // Get all pending items sorted by file size (smallest first for quick wins)
     let items: Vec<ImportItem> = sqlx::query_as(
         "SELECT * FROM import_items WHERE job_id = $1 AND status = 'pending' ORDER BY file_size_bytes ASC, created_at ASC"

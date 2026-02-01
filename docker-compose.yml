@@ -304,23 +304,10 @@ services:
         docling-tools models download --all --output-dir=/models
         echo "Docling models downloaded successfully!"
     restart: "no"
-
-  # Permission init container - fixes postgres data directory ownership
-  db-perms:
-    image: busybox:latest
-    container_name: rag-db-perms
-    volumes:
-      - /data/postgres:/postgres_data
-    command: sh -c "chown -R 999:999 /postgres_data && chmod 700 /postgres_data"
-    restart: "no"
-
   # PostgreSQL with pgvector
   db:
     image: sojoner/database:latest
     container_name: rag-db
-    depends_on:
-      db-perms:
-        condition: service_completed_successfully
     environment:
       POSTGRES_USER: rag_user
       POSTGRES_PASSWORD: rag_password
@@ -372,68 +359,6 @@ services:
         echo 'Database initialization complete!';
       "
     restart: "no"
-
-
-  # Rust Web Container - Leptos UI + Import Workers
-  # Runs web server on port 3000 with 2 import workers processing the queue
-  web:
-    build:
-      context: .
-      dockerfile: Dockerfile.dev
-      args:
-        CARGO_LEPTOS_VERSION: "0.3.2"
-    container_name: rag-web
-    environment:
-      RUN_ENV: test-gpu
-      RUST_LOG: info
-      LEPTOS_SITE_ROOT: /app/target/site
-      LEPTOS_SITE_ADDR: 0.0.0.0:3000
-      RUNNING_IN_CONTAINER: "true"
-      # Cargo caching
-      CARGO_HOME: /cargo
-      CARGO_TARGET_DIR: /target
-      # Parallel builds - optimized for 20-core system
-      CARGO_BUILD_JOBS: "16"
-      # Rust compilation optimizations
-      CARGO_INCREMENTAL: "1"
-      CARGO_PROFILE_DEV_DEBUG: "0"
-      RUSTFLAGS: "-C codegen-units=20"
-    ports:
-      - "0.0.0.0:3000:3000"
-      - "0.0.0.0:3001:3001"
-    depends_on:
-      db:
-        condition: service_healthy
-      db-init:
-        condition: service_completed_successfully
-    volumes:
-      # Source code (bind mount for hot-reload)
-      - .:/app:cached
-      # Knowledge Base Mounts
-      - /data/books:/data/books:ro
-      - /data/books:/app/books:ro
-      # Mac-compatible persistent caches (use Docker volumes instead of /data paths)
-      - cargo_registry:/cargo/registry
-      - cargo_git:/cargo/git
-      - rust_target:/target
-      - npm_cache:/app/node_modules
-    working_dir: /app
-    networks:
-      - rag-network
-    deploy:
-      resources:
-        limits:
-          cpus: '16' # Full CPU for UI + workers
-          memory: 32G # Full memory for workers
-        reservations:
-          cpus: '8'
-          memory: 16G
-    command: cargo leptos watch
-    #command: cargo leptos serve
-    # Keep container running for interactive development
-    stdin_open: true
-    tty: true
-    restart: unless-stopped
 
 networks:
   rag-network:

@@ -1,24 +1,24 @@
-use leptos::prelude::*;
 use chrono::{Duration, Local};
+use leptos::prelude::*;
 use serde::{Deserialize, Serialize};
 
 /// Represents a single filter in the advanced query builder
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct QueryFilter {
     pub filter_type: FilterType,
     pub value: FilterValue,
 }
 
 /// The type of filter (determines which UI component is rendered)
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum FilterType {
     DateRange,
-    TextField(String), // field name: title, content, summary, author
+    TextField(String),  // field name: title, content, summary, author
     ArrayField(String), // field name: keywords, locations, persons, organizations, products, concepts
 }
 
 /// The actual filter value (depends on filter type)
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum FilterValue {
     DateRange {
         from: Option<String>,
@@ -35,9 +35,7 @@ pub enum FilterValue {
 }
 
 #[component]
-pub fn AdvancedQueryBuilder(
-    on_filter_change: Callback<Vec<QueryFilter>>,
-) -> impl IntoView {
+pub fn AdvancedQueryBuilder(on_filter_change: Callback<Vec<QueryFilter>>) -> impl IntoView {
     let (filters, set_filters) = signal(Vec::<QueryFilter>::new());
 
     let add_date_filter = move |_| {
@@ -341,10 +339,7 @@ fn calculate_date_range(preset: DatePreset) -> (Option<String>, Option<String>) 
         DatePreset::LastYear => now.checked_sub_signed(Duration::days(365)),
     };
 
-    (
-        from.map(|d| d.format("%Y-%m-%d").to_string()),
-        Some(to),
-    )
+    (from.map(|d| d.format("%Y-%m-%d").to_string()), Some(to))
 }
 
 #[component]
@@ -441,18 +436,37 @@ fn ArrayFieldFilter(
     let (search_term, set_search_term) = signal(String::new());
     let (show_dropdown, set_show_dropdown) = signal(false);
 
-    let array_fields = vec!["keywords", "locations", "persons", "organizations", "products", "concepts"];
+    let array_fields = vec![
+        "keywords",
+        "locations",
+        "persons",
+        "organizations",
+        "products",
+        "concepts",
+    ];
     let array_fields_for_render: Vec<String> = array_fields.iter().map(|s| s.to_string()).collect();
 
     // Mock suggestions - in real app, fetch from server
     let get_suggestions = |field: &str, search: &str| {
         let mock_data = match field {
-            "keywords" => vec!["Python", "Machine Learning", "Data Science", "AI", "Deep Learning"],
+            "keywords" => vec![
+                "Python",
+                "Machine Learning",
+                "Data Science",
+                "AI",
+                "Deep Learning",
+            ],
             "locations" => vec!["New York", "San Francisco", "London", "Tokyo", "Berlin"],
             "persons" => vec!["John Doe", "Jane Smith", "Bob Johnson", "Alice Williams"],
             "organizations" => vec!["OpenAI", "Google", "Meta", "Microsoft", "Apple"],
             "products" => vec!["GPT-4", "BERT", "Claude", "Gemini", "Llama"],
-            "concepts" => vec!["Classification", "Regression", "NLP", "Computer Vision", "Clustering"],
+            "concepts" => vec![
+                "Classification",
+                "Regression",
+                "NLP",
+                "Computer Vision",
+                "Clustering",
+            ],
             _ => vec![],
         };
 

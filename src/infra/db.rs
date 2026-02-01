@@ -239,10 +239,8 @@ pub async fn fast_bm25_search(
             (COALESCE(bool.boolean_score, 0.0) * 0.2) +
             (1.0 / (60 + COALESCE(pr.prefix_rank, 1000)) * 0.5))::FLOAT8 as combined_score,
             NULL::FLOAT8 as reranker_score,
-            CASE
-                WHEN d.content @@@ $3 THEN paradedb.snippet(d.content, start_tag => '<mark>', end_tag => '</mark>', max_num_chars => 300)
-                ELSE NULL
-            END as snippet
+            -- Snippet generation moved to application code to avoid ParadeDB cross-table query limitations
+            NULL::TEXT as snippet
         FROM documents d
         JOIN combined_ids ci ON d.id = ci.id
         LEFT JOIN categories c ON d.category_id = c.id
@@ -347,6 +345,16 @@ pub async fn hybrid_search(
         format!("content:({})", query.trim())
     };
 
+    // For documents table snippet check - use simple quoted tokens
+    // This avoids ParadeDB "Unsupported query shape" errors when checking d.content
+    let doc_snippet_query = if tokens.is_empty() {
+        "id:__no_match__".to_string()
+    } else {
+        // Use quoted terms for exact matching
+        let quoted = tokens.iter().map(|t| format!("\"{}\"", t)).collect::<Vec<_>>().join(" ");
+        format!("content:({})", quoted)
+    };
+
     // Log query building details
     tracing::info!("=== HYBRID SEARCH QUERY BUILDING ===");
     tracing::info!("Original query: '{}'", query);
@@ -355,6 +363,7 @@ pub async fn hybrid_search(
     tracing::info!("Chunk boolean: {}", chunk_boolean_query);
     tracing::info!("Chunk prefix: {}", chunk_prefix_query);
     tracing::info!("Chunk sanitized: {}", chunk_sanitized);
+    tracing::info!("Doc snippet query: {}", doc_snippet_query);
     tracing::info!(
         "Search weights - BM25: {}, Vector: {}",
         bm25_weight,
@@ -445,10 +454,8 @@ pub async fn hybrid_search(
                 COALESCE(ar.vector_score, 0.0) * $5
             ))::FLOAT as combined_score,
             NULL::FLOAT as reranker_score,
-            CASE
-                WHEN d.content @@@ $1 THEN paradedb.snippet(d.content, start_tag => '<mark>', end_tag => '</mark>', max_num_chars => 300)
-                ELSE NULL
-            END as snippet
+            -- Snippet generation moved to application code to avoid ParadeDB cross-table query limitations
+            NULL::TEXT as snippet
         FROM all_results ar
         JOIN documents d ON ar.result_id = d.id
         LEFT JOIN categories c ON d.category_id = c.id
