@@ -1,0 +1,269 @@
+services:
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: rag-ollama
+    ports:
+      - "11434:11434"
+    environment:
+      - OLLAMA_HOST=0.0.0.0:11434
+      - OLLAMA_NUM_PARALLEL=8
+      - OLLAMA_NUM_THREADS=16
+    volumes:
+      - /data/ollama:/root/.ollama
+    networks:
+      - rag-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  docling:
+    image: ghcr.io/docling-project/docling-serve-cu128:latest
+    container_name: rag-docling
+    ports:
+      - "5001:5001"
+    environment:
+      # Core settings
+      DOCLING_SERVE_ENABLE_UI: "true"
+      DOCLING_SERVE_MAX_SYNC_WAIT: "600" # VLM enrichment can take 200+ seconds
+      DOCLING_LOG_LEVEL: "INFO"
+
+      # ============================================================================
+      # GPU ACCELERATION - CUDA RTX 3090 Optimized
+      # ============================================================================
+      DOCLING_DEVICE: "cuda:0"
+
+      # Flash Attention 2 - reduces memory usage and increases throughput (CUDA 11.8+)
+      CUDA_USE_FLASH_ATTENTION2: "1"
+
+      # Model artifacts path
+      DOCLING_SERVE_ARTIFACTS_PATH: "/models"
+
+      # ============================================================================
+      # BATCH SIZE TUNING - RTX 3090 (24GB VRAM)
+      # ============================================================================
+      # Based on Docling performance docs for RTX 3090 with 24GB VRAM:
+      # - Layout models (Heron, Egret) dominate GPU time
+      # - OCR with RapidOCR torch backend benefits significantly
+      # - Batch size tuning is the key to GPU utilization (target 80-90%)
+
+      # Layout batch size - highest GPU impact
+      # Tuned for RTX 3090 with concurrent document processing
+      # Smaller batches per document allow better thread scheduling
+      DOCLING_LAYOUT_BATCH_SIZE: "16"
+
+      # OCR batch size - RapidOCR with torch backend
+      # Reduced to prevent thread pool exhaustion on assemble stage
+      DOCLING_OCR_BATCH_SIZE: "16"
+
+      # Table batch size - currently CPU-only in Docling
+      DOCLING_TABLE_BATCH_SIZE: "12"
+
+      # ============================================================================
+      # THREADING - CPU Parallelism for Per-Document Processing
+      # ============================================================================
+      # Reduced from 20 to 12 to allow better thread scheduling per document
+      # Higher per-thread workload = fewer stalled threads in assemble stage
+      OMP_NUM_THREADS: "12"
+
+      # TORCH_NUM_THREADS controls PyTorch intra-op parallelism
+      # Set to same as OMP for consistent multi-threaded behavior
+      TORCH_NUM_THREADS: "12"
+
+      # Enable remote VLM services (use Ollama for vision tasks)
+      DOCLING_SERVE_ENABLE_REMOTE_SERVICES: "true"
+
+      # ============================================================================
+      # VLM ENRICHMENT OPTIONS - OLLAMA INTEGRATION
+      # ============================================================================
+      # Use Ollama for Vision Language Model tasks:
+      # - Picture descriptions and classifications
+      # - Code and formula enrichment
+      #
+      # Ollama container handles load balancing and parallel requests
+      # RTX 3090 can run multiple models with OLLAMA_NUM_PARALLEL=16
+      # ============================================================================
+
+      # Ollama connection for VLM (granite3.2-vision:2b)
+      # Ollama load-balances requests across available GPU resources
+      DOCLING_SERVE_REMOTE_OLLAMA_URL: "http://rag-ollama:11434"
+
+      # Picture description and classification (vision model tasks)
+      DOCLING_SERVE_DO_PICTURE_DESCRIPTION: "true"
+      DOCLING_SERVE_DO_PICTURE_CLASSIFICATION: "true"
+
+      # Code and formula enrichment
+      DOCLING_SERVE_DO_CODE_ENRICHMENT: "true"
+      DOCLING_SERVE_DO_FORMULA_ENRICHMENT: "true"
+
+      # ============================================================================
+      # REQUEST CONCURRENCY - GPU PIPELINE OPTIMIZATION
+      # ============================================================================
+      # Docling processes documents through GPU pipeline stages:
+      # 1. Layout detection (batch_size=128)
+      # 2. OCR (RapidOCR torch, batch_size=128)
+      # 3. VLM enrichment (calls Ollama)
+      # 4. Table structure (CPU-only)
+      #
+      # Higher concurrency = more documents queued for GPU processing
+      # Ollama handles VLM requests independently via HTTP
+      # ============================================================================
+
+      # Reduced to 4 to prevent assemble thread deadlocks
+      # Higher concurrency causes thread hangs in assemble stage
+      DOCLING_SERVE_CONCURRENCY_LIMIT: "4"
+
+      # Reduced queue size to match concurrency
+      DOCLING_SERVE_MAX_QUEUE: "32"
+
+      # Request timeout for VLM API calls to Ollama
+      # Vision models can take 60-120s per image on RTX 3090
+      # Allow up to 180s for slower inference with larger batches
+      DOCLING_SERVE_REMOTE_TIMEOUT: "180"
+    volumes:
+      - /data/docling_models:/models
+      - /data/docling_scratch:/scratch
+      - ./documents:/documents:ro
+      - ./config:/config:ro
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    deploy:
+      resources:
+        limits:
+          cpus: '20' # Increased from 18 to match system cores
+          memory: 64G # Increased from 48G
+        reservations:
+          cpus: '10'
+          memory: 32G
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    networks:
+      - rag-network
+    restart: unless-stopped
+    # Workaround for missing onnxruntime-gpu in the official image
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        echo "Installing onnxruntime-gpu for CUDA acceleration..."
+        pip install onnxruntime-gpu==1.20.1
+        echo "Starting Docling Serve..."
+        exec docling-serve run
+
+  # Docling Model Pre-Download Init
+  docling-init:
+    image: ghcr.io/docling-project/docling-serve-cu128:latest
+    container_name: docling-init
+    volumes:
+      - /data/docling_models:/models
+    environment:
+      DOCLING_SERVE_ARTIFACTS_PATH: "/models"
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        # Download all required models
+        docling-tools models download --all --output-dir=/models
+        echo "Docling models downloaded successfully!"
+    restart: "no"
+  # PostgreSQL with pgvector
+  db:
+    image: sojoner/database:latest
+    container_name: rag-db
+    environment:
+      POSTGRES_USER: rag_user
+      POSTGRES_PASSWORD: rag_password
+      POSTGRES_DB: rag_chat
+      # PostgreSQL tuning for 16GB RAM allocation (System has 94GB)
+      POSTGRES_INITDB_ARGS: "-c shared_buffers=4GB -c effective_cache_size=12GB -c work_mem=256MB -c maintenance_work_mem=1GB -c max_connections=200 -c paradedb.enable_aggregate_custom_scan=on -c paradedb.enable_custom_scan_without_operator=on -c paradedb.per_tuple_cost=100 -c paradedb.limit_fetch_multiplier=2"
+    ports:
+      - "15432:5432"
+    volumes:
+      # PostgreSQL 18+ uses version-specific subdirectory under /var/lib/postgresql
+      - /data/postgres:/var/lib/postgresql
+      - ./sql/01-ai-extensions.sql:/docker-entrypoint-initdb.d/01-ai-extensions.sql:ro
+      - ./sql/init.sql:/docker-entrypoint-initdb.d/02_init.sql:ro
+      - ./sql/02-schema-migration-embedding-status.sql:/docker-entrypoint-initdb.d/03-schema-migration-embedding-status.sql:ro
+      - ./sql/03-add-agent-column-to-messages.sql:/docker-entrypoint-initdb.d/04-add-agent-column-to-messages.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U rag_user -d rag_chat"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    shm_size: 4g
+    deploy:
+      resources:
+        limits:
+          cpus: '8' # Increased from 4
+          memory: 16G # Increased from 8G
+        reservations:
+          cpus: '4'
+          memory: 8G
+    networks:
+      - rag-network
+    restart: unless-stopped
+
+  # Database initialization service
+  db-init:
+    image: sojoner/database:latest
+    container_name: rag-db-init
+    environment:
+      PGPASSWORD: rag_password
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - ./sql/init.sql:/init.sql:ro
+    networks:
+      - rag-network
+    command: >
+      bash -c "
+        echo 'Running database initialization...';
+        psql -h db -U rag_user -d rag_chat < /init.sql;
+        echo 'Database initialization complete!';
+      "
+    restart: "no"
+
+  # Rust RAG Chat Service
+  rust-rag:
+    image: rag-chat:latest
+    container_name: rust-rag
+    depends_on:
+      db:
+        condition: service_healthy
+      
+      docling:
+        condition: service_healthy
+      db-init:
+        condition: service_completed_successfully
+      
+    environment:
+      - RUN_ENV=test
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./config:/app/config:ro
+      - ./documents:/documents:ro
+      - ./Cargo.toml:/app/Cargo.toml:ro
+      - ./Leptos.toml:/app/Leptos.toml:ro
+    networks:
+      - rag-network
+    restart: unless-stopped
+
+networks:
+  rag-network:
+    driver: bridge
+
+volumes:
+  # Named volumes for Mac development (cross-platform compatible)
+  cargo_registry:
+  cargo_git:
+  rust_target:
+  npm_cache:

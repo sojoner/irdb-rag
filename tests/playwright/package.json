@@ -1,0 +1,15 @@
+{
+  "name": "irdb-rag-playwright-tests",
+  "version": "1.0.0",
+  "description": "Playwright E2E tests for IRDB-RAG query builder and search",
+  "scripts": {
+    "test": "playwright test",
+    "test:ui": "playwright test --ui",
+    "test:headed": "playwright test --headed",
+    "test:debug": "playwright test --debug",
+    "report": "playwright show-report"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.41.0"
+  }
+}

@@ -1,0 +1,52 @@
+# RAG Chat - Development Local Configuration
+# Uses local Ollama and PostgreSQL running on Docker
+
+[database]
+url = "postgres://rag_user:rag_password@localhost:15432/rag_chat"
+max_connections = 20
+acquire_timeout_seconds = 30
+
+# All LLMs use local Ollama
+[llm.chat]
+provider = "openai"
+api_url = "http://localhost:11434/v1"
+api_key = "ollama"
+model = "nemotron-3-nano:latest"
+
+[llm.metadata]
+provider = "openai"
+api_url = "http://localhost:11434/v1"
+api_key = "ollama"
+model = "nemotron-3-nano:latest"
+
+[llm.ner]
+provider = "openai"
+api_url = "http://localhost:11434/v1"
+api_key = "ollama"
+model = "nemotron-3-nano:latest"
+
+[llm]
+timeout_seconds = 300
+
+[embedding]
+provider = "openai"
+api_url = "http://localhost:11434/v1"
+api_key = "ollama"
+model = "nomic-embed-text-v2-moe:latest"
+dimensions = 768
+timeout_seconds = 120
+
+[docling]
+url = "http://localhost:5001"
+timeout_seconds = 180
+
+[import]
+workers = 2
+max_retries = 3
+
+[server]
+port = 3000
+
+[rag]
+system_prompt = "You are a helpful AI assistant specialized in answering questions about documents."
+entity_extraction_enabled = true

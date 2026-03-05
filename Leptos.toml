@@ -1,0 +1,52 @@
+# Leptos web framework configuration
+# This file is used by cargo-leptos for building and running the Leptos app
+
+# Binary target name
+bin-target = "rag-chat"
+
+# The name used by Leptos for the output wasm files
+output-name = "rag-chat"
+
+# The site root folder is where cargo-leptos will build your site
+site-root = "target/site"
+
+# The site package directory
+site-pkg-dir = "pkg"
+
+# [Optional] Files in the public directory will be copied to the site root
+assets-dir = "static"
+
+# The port for automatic reload monitoring
+reload_port = 3001
+
+# Server address binding - allow access from network
+site_addr = "0.0.0.0:3000"
+
+# The environment Leptos will run with
+env = "DEV"
+
+# Compression level for sending frontend to clients
+compression = "all"
+
+# The features to use when compiling the bin target (server)
+bin-features = ["ssr"]
+
+# The features to use when compiling the lib target (client/WASM)
+# Enable hydration for client-side interactivity
+lib-features = ["hydrate"]
+
+# Automatically inject websocket code into binary (dev only)
+watch = true
+
+# Build hooks to compile CSS with Tailwind
+[[hooks]]
+name = "tailwind-build"
+command = "npm"
+args = ["run", "build:css"]
+stage = "BeforeBuildCrate"
+
+[[hooks]]
+name = "tailwind-watch"
+command = "npm"
+args = ["run", "watch:css"]
+stage = "Watch"

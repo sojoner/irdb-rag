@@ -1,0 +1,67 @@
+# RAG Chat - Test Configuration
+# Tests run against bm3090 remote Docker context
+# Set Docker context: docker context use bm3090
+
+[database]
+url = "postgres://rag_user:rag_password@db:5432/rag_chat"
+max_connections = 50
+acquire_timeout_seconds = 60
+
+# All LLMs use Ollama on bm3090
+[llm.chat]
+provider = "openai"
+api_url = "http://rag-ollama:11434/v1"
+api_key = "ollama"
+model = "nemotron-3-nano:latest"
+
+[llm.metadata]
+provider = "openai"
+api_url = "http://rag-ollama:11434/v1"
+api_key = "ollama"
+model = "nemotron-3-nano:latest"
+
+[llm.ner]
+provider = "openai"
+api_url = "http://rag-ollama:11434/v1"
+api_key = "ollama"
+model = "nemotron-3-nano:latest"
+
+[llm]
+timeout_seconds = 300
+
+[embedding]
+provider = "openai"
+api_url = "http://rag-ollama:11434/v1"
+api_key = "ollama"
+model = "nomic-embed-text-v2-moe:latest"
+dimensions = 768
+timeout_seconds = 120
+
+[docling]
+url = "http://docling:5001"
+timeout_seconds = 180
+models = "DocLayNet,TableFormer"
+
+do_layout_analysis = true
+do_table_structure = true
+do_ocr = false
+batch_document_limit = 48
+batch_chunk_limit = 128
+batch_embedding_limit = 256
+
+[import]
+workers = 2
+max_retries = 3
+retry_base_delay_ms = 1000
+retry_max_delay_ms = 30000
+
+[rag]
+system_prompt = "You are a helpful AI assistant specialized in answering questions about documents. Use the provided document context to give accurate, well-sourced answers. If information is not available in the context, clearly state that. Always cite which documents you're referencing."
+entity_extraction_enabled = true
+
+[reranking]
+enabled = false
+api_url = "http://rag-ollama:11434"
+api_key = ""
+model = "dengcao/Qwen3-Reranker-0.6B:Q5_K_M"
+timeout_seconds = 30
