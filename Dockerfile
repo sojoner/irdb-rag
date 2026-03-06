@@ -40,7 +40,8 @@ RUN rustup target add wasm32-unknown-unknown
 ARG CARGO_LEPTOS_VERSION=0.3.2
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,target=/usr/local/cargo/git,sharing=locked \
-    cargo install cargo-leptos --version ${CARGO_LEPTOS_VERSION} --locked --jobs $(if [ "$BUILD_JOBS" -eq 0 ]; then nproc; else echo "$BUILD_JOBS"; fi)
+    JOBS=$(if [ "${BUILD_JOBS}" -eq 0 ]; then nproc; else echo "${BUILD_JOBS}"; fi) && \
+    cargo install cargo-leptos --version ${CARGO_LEPTOS_VERSION} --locked --jobs ${JOBS}
 
 # Set working directory
 WORKDIR /app

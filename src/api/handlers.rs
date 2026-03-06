@@ -488,18 +488,28 @@ pub async fn chat_conversation_stream(
         .unwrap_or_default();
 
     if last_user_message.is_empty() {
-        return Err(AppError::Internal("No user message found".to_string()));
+        tracing::error!(
+            "No user message found in conversation. Messages: {:?}",
+            req.messages.iter().map(|m| &m.role).collect::<Vec<_>>()
+        );
+        return Err(AppError::BadRequest(
+            "No user message found in conversation".to_string(),
+        ));
     }
 
     // Generate embedding for the last user message
-    let embedding = state
-        .embedder
-        .embed(&last_user_message)
-        .await
-        .map_err(|e| {
-            tracing::error!("Failed to generate embedding for chat: {}", e);
-            AppError::Internal(e.to_string())
-        })?;
+    tracing::debug!("Generating embedding for message length: {}", last_user_message.len());
+    let embedding = match state.embedder.embed(&last_user_message).await {
+        Ok(emb) => {
+            tracing::debug!("Successfully generated embedding with {} dimensions", emb.len());
+            emb
+        }
+        Err(e) => {
+            let err_msg = format!("Embedding generation failed: {}", e);
+            tracing::error!("{}", err_msg);
+            return Err(AppError::Internal(err_msg));
+        }
+    };
 
     // Retrieve relevant chunks if document_ids provided
     let mut context = String::new();
@@ -626,12 +636,15 @@ pub async fn chat_conversation_stream(
     let conversation_id = req.conversation_id.unwrap_or_else(Uuid::new_v4);
 
     // Ensure conversation exists before saving messages
-    db::ensure_conversation_exists(&state.pool, conversation_id, "New Chat")
-        .await
-        .map_err(|e| {
-            tracing::error!("Failed to ensure conversation exists: {}", e);
-            AppError::Internal(e.to_string())
-        })?;
+    tracing::debug!("Ensuring conversation exists: {}", conversation_id);
+    match db::ensure_conversation_exists(&state.pool, conversation_id, "New Chat").await {
+        Ok(_) => tracing::debug!("Conversation verified/created"),
+        Err(e) => {
+            let err_msg = format!("Failed to ensure conversation exists: {}", e);
+            tracing::error!("{}", err_msg);
+            return Err(AppError::Internal(err_msg));
+        }
+    };
 
     let pool = state.pool.clone();
     let last_user_message_clone = last_user_message.clone();
@@ -641,7 +654,9 @@ pub async fn chat_conversation_stream(
             use crate::services::agents::DualAgentOrchestrator;
             use futures::stream::StreamExt;
 
-            tracing::info!("Dual-agent mode enabled");
+            tracing::info!("Dual-agent mode enabled, orchestrating with {} messages", req.messages.len());
+
+            tracing::debug!("Starting dual-agent orchestration");
 
             let (moderator_result, rag_reporter_result) = DualAgentOrchestrator::orchestrate_streaming(
                 &state,
@@ -649,6 +664,13 @@ pub async fn chat_conversation_stream(
                 req.context_chunks,
                 req.document_ids.as_deref(),
             ).await;
+
+            if moderator_result.is_err() {
+                tracing::warn!("Moderator stream initialization failed");
+            }
+            if rag_reporter_result.is_err() {
+                tracing::warn!("RAG Reporter stream initialization failed");
+            }
 
             let mut moderator_response = String::new();
             let mut rag_response = String::new();
@@ -1199,14 +1221,16 @@ pub async fn faceted_search(
     tracing::debug!("Executing faceted search with filters: {:?}", filters);
     let (results, facets) = db::search_with_facets(
         &state.pool,
-        &req.query,
-        &embedding,
-        &filters,
-        req.limit,
-        req.bm25_weight,
-        req.vector_weight,
-        req.facet_limit,
-        state.reranker.as_ref().map(|r| r.as_ref()),
+        db::SearchParams {
+            query: &req.query,
+            embedding: &embedding,
+            filters: &filters,
+            limit: req.limit,
+            bm25_weight: req.bm25_weight,
+            vector_weight: req.vector_weight,
+            facet_limit: req.facet_limit,
+            reranker: state.reranker.as_ref().map(|r| r.as_ref()),
+        },
     )
     .await
     .map_err(|e| {
@@ -2020,15 +2044,34 @@ pub async fn get_conversation(
 pub enum AppError {
     NotFound,
     Internal(String),
+    BadRequest(String),
 }
 
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
         match self {
             AppError::NotFound => (StatusCode::NOT_FOUND, "Not found").into_response(),
+            AppError::BadRequest(msg) => {
+                tracing::warn!("Bad request: {}", msg);
+                (
+                    StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({
+                        "error": "bad_request",
+                        "message": msg
+                    })),
+                )
+                    .into_response()
+            }
             AppError::Internal(msg) => {
-                tracing::error!("Internal error: {}", msg);
-                (StatusCode::INTERNAL_SERVER_ERROR, msg).into_response()
+                tracing::error!("Internal server error: {}", msg);
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({
+                        "error": "internal_error",
+                        "message": msg
+                    })),
+                )
+                    .into_response()
             }
         }
     }

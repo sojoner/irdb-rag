@@ -19,6 +19,18 @@ use crate::infra::db_utils::{
 /// Re-export SortOrder from domain models for DB layer usage
 pub use crate::domain::models::SortOrder;
 
+/// Search parameters for faceted search
+pub struct SearchParams<'a> {
+    pub query: &'a str,
+    pub embedding: &'a [f32],
+    pub filters: &'a SearchFilters,
+    pub limit: i32,
+    pub bm25_weight: f64,
+    pub vector_weight: f64,
+    pub facet_limit: i32,
+    pub reranker: Option<&'a crate::infra::reranker::Reranker>,
+}
+
 /// Get embedding dimensions from configuration
 /// This is a helper function for database operations that need to know the vector dimension
 pub fn get_embedding_dimensions() -> Result<u32> {
@@ -1089,11 +1101,14 @@ pub async fn insert_asset(
     Ok(asset_id)
 }
 
+/// Asset tuple: (asset_type, page_number, alt_text, caption)
+pub type AssetData = (String, Option<i32>, Option<String>, Option<String>);
+
 /// Insert multiple document assets in a batch
 pub async fn insert_assets_batch(
     pool: &PgPool,
     document_id: Uuid,
-    assets: &[(String, Option<i32>, Option<String>, Option<String>)], // (asset_type, page_number, alt_text, caption)
+    assets: &[AssetData],
 ) -> Result<usize> {
     if assets.is_empty() {
         return Ok(0);
@@ -1287,7 +1302,7 @@ pub async fn get_relevant_chunks(
     let dims = get_embedding_dimensions()?;
     let sql = format!(
         r#"
-        SELECT id, document_id, chunk_index, content, page_number, section_title
+        SELECT id, document_id, chunk_index, content, page_number, section_title, embedding_status::embedding_status
         FROM document_chunks
         WHERE embedding IS NOT NULL
         AND ($3::UUID[] IS NULL OR document_id = ANY($3))
@@ -1656,23 +1671,16 @@ pub async fn get_facet_values(
 /// Execute search with faceted results
 pub async fn search_with_facets(
     pool: &PgPool,
-    query: &str,
-    embedding: &[f32],
-    filters: &SearchFilters,
-    limit: i32,
-    bm25_weight: f64,
-    vector_weight: f64,
-    facet_limit: i32,
-    reranker: Option<&crate::infra::reranker::Reranker>,
+    params: SearchParams<'_>,
 ) -> Result<(Vec<SearchResult>, Vec<crate::domain::dtos::FacetAggregate>)> {
-    let embedding_str = embedding_to_string(embedding);
+    let embedding_str = embedding_to_string(params.embedding);
 
-    let category_id = filters.category_id;
-    let date_from = filters.date_from;
-    let date_to = filters.date_to;
-    let locations = filters.locations.clone();
-    let keywords = filters.keywords.clone();
-    let authors = filters.authors.clone();
+    let category_id = params.filters.category_id;
+    let date_from = params.filters.date_from;
+    let date_to = params.filters.date_to;
+    let locations = params.filters.locations.clone();
+    let keywords = params.filters.keywords.clone();
+    let authors = params.filters.authors.clone();
 
     // Call the SQL function that returns both results and facets
     let raw_results = sqlx::query_as::<
@@ -1702,18 +1710,18 @@ pub async fn search_with_facets(
                                 $9::TEXT[], $10::TEXT[], $11::TEXT[], $12::INT)
         "#,
     )
-    .bind(query)
+    .bind(params.query)
     .bind(&embedding_str)
-    .bind(limit)
-    .bind(bm25_weight)
-    .bind(vector_weight)
+    .bind(params.limit)
+    .bind(params.bm25_weight)
+    .bind(params.vector_weight)
     .bind(category_id)
     .bind(date_from)
     .bind(date_to)
     .bind(locations.as_deref())
     .bind(keywords.as_deref())
     .bind(authors.as_deref())
-    .bind(facet_limit)
+    .bind(params.facet_limit)
     .fetch_all(pool)
     .await?;
 
@@ -1758,10 +1766,10 @@ pub async fn search_with_facets(
     }
 
     // Apply reranking if available
-    if let Some(reranker) = reranker {
+    if let Some(reranker) = params.reranker {
         let chunk_contents: Vec<&str> = search_results.iter().map(|r| r.content.as_str()).collect();
 
-        if let Ok(ranked) = reranker.rerank_and_sort(query, &chunk_contents).await {
+        if let Ok(ranked) = reranker.rerank_and_sort(params.query, &chunk_contents).await {
             let mut reranked = Vec::new();
             for doc in ranked {
                 if let Some(result) = search_results.get(doc.index) {

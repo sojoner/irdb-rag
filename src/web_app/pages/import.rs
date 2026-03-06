@@ -282,6 +282,164 @@ pub async fn delete_import_item(
 }
 
 #[component]
+fn ImportItemRow(
+    item: ImportItemResponse,
+    on_delete: impl Fn(Uuid) + 'static + Copy,
+) -> impl IntoView {
+    let status = item.status.clone();
+    let source_path = item.source_path.clone();
+    let error_msg = item.error_message.clone();
+    let retry_count = item.retry_count;
+    let item_id = item.id;
+
+    let has_error = error_msg.is_some();
+    let has_retries = retry_count > 0;
+
+    view! {
+        <div class="p-3 rounded-lg border border-gray-200 bg-gray-50 hover:bg-gray-100 transition-colors">
+            <div class="flex items-start justify-between gap-2">
+                <div class="flex-1 min-w-0">
+                    <div class="flex items-center gap-2 mb-1">
+                        <ItemStatusBadge status=status.clone() />
+                        <Show when=move || has_retries>
+                            <span class="text-xs text-gray-500">
+                                {format!("Retry: {}", retry_count)}
+                            </span>
+                        </Show>
+                    </div>
+                    <p class="text-xs font-medium text-gray-900 truncate mb-1">
+                        {source_path.clone()}
+                    </p>
+                    <Show when=move || has_error>
+                        <p class="text-xs text-red-600 mt-1">
+                            {error_msg.clone().unwrap_or_default()}
+                        </p>
+                    </Show>
+                </div>
+                <button
+                    on:click=move |_| {
+                        if web_sys::window()
+                            .and_then(|w| w.confirm_with_message("Delete this import item? Also delete the imported document?").ok())
+                            .unwrap_or(false)
+                        {
+                            on_delete(item_id);
+                        }
+                    }
+                    class="text-gray-400 hover:text-red-600 transition-colors p-1 flex-shrink-0"
+                    title="Delete item"
+                >
+                    <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                              d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                    </svg>
+                </button>
+            </div>
+        </div>
+    }
+}
+
+#[component]
+fn JobItem(
+    job: ImportJobResponse,
+    is_selected: ReadSignal<Option<Uuid>>,
+    selected_jobs: ReadSignal<std::collections::HashSet<Uuid>>,
+    on_toggle: impl Fn(Uuid) + 'static + Copy,
+    on_select: impl Fn(Uuid) + 'static + Copy,
+    on_delete: impl Fn(Uuid) + 'static + Copy,
+) -> impl IntoView {
+    let job_id = job.id;
+    let status = job.status.clone();
+    let source_type = job.source_type.clone();
+    let source_path = job.source_path.clone();
+    let total = job.total_items;
+    let processed = job.processed_items;
+    let failed = job.failed_items;
+    let skipped = job.skipped_items;
+
+    let is_selected_item = move || is_selected.get() == Some(job_id);
+    let is_checked = move || selected_jobs.get().contains(&job_id);
+    let show_progress = total > 0;
+
+    view! {
+        <div
+            class=move || format!(
+                "p-4 rounded-lg border-2 transition-all {}",
+                if is_selected_item() {
+                    "border-blue-500 bg-blue-50"
+                } else {
+                    "border-gray-200 hover:border-gray-300 bg-white"
+                }
+            )
+        >
+            <div class="flex items-start justify-between gap-3">
+                <div class="flex items-start gap-3 flex-1 min-w-0">
+                    <input
+                        type="checkbox"
+                        checked=is_checked
+                        on:click=move |e| {
+                            e.stop_propagation();
+                            on_toggle(job_id);
+                        }
+                        class="mt-1 h-4 w-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500 cursor-pointer"
+                    />
+                    <div
+                        on:click=move |_| on_select(job_id)
+                        class="flex-1 min-w-0 cursor-pointer"
+                    >
+                        <div class="flex items-center gap-2 mb-1">
+                            <StatusBadge status=status.clone() />
+                            <span class="text-xs text-gray-500">
+                                {source_type.clone()}
+                            </span>
+                        </div>
+                        <p class="text-sm font-medium text-gray-900 truncate mb-1">
+                            {source_path.clone().unwrap_or_default()}
+                        </p>
+                        <div class="flex items-center gap-3 text-xs text-gray-600">
+                            <span>{format!("Total: {}", total)}</span>
+                            <span class="text-green-600">{format!("✓ {}", processed - failed - skipped)}</span>
+                            <span class="text-red-600">{format!("✗ {}", failed)}</span>
+                            <span class="text-yellow-600">{format!("⊘ {}", skipped)}</span>
+                        </div>
+                    </div>
+                </div>
+                <button
+                    on:click=move |e| {
+                        e.stop_propagation();
+                        on_delete(job_id);
+                    }
+                    class="text-gray-400 hover:text-red-600 transition-colors p-1 flex-shrink-0"
+                    title="Delete job"
+                >
+                    <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                              d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                    </svg>
+                </button>
+            </div>
+
+            <Show when=move || show_progress>
+                <div class="mt-2">
+                    <div class="w-full bg-gray-200 rounded-full h-1.5">
+                        <div
+                            class="bg-blue-600 h-1.5 rounded-full transition-all"
+                            style=move || {
+                                let percent = if total > 0 {
+                                    (processed as f64 / total as f64 * 100.0) as i32
+                                } else {
+                                    0
+                                };
+                                format!("width: {}%", percent)
+                            }
+                        />
+                    </div>
+                </div>
+            </Show>
+        </div>
+    }
+}
+
+#[component]
 pub fn ImportPage() -> impl IntoView {
     // State
     let (source_type, set_source_type) = signal("folder".to_string());
@@ -430,6 +588,13 @@ pub fn ImportPage() -> impl IntoView {
         set_show_bulk_delete_modal.set(false);
     };
 
+    // Create derived closures to reduce type nesting
+    let is_selection_empty = move || selected_jobs.get().is_empty();
+    let list_is_pending = move || list_action.pending().get();
+    let details_available = move || selected_job_id.get().is_some();
+    let create_modal_visible = move || show_create_modal.get();
+    let bulk_delete_visible = move || show_bulk_delete_modal.get();
+
     view! {
         <div class="flex flex-col h-screen bg-gray-50">
             // HEADER
@@ -443,27 +608,27 @@ pub fn ImportPage() -> impl IntoView {
                         </a>
                         <h1 class="text-2xl font-bold text-gray-900">"Import Manager"</h1>
                     </div>
-                    <div class="flex gap-2 items-center">
-                        <Show when=move || !selected_jobs.get().is_empty()>
-                            <span class="text-sm text-gray-600 px-2">
-                                {move || format!("{} selected", selected_jobs.get().len())}
-                            </span>
-                            <button
-                                on:click=deselect_all_jobs
-                                class="px-3 py-2 text-xs font-medium text-gray-600 bg-white border border-gray-300 rounded-md hover:bg-gray-50 transition-colors"
-                            >
-                                "Clear Selection"
-                            </button>
-                            <button
-                                on:click=move |_| set_show_bulk_delete_modal.set(true)
-                                class="px-3 py-2 text-xs font-medium text-white bg-red-600 rounded-md hover:bg-red-700 transition-colors flex items-center gap-1"
-                            >
-                                <svg class="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                                </svg>
-                                "Delete Selected"
-                            </button>
-                        </Show>
+                     <div class="flex gap-2 items-center">
+                         <Show when=move || !is_selection_empty()>
+                             <span class="text-sm text-gray-600 px-2">
+                                 {move || format!("{} selected", selected_jobs.get().len())}
+                             </span>
+                             <button
+                                 on:click=deselect_all_jobs
+                                 class="px-3 py-2 text-xs font-medium text-gray-600 bg-white border border-gray-300 rounded-md hover:bg-gray-50 transition-colors"
+                             >
+                                 "Clear Selection"
+                             </button>
+                             <button
+                                 on:click=move |_| set_show_bulk_delete_modal.set(true)
+                                 class="px-3 py-2 text-xs font-medium text-white bg-red-600 rounded-md hover:bg-red-700 transition-colors flex items-center gap-1"
+                             >
+                                 <svg class="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                                 </svg>
+                                 "Delete Selected"
+                             </button>
+                         </Show>
                         <button
                             on:click=handle_refresh
                             class="px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50 transition-colors flex items-center gap-2"
@@ -504,104 +669,21 @@ pub fn ImportPage() -> impl IntoView {
                         </div>
                         <div class="flex-1 overflow-y-auto p-4 space-y-2">
                             <Show
-                                when=move || list_action.pending().get()
+                                when=list_is_pending
                                 fallback=move || view! {
                                     <For
                                         each=jobs_list
                                         key=|job| job.id
                                         children=move |job| {
-                                            let job_id = job.id;
-                                            let is_selected = move || selected_job_id.get() == Some(job_id);
-                                            let is_checked = move || selected_jobs.get().contains(&job_id);
-                                            let status = job.status.clone();
-                                            let source_type = job.source_type.clone();
-                                            let source_path_opt = job.source_path.clone();
-                                            let total = job.total_items;
-                                            let processed = job.processed_items;
-                                            let failed = job.failed_items;
-                                            let skipped = job.skipped_items;
-
                                             view! {
-                                                <div
-                                                    class=move || format!(
-                                                        "p-4 rounded-lg border-2 transition-all {}",
-                                                        if is_selected() {
-                                                            "border-blue-500 bg-blue-50"
-                                                        } else {
-                                                            "border-gray-200 hover:border-gray-300 bg-white"
-                                                        }
-                                                    )
-                                                >
-                                                    <div class="flex items-start justify-between gap-3">
-                                                        <div class="flex items-start gap-3 flex-1 min-w-0">
-                                                            <input
-                                                                type="checkbox"
-                                                                checked=is_checked
-                                                                on:click=move |e| {
-                                                                    e.stop_propagation();
-                                                                    toggle_job_selection(job_id);
-                                                                }
-                                                                class="mt-1 h-4 w-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500 cursor-pointer"
-                                                            />
-                                                            <div
-                                                                on:click=move |_| set_selected_job_id.set(Some(job_id))
-                                                                class="flex-1 min-w-0 cursor-pointer"
-                                                            >
-                                                                <div class="flex items-center gap-2 mb-1">
-                                                                    <StatusBadge status=status.clone() />
-                                                                    <span class="text-xs text-gray-500">
-                                                                        {source_type.clone()}
-                                                                    </span>
-                                                                </div>
-                                                                <p class="text-sm font-medium text-gray-900 truncate mb-1">
-                                                                    {source_path_opt.clone().unwrap_or_default()}
-                                                                </p>
-                                                                <div class="flex items-center gap-3 text-xs text-gray-600">
-                                                                    <span>{format!("Total: {}", total)}</span>
-                                                                    <span class="text-green-600">{format!("✓ {}", processed - failed - skipped)}</span>
-                                                                    <span class="text-red-600">{format!("✗ {}", failed)}</span>
-                                                                    <span class="text-yellow-600">{format!("⊘ {}", skipped)}</span>
-                                                                </div>
-                                                            </div>
-                                                        </div>
-                                                        <button
-                                                            on:click=move |e| {
-                                                                e.stop_propagation();
-                                                                delete_action.dispatch(DeleteImportJob { job_id, delete_documents: false });
-                                                            }
-                                                            class="text-gray-400 hover:text-red-600 transition-colors p-1 flex-shrink-0"
-                                                            title="Delete job"
-                                                        >
-                                                            <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                                                                      d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                                                            </svg>
-                                                        </button>
-                                                    </div>
-
-                                                    {
-                                                        let should_show = total > 0;
-                                                        view! {
-                                                            <Show when=move || should_show>
-                                                        <div class="mt-2">
-                                                            <div class="w-full bg-gray-200 rounded-full h-1.5">
-                                                                <div
-                                                                    class="bg-blue-600 h-1.5 rounded-full transition-all"
-                                                                    style=move || {
-                                                                        let percent = if total > 0 {
-                                                                            (processed as f64 / total as f64 * 100.0) as i32
-                                                                        } else {
-                                                                            0
-                                                                        };
-                                                                        format!("width: {}%", percent)
-                                                                    }
-                                                                />
-                                                            </div>
-                                                        </div>
-                                                    </Show>
-                                                        }
-                                                    }
-                                                </div>
+                                                <JobItem
+                                                    job=job
+                                                    is_selected=selected_job_id
+                                                    selected_jobs=selected_jobs
+                                                    on_toggle=toggle_job_selection
+                                                    on_select=move |id| set_selected_job_id.set(Some(id))
+                                                    on_delete=move |id| { delete_action.dispatch(DeleteImportJob { job_id: id, delete_documents: false }); }
+                                                />
                                             }
                                         }
                                     />
@@ -628,7 +710,7 @@ pub fn ImportPage() -> impl IntoView {
                     // RIGHT: Job Details (60%)
                     <div class="flex-1 bg-white rounded-lg shadow-sm border border-gray-200 flex flex-col overflow-hidden">
                         <Show
-                            when=move || selected_job_id.get().is_some()
+                            when=details_available
                             fallback=|| view! {
                                 <div class="flex-1 flex items-center justify-center text-gray-500">
                                     <div class="text-center">
@@ -747,65 +829,14 @@ pub fn ImportPage() -> impl IntoView {
                                                         each=job_items
                                                         key=|item| item.id
                                                         children=move |item| {
-                                                            let status = item.status.clone();
-                                                            let retry_count = item.retry_count;
-                                                            let source_path = item.source_path.clone();
-                                                            let error_msg = item.error_message.clone();
-
                                                             view! {
-                                                                <div class="p-3 rounded-lg border border-gray-200 bg-gray-50 hover:bg-gray-100 transition-colors">
-                                                                    <div class="flex items-start justify-between gap-2">
-                                                                        <div class="flex-1 min-w-0">
-                                                                            <div class="flex items-center gap-2 mb-1">
-                                                                                <ItemStatusBadge status=status.clone() />
-                                                                                {
-                                                                                    let has_retries = retry_count > 0;
-                                                                                    view! {
-                                                                                        <Show when=move || has_retries>
-                                                                                    <span class="text-xs text-gray-500">
-                                                                                        {format!("Retry: {}", retry_count)}
-                                                                                    </span>
-                                                                                </Show>
-                                                                                    }
-                                                                                }
-                                                                            </div>
-                                                                            <p class="text-xs font-medium text-gray-900 truncate mb-1">
-                                                                                {source_path.clone()}
-                                                                            </p>
-                                                                            {
-                                                                                let has_error = error_msg.is_some();
-                                                                                let err_msg = error_msg.clone();
-                                                                                view! {
-                                                                                    <Show when=move || has_error>
-                                                                                        <p class="text-xs text-red-600 mt-1">
-                                                                                            {err_msg.clone().unwrap_or_default()}
-                                                                                        </p>
-                                                                                    </Show>
-                                                                                }
-                                                                            }
-                                                                        </div>
-                                                                        <button
-                                                                            on:click=move |_| {
-                                                                                if web_sys::window()
-                                                                                    .and_then(|w| w.confirm_with_message("Delete this import item? Also delete the imported document?").ok())
-                                                                                    .unwrap_or(false)
-                                                                                {
-                                                                                    delete_item_action.dispatch(DeleteImportItem {
-                                                                                        item_id: item.id,
-                                                                                        delete_document: true
-                                                                                    });
-                                                                                }
-                                                                            }
-                                                                            class="text-gray-400 hover:text-red-600 transition-colors p-1 flex-shrink-0"
-                                                                            title="Delete item"
-                                                                        >
-                                                                            <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                                                                                      d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                                                                            </svg>
-                                                                        </button>
-                                                                    </div>
-                                                                </div>
+                                                                <ImportItemRow
+                                                                    item=item
+                                                                    on_delete=move |item_id| { delete_item_action.dispatch(DeleteImportItem {
+                                                                        item_id,
+                                                                        delete_document: true
+                                                                    }); }
+                                                                />
                                                             }
                                                         }
                                                     />
@@ -827,7 +858,7 @@ pub fn ImportPage() -> impl IntoView {
             </div>
 
             // CREATE MODAL
-            <Show when=move || show_create_modal.get()>
+            <Show when=create_modal_visible>
                 <div class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
                     <div class="bg-white rounded-lg shadow-xl max-w-lg w-full mx-4">
                         <div class="px-6 py-4 border-b border-gray-200 flex justify-between items-center">
@@ -953,7 +984,7 @@ pub fn ImportPage() -> impl IntoView {
             </Show>
 
             // BULK DELETE CONFIRMATION MODAL
-            <Show when=move || show_bulk_delete_modal.get()>
+            <Show when=bulk_delete_visible>
                 <div class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
                     <div class="bg-white rounded-lg shadow-xl max-w-md w-full mx-4">
                         <div class="px-6 py-4 border-b border-gray-200">

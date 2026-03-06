@@ -1,5 +1,5 @@
 use axum::{
-    routing::{delete, get, post},
+    routing::{delete, get, options, post},
     Router,
 };
 use leptos_axum::{generate_route_list, LeptosRoutes};
@@ -10,11 +10,48 @@ use crate::api::{handlers, state::AppState};
 use crate::shell;
 use crate::web_app::app::App;
 
+// Handler for CORS preflight OPTIONS requests
+async fn handle_options() -> &'static str {
+    ""
+}
+
 pub fn create_router(state: AppState) -> Router {
     let leptos_options = state.leptos_options.clone();
     let routes = generate_route_list(App);
 
     Router::new()
+        // CORS preflight handlers for API routes
+        .route("/api/search", options(handle_options))
+        .route("/api/search/bm25", options(handle_options))
+        .route("/api/search/vector", options(handle_options))
+        .route("/api/search/faceted", options(handle_options))
+        .route("/api/facets/values", options(handle_options))
+        .route("/api/chat", options(handle_options))
+        .route("/api/chat/stream", options(handle_options))
+        .route("/api/chat/conversation", options(handle_options))
+        .route("/api/chat/conversation/stream", options(handle_options))
+        .route("/api/conversations", options(handle_options))
+        .route("/api/conversations/{id}", options(handle_options))
+        .route("/api/documents", options(handle_options))
+        .route("/api/documents/{id}", options(handle_options))
+        .route("/api/documents/{id}/assets", options(handle_options))
+        .route("/api/documents/{id}/markdown", options(handle_options))
+        .route("/api/documents/batch", options(handle_options))
+        .route("/api/categories", options(handle_options))
+        .route("/api/aggregation-stats", options(handle_options))
+        .route("/api/stats/db", options(handle_options))
+        .route("/api/index", options(handle_options))
+        .route("/api/health", options(handle_options))
+        .route("/api/status", options(handle_options))
+        .route("/api/config/model", options(handle_options))
+        .route("/api/logs", options(handle_options))
+        .route("/api/import", options(handle_options))
+        .route("/api/import/{id}", options(handle_options))
+        .route("/api/import/{id}/items", options(handle_options))
+        .route("/api/import/{id}/resume", options(handle_options))
+        .route("/api/knowledge-base/paths", options(handle_options))
+        .route("/api/knowledge-base/bookmarks", options(handle_options))
+        .route("/api/knowledge-base/scan", options(handle_options))
         // API routes
         .route("/api/search", post(handlers::search))
         .route("/api/search/bm25", post(handlers::search_bm25))

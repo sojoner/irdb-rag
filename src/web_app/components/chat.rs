@@ -3,18 +3,20 @@ use leptos::web_sys;
 use uuid::Uuid;
 use crate::domain::dtos::ChatMessage;
 #[cfg(target_arch = "wasm32")]
-use crate::web_app::services::chat::{fetch_conversation_messages, fetch_stream};
+use crate::web_app::services::chat::fetch_stream;
 
 #[component]
 pub fn Chat(
     #[prop(optional)] initial_context_docs: Option<Signal<Vec<Uuid>>>,
     #[prop(optional)] external_input_text: Option<Signal<String>>,
-    #[prop(optional)] on_search_results: Option<Callback<Vec<crate::domain::models::SearchResult>>>,
-    #[prop(optional)] reset_trigger: Option<Signal<u32>>,
-    #[prop(optional)] selected_conversation_id: Option<Signal<Option<Uuid>>>,
-) -> impl IntoView {
+    #[prop(optional)]
     #[allow(unused_variables)]
-    let on_search_results = on_search_results;
+    on_search_results: Option<Callback<Vec<crate::domain::models::SearchResult>>>,
+    #[prop(optional)] reset_trigger: Option<Signal<u32>>,
+    #[prop(optional)]
+    #[allow(unused_variables)]
+    on_conversation_id_change: Option<Callback<Option<Uuid>>>,
+) -> impl IntoView {
     let (messages, set_messages) = signal(Vec::<ChatMessage>::new());
     let (input_text, set_input_text) = signal(String::new());
     let (is_streaming, set_is_streaming) = signal(false);
@@ -51,33 +53,7 @@ pub fn Chat(
         });
     }
 
-    // Load conversation messages when selected_conversation_id changes
-    if let Some(selected_conv_id) = selected_conversation_id {
-        Effect::new(move |_| {
-            let _conv_id_opt = selected_conv_id.get();
 
-            #[cfg(target_arch = "wasm32")]
-            {
-                if let Some(conv_id) = _conv_id_opt {
-                    leptos::logging::log!("Chat: Loading conversation {}", conv_id);
-
-                    leptos::task::spawn_local(async move {
-                        match fetch_conversation_messages(conv_id).await {
-                            Ok(conv_messages) => {
-                                leptos::logging::log!("Chat: Loaded {} messages", conv_messages.len());
-                                set_messages.set(conv_messages);
-                                set_error_message.set(String::new());
-                            }
-                            Err(e) => {
-                                leptos::logging::error!("Chat: Failed to load conversation: {}", e);
-                                set_error_message.set(format!("Failed to load conversation: {}", e));
-                            }
-                        }
-                    });
-                }
-            }
-        });
-    }
 
     let do_send = move || {
         let user_message = input_text.get().trim().to_string();
@@ -183,7 +159,7 @@ pub fn Chat(
 
                 // Capture signal values before entering async context
                 let current_messages_raw = messages.get();
-                let current_conv_id = selected_conversation_id.and_then(|s| s.get());
+                let current_conv_id: Option<Uuid> = None;
 
                 let current_messages: Vec<dtos::ChatMessage> = current_messages_raw
                     .into_iter()
@@ -236,8 +212,14 @@ pub fn Chat(
                 .await;
 
                 match result {
-                    Ok(_) => {
+                    Ok(stream_result) => {
                         leptos::logging::log!("Chat: Stream completed successfully");
+                        if let Some(conv_id) = stream_result.conversation_id {
+                            leptos::logging::log!("Chat: Captured conversation_id: {}", conv_id);
+                            if let Some(on_conv_change) = on_conversation_id_change {
+                                on_conv_change.run(Some(conv_id));
+                            }
+                        }
                         set_is_streaming.set(false);
                     }
                     Err(e) => {

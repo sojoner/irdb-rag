@@ -181,13 +181,15 @@ services:
       POSTGRES_USER: rag_user
       POSTGRES_PASSWORD: rag_password
       POSTGRES_DB: rag_chat
-      # PostgreSQL tuning for 16GB RAM allocation (System has 94GB)
-      POSTGRES_INITDB_ARGS: "-c shared_buffers=4GB -c effective_cache_size=12GB -c work_mem=256MB -c maintenance_work_mem=1GB -c max_connections=200 -c paradedb.enable_aggregate_custom_scan=on -c paradedb.enable_custom_scan_without_operator=on -c paradedb.per_tuple_cost=100 -c paradedb.limit_fetch_multiplier=2"
+      # PostgreSQL tuning for 90GB RAM system - optimized for fast restore + queries
+      POSTGRES_INITDB_ARGS: "-c shared_buffers=20GB -c effective_cache_size=60GB -c work_mem=512MB -c maintenance_work_mem=4GB -c max_connections=400 -c max_parallel_workers_per_gather=8 -c max_parallel_workers=16 -c max_parallel_maintenance_workers=16 -c paradedb.enable_aggregate_custom_scan=on -c paradedb.enable_custom_scan_without_operator=on -c paradedb.per_tuple_cost=100 -c paradedb.limit_fetch_multiplier=2"
     ports:
       - "15432:5432"
     volumes:
       # PostgreSQL 18+ uses version-specific subdirectory under /var/lib/postgresql
       - /data/postgres:/var/lib/postgresql
+      - /data/backups:/backups:ro
+      - ./config/postgresql.conf:/etc/postgresql/postgresql.conf:ro
       - ./sql/01-ai-extensions.sql:/docker-entrypoint-initdb.d/01-ai-extensions.sql:ro
       - ./sql/init.sql:/docker-entrypoint-initdb.d/02_init.sql:ro
       - ./sql/02-schema-migration-embedding-status.sql:/docker-entrypoint-initdb.d/03-schema-migration-embedding-status.sql:ro
@@ -197,15 +199,15 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
-    shm_size: 4g
+    shm_size: 16g
     deploy:
       resources:
         limits:
-          cpus: '8' # Increased from 4
-          memory: 16G # Increased from 8G
+          cpus: '16'
+          memory: 32G
         reservations:
-          cpus: '4'
-          memory: 8G
+          cpus: '12'
+          memory: 24G
     networks:
       - rag-network
     restart: unless-stopped

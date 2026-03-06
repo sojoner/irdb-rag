@@ -68,6 +68,7 @@ db-backup:
 	@echo "Backing up database to $(BACKUP_DIR)..."
 	@mkdir -p $(BACKUP_DIR)
 	@BACKUP_FILE="$(BACKUP_DIR)/rag_chat_$$(date +%Y%m%d_%H%M%S).dump" && \
+		docker exec $(DB_CONTAINER) rm -rf /tmp/temp_backup && \
 		docker exec $(DB_CONTAINER) pg_dump -U rag_user -d rag_chat -F d -j $(BUILD_JOBS) -f /tmp/temp_backup && \
 		docker cp $(DB_CONTAINER):/tmp/temp_backup $$BACKUP_FILE && \
 		docker exec $(DB_CONTAINER) rm -rf /tmp/temp_backup && \
@@ -77,23 +78,30 @@ db-backup:
 db-restore:
 	@if [ -z "$(BACKUP_FILE)" ]; then \
 		echo "Error: BACKUP_FILE is not set"; \
-		echo "Usage: make db-restore BACKUP_FILE=./data/backups/rag_chat_YYYYMMDD_HHMMSS.dump"; \
+		echo "Usage: make db-restore BACKUP_FILE=/data/backups/rag_chat_YYYYMMDD_HHMMSS.dump"; \
 		exit 1; \
 	fi
-	@echo "Restoring database from $(BACKUP_FILE)..."
-	@echo "Terminating active connections..."
-	@docker exec $(DB_CONTAINER) psql -U rag_user -d postgres -v ON_ERROR_STOP=off -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname='rag_chat' AND pid != pg_backend_pid();" 2>/dev/null || true
-	@echo "Dropping database..."
-	@docker exec $(DB_CONTAINER) psql -U rag_user -d postgres -v ON_ERROR_STOP=off -c "DROP DATABASE IF EXISTS rag_chat;" 2>/dev/null || true
-	@echo "Creating database..."
-	@docker exec $(DB_CONTAINER) psql -U rag_user -d postgres -v ON_ERROR_STOP=off -c "CREATE DATABASE rag_chat;" 2>/dev/null || true
-	@echo "Restoring data from backup..."
-	@docker cp $(BACKUP_FILE) $(DB_CONTAINER):/tmp/restore.dump
-	@docker exec $(DB_CONTAINER) pg_restore -U rag_user -d rag_chat --no-acl --no-owner /tmp/restore.dump 2>/dev/null || true
-	@docker exec $(DB_CONTAINER) rm /tmp/restore.dump 2>/dev/null || true
-	@echo "Verifying restore..."
-	@docker exec $(DB_CONTAINER) psql -U rag_user -d rag_chat -c "SELECT COUNT(*) as documents FROM documents; SELECT COUNT(*) as chunks FROM document_chunks;"
-	@echo "Database restore complete!"
+	@BACKUP_NAME=$$(basename $(BACKUP_FILE)) && \
+	echo "Restoring database from /backups/$$BACKUP_NAME..." && \
+	echo "Terminating active connections..." && \
+	docker exec $(DB_CONTAINER) psql -U rag_user -d postgres -v ON_ERROR_STOP=off -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname='rag_chat' AND pid != pg_backend_pid();" 2>/dev/null || true && \
+	echo "Dropping database..." && \
+	docker exec $(DB_CONTAINER) psql -U rag_user -d postgres -v ON_ERROR_STOP=off -c "DROP DATABASE IF EXISTS rag_chat;" 2>/dev/null || true && \
+	echo "Creating database..." && \
+	docker exec $(DB_CONTAINER) psql -U rag_user -d postgres -v ON_ERROR_STOP=off -c "CREATE DATABASE rag_chat;" 2>/dev/null || true && \
+	echo "Optimizing PostgreSQL for lightning-fast restore..." && \
+	docker exec $(DB_CONTAINER) psql -U rag_user -d rag_chat -c "ALTER DATABASE rag_chat SET synchronous_commit = OFF; ALTER DATABASE rag_chat SET fsync = OFF; ALTER DATABASE rag_chat SET maintenance_work_mem = '3GB'; ALTER DATABASE rag_chat SET max_parallel_maintenance_workers = 16;" 2>/dev/null || true && \
+	echo "Restoring with 16 parallel jobs (Phase 1: pre-data)..." && \
+	docker exec $(DB_CONTAINER) pg_restore -U rag_user -d rag_chat --no-acl --no-owner --section=pre-data /backups/$$BACKUP_NAME -v 2>&1 | tail -5 && \
+	echo "Restoring with 16 parallel jobs (Phase 2: data)..." && \
+	docker exec $(DB_CONTAINER) bash -c "time pg_restore -U rag_user -d rag_chat --no-acl --no-owner --section=data /backups/$$BACKUP_NAME -j 16 -v" 2>&1 | tail -15 && \
+	echo "Restoring with 8 parallel jobs (Phase 3: post-data/indexes)..." && \
+	docker exec $(DB_CONTAINER) pg_restore -U rag_user -d rag_chat --no-acl --no-owner --section=post-data /backups/$$BACKUP_NAME -j 8 -v 2>&1 | tail -5 && \
+	echo "Re-enabling safety features..." && \
+	docker exec $(DB_CONTAINER) psql -U rag_user -d rag_chat -c "ALTER DATABASE rag_chat SET synchronous_commit = ON; ALTER DATABASE rag_chat SET fsync = ON;" 2>/dev/null || true && \
+	echo "Verifying restore..." && \
+	docker exec $(DB_CONTAINER) psql -U rag_user -d rag_chat -c "SELECT COUNT(*) as documents FROM documents; SELECT COUNT(*) as chunks FROM document_chunks;" && \
+	echo "✅ Database restore complete!"
 
 # =============================================================================
 # Development with cargo-leptos watch

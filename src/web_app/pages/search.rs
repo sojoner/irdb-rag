@@ -311,7 +311,7 @@ pub fn SearchPage() -> impl IntoView {
     let (chat_input_text, set_chat_input_text) = signal(String::new());
 
     // Conversation management callbacks
-    let (current_conversation_id, set_current_conversation_id) = signal(Option::<Uuid>::None);
+    let (_current_conversation_id, set_current_conversation_id) = signal(Option::<Uuid>::None);
 
     // Chat reset trigger - increment to clear chat messages
     let (chat_reset_trigger, set_chat_reset_trigger) = signal(0u32);
@@ -630,7 +630,9 @@ pub fn SearchPage() -> impl IntoView {
                         <Chat
                             external_input_text=chat_input_text.into()
                             reset_trigger=chat_reset_trigger.into()
-                            selected_conversation_id=current_conversation_id.into()
+                            on_conversation_id_change=Callback::new(move |conv_id: Option<Uuid>| {
+                                set_current_conversation_id.set(conv_id);
+                            })
                             on_search_results=Callback::new(move |docs: Vec<crate::domain::models::SearchResult>| {
                                 leptos::logging::log!("SearchPage: Received {} search results from chat", docs.len());
                                 set_results.set(docs);
